@@ -108,6 +108,9 @@ func readConfig(path string) (config, error) {
 	if len(cfg.LocalVoice.Routes) == 0 {
 		cfg.LocalVoice.Routes = nil
 	}
+	if len(cfg.LocalVoice.Candidates) == 0 {
+		cfg.LocalVoice.Candidates = nil
+	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
 	}

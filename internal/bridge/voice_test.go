@@ -3,8 +3,13 @@ package bridge
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
+	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	exceptions "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/event_exception"
+	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
+	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 )
 
 func TestVoiceConfigResolve(t *testing.T) {
@@ -93,5 +98,122 @@ func TestNativeSynthesizesLocalAnswerWithVoice(t *testing.T) {
 				return
 			}
 		})
+	}
+}
+
+func TestNativeRetriesRejectedVoiceWithDefault(t *testing.T) {
+	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
+	}))
+	n.Voice = VoiceConfig{Voice: "filipp"}
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
+		t.Fatal(err)
+	}
+	var rejected string
+	for {
+		f := nextSoundFrame(t, up)
+		if f.Kind() != "TtsGenerate" {
+			continue
+		}
+		if f.Client.GetEvent().GetTtsGenerate().GetVoice() != "filipp" {
+			t.Fatal("first synthesis must use the configured voice")
+		}
+		rejected = f.Client.GetEvent().GetHeader().GetMessageId()
+		break
+	}
+	exception := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: rejected}, Event: &server.TServerMessage_TEvent_EventException{EventException: &exceptions.TEventException{Error: &exceptions.TEventException_TError{ErrorMessage: "voice is not allowed"}}}}}}
+	if err := n.Server(t.Context(), websocket.MessageBinary, aa(exception)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		f := nextSoundFrame(t, up)
+		if f.Kind() != "TtsGenerate" {
+			continue
+		}
+		generate := f.Client.GetEvent().GetTtsGenerate()
+		if generate.GetVoice() != "" || generate.GetEmotion() != "" || generate.GetSpeed() != 0 {
+			t.Fatalf("retry kept the rejected voice: %+v", generate)
+		}
+		if generate.GetText() != "Ответ своей модели" {
+			t.Fatalf("retry text = %q", generate.GetText())
+		}
+		if f.Client.GetEvent().GetHeader().GetMessageId() == rejected {
+			t.Fatal("retry reused the rejected message id")
+		}
+		return
+	}
+}
+
+// TestNativeVoiceChainTriesCandidatesInOrder walks local_voice.candidates: a
+// rejected voice must be replaced by the next one, and only after all of them
+// fail does the bridge fall back to the default Alice voice.
+func TestNativeVoiceChainTriesCandidatesInOrder(t *testing.T) {
+	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
+	}))
+	n.Voice = VoiceConfig{Voice: "filipp", Emotion: "neutral", Speed: 1.1, Candidates: []string{"ermil", "zahar"}}
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"filipp", "ermil", "zahar", ""}
+	for i, name := range want {
+		var generate *tts.TTtsGenerate
+		var id string
+		for {
+			f := nextSoundFrame(t, up)
+			if f.Kind() != "TtsGenerate" {
+				continue
+			}
+			generate = f.Client.GetEvent().GetTtsGenerate()
+			id = f.Client.GetEvent().GetHeader().GetMessageId()
+			break
+		}
+		if generate.GetVoice() != name {
+			t.Fatalf("attempt %d voice = %q, want %q", i, generate.GetVoice(), name)
+		}
+		if name != "" {
+			if generate.GetEmotion() != "neutral" || generate.GetSpeed() != 1.1 {
+				t.Fatalf("attempt %d lost emotion/speed: %+v", i, generate)
+			}
+		}
+		if i == len(want)-1 {
+			return
+		}
+		exception := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: id}, Event: &server.TServerMessage_TEvent_EventException{EventException: &exceptions.TEventException{Error: &exceptions.TEventException_TError{ErrorMessage: "Unsupported voice '" + name + "'"}}}}}}
+		if err := n.Server(t.Context(), websocket.MessageBinary, aa(exception)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestNativeSpeechWatchdogAdvancesOnSilence covers the silent rejection path:
+// the synthesizer accepts the request but never starts speaking, so the
+// per-attempt watchdog must move through the candidates and finally retry in
+// the default Alice voice exactly once.
+func TestNativeSpeechWatchdogAdvancesOnSilence(t *testing.T) {
+	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
+	}))
+	n.Voice = VoiceConfig{Voice: "filipp", Candidates: []string{"ermil"}}
+	n.SpeechTimeout = 150 * time.Millisecond
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"filipp", "ermil", ""} {
+		for {
+			f := nextSoundFrame(t, up)
+			if f.Kind() != "TtsGenerate" {
+				continue
+			}
+			if got := f.Client.GetEvent().GetTtsGenerate().GetVoice(); got != name {
+				t.Fatalf("attempt %d voice = %q, want %q", i, got, name)
+			}
+			break
+		}
+	}
+	select {
+	case f := <-up:
+		t.Fatalf("unexpected frame after the final retry: %s", f.Kind())
+	case <-time.After(400 * time.Millisecond):
 	}
 }

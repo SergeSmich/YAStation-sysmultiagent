@@ -59,6 +59,13 @@ type nativeRequest struct {
 	text                            string
 	route                           string
 	voice                           VoiceSettings
+	voiceQueue                      []string
+	voiceChainReady                 bool
+	voiceFallback                   bool
+	speechText                      string
+	speechReady                     bool
+	speechAttempt                   int
+	speechMu                        sync.Mutex
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
@@ -95,6 +102,7 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	SpeechTimeout    time.Duration
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -392,12 +400,26 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Unlock()
 			return nil
 		}
+		if x := e.GetEventException(); x != nil {
+			// The synthesizer rejected the request, typically because the voice
+			// name is unknown to its backend. Try the next configured voice and
+			// finally the default Alice voice instead of leaving the turn
+			// without audio.
+			reason := x.GetError().GetErrorMessage()
+			n.mu.Unlock()
+			slog.Warn("native_tts_exception", "request", requestTag(p.id), "message", reason)
+			if !n.retrySpeech(p, -1, "native_tts_retry", reason, false) {
+				return n.down(ctx, k, data)
+			}
+			return nil
+		}
 		e.Header.RefMessageId = p.id
 		if ref := e.Header.SubRequestRef; ref != nil {
 			ref.MessageId = p.id
 			ref.RequestId = p.request.GetHeader().GetRequestId()
 		}
 		if e.GetTtsSpeak() != nil {
+			p.speechReady = true
 			n.streams[uint32(e.Header.GetStreamId())] = p
 			if p.streaming {
 				if e.GetTtsSpeak().GetFormat() != "audio/opus" {
@@ -659,9 +681,10 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	return n.synthesize(p, text)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
-	voice, route := n.synthesisVoice(p)
+	voice, route, id := n.synthesisState(p, text)
 	generate := &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}
-	if voice.Voice != "" {
+	voiced := voice.Voice != ""
+	if voiced {
 		generate.Voice = new(voice.Voice)
 		if voice.Emotion != "" {
 			generate.Emotion = new(voice.Emotion)
@@ -671,19 +694,110 @@ func (n *Native) synthesize(p *nativeRequest, text string) error {
 		}
 		slog.Info("native_tts_voice", "request", requestTag(p.id), "route", route, "voice", voice.Voice, "emotion", voice.Emotion, "speed", voice.Speed)
 	}
-	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
+	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
-	return n.up(p.ctx, websocket.MessageBinary, b)
+	if err := n.up(p.ctx, websocket.MessageBinary, b); err != nil {
+		return err
+	}
+	// Arm the watchdog only after the frame is on the wire, so a fast timer can
+	// never retry an attempt whose generation request was not sent.
+	if voiced {
+		n.speechWatchdog(p)
+	}
+	return nil
 }
 
-// synthesisVoice reads the resolved speech settings; both are written under n.mu.
-func (n *Native) synthesisVoice(p *nativeRequest) (VoiceSettings, string) {
+// synthesisState reads the resolved speech settings and remembers the text, so
+// a rejected voice can be retried without it. Fields are written under n.mu.
+func (n *Native) synthesisState(p *nativeRequest, text string) (VoiceSettings, string, string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return p.voice, p.route
+	p.speechText = text
+	return p.voice, p.route, p.ttsID
+}
+
+// speechRetry advances the voice chain after a rejected or silent attempt: the
+// next configured candidate and then the default Alice voice. It returns the
+// settings to synthesize with, and false when no retry is left. All state is
+// guarded by n.mu. A negative attempt skips the generation check.
+func (n *Native) speechRetry(p *nativeRequest, attempt int) (VoiceSettings, bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if attempt >= 0 && p.speechAttempt != attempt {
+		return VoiceSettings{}, false
+	}
+	if p.canceled || p.speechReady || p.voiceFallback || p.voice.Voice == "" {
+		return VoiceSettings{}, false
+	}
+	if !p.voiceChainReady {
+		p.voiceChainReady = true
+		p.voiceQueue = n.Voice.candidatesFor(p.route)
+	}
+	delete(n.tts, p.ttsID)
+	p.ttsID = newID()
+	n.tts[p.ttsID] = p
+	p.speechAttempt++
+	if len(p.voiceQueue) > 0 {
+		name := p.voiceQueue[0]
+		p.voiceQueue = p.voiceQueue[1:]
+		p.voice = VoiceSettings{Voice: name, Emotion: p.voice.Emotion, Speed: p.voice.Speed}
+		return p.voice, true
+	}
+	p.voiceFallback = true
+	p.voice = VoiceSettings{}
+	return p.voice, true
+}
+
+// retrySpeech advances the chain and re-sends the answer. The per-request lock
+// keeps a watchdog from racing an EventException into a second synthesis: an
+// event that finds the lock taken is either stale or already handled. The
+// watchdog waits for the lock instead, so its retry is never dropped.
+func (n *Native) retrySpeech(p *nativeRequest, attempt int, event, reason string, wait bool) bool {
+	if wait {
+		p.speechMu.Lock()
+	} else if !p.speechMu.TryLock() {
+		return true
+	}
+	defer p.speechMu.Unlock()
+	next, retry := n.speechRetry(p, attempt)
+	if !retry {
+		return false
+	}
+	fields := []any{"request", requestTag(p.id), "voice", next.Voice, "default_voice", next.Voice == ""}
+	if reason != "" {
+		fields = append(fields, "reason", reason)
+	}
+	if event == "native_tts_retry" {
+		slog.Info(event, fields...)
+	} else {
+		slog.Warn(event, fields...)
+	}
+	n.mu.Lock()
+	text := p.speechText
+	n.mu.Unlock()
+	if err := n.synthesize(p, text); err != nil {
+		slog.Warn("native_tts_retry_failed", "request", requestTag(p.id))
+	}
+	return true
+}
+
+// speechWatchdog falls back to the next voice when the synthesizer accepts the
+// request but never starts speaking: a silent rejection would otherwise leave
+// the station waiting for audio forever.
+func (n *Native) speechWatchdog(p *nativeRequest) {
+	n.mu.Lock()
+	attempt := p.speechAttempt
+	timeout := n.SpeechTimeout
+	n.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 4 * time.Second
+	}
+	time.AfterFunc(timeout, func() {
+		n.retrySpeech(p, attempt, "native_tts_timeout", "", true)
+	})
 }
 func requestTag(id string) string {
 	sum := sha256.Sum256([]byte(id))

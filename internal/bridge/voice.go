@@ -9,10 +9,11 @@ import (
 // generates itself. Local patch (not upstream): the stock Alice voice is used
 // when the section is empty, so an empty configuration keeps prior behaviour.
 type VoiceConfig struct {
-	Voice   string            `json:"voice"`
-	Emotion string            `json:"emotion"`
-	Speed   float64           `json:"speed"`
-	Routes  map[string]string `json:"routes"`
+	Voice      string            `json:"voice"`
+	Emotion    string            `json:"emotion"`
+	Speed      float64           `json:"speed"`
+	Routes     map[string]string `json:"routes"`
+	Candidates []string          `json:"candidates"`
 }
 
 // VoiceSettings is the resolved request shape for one answer.
@@ -48,12 +49,31 @@ func (c VoiceConfig) Enabled() bool {
 	if strings.TrimSpace(c.Voice) != "" {
 		return true
 	}
+	if len(c.candidatesFor("")) > 0 {
+		return true
+	}
 	for _, name := range c.Routes {
 		if strings.TrimSpace(name) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// candidatesFor returns the extra voices to try, in order, when the resolved
+// voice of a route is rejected by the synthesizer. The resolved voice itself is
+// skipped, so a rejected primary never repeats.
+func (c VoiceConfig) candidatesFor(route string) []string {
+	primary := c.Resolve(route).Voice
+	var names []string
+	for _, name := range c.Candidates {
+		name = strings.TrimSpace(name)
+		if name == "" || name == primary {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // Validate rejects settings the synthesis backend cannot accept.
@@ -66,6 +86,14 @@ func (c VoiceConfig) Validate() error {
 	}
 	if c.Speed < 0 || (c.Speed > 0 && (c.Speed < 0.1 || c.Speed > 3)) {
 		return errors.New("local_voice.speed must be between 0.1 and 3")
+	}
+	for _, name := range c.Candidates {
+		if err := validateVoiceName(name); err != nil {
+			return err
+		}
+		if strings.TrimSpace(name) == "" {
+			return errors.New("local_voice.candidates must name voices")
+		}
 	}
 	for route, name := range c.Routes {
 		route = strings.TrimSpace(route)
