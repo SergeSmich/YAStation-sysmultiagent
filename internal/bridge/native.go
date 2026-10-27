@@ -83,30 +83,36 @@ type nativeRequest struct {
 	soundDirective                  *soundDirective
 	soundSealed                     bool
 	expires                         *time.Timer
+	cloudWatchdogGen                int64
+	cloudFirstFrameSeen             bool
+	cloudWatchdogFired              bool
+	cloudFallbackSent               bool
 }
 type Native struct {
-	connectionScope  string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	up, down         Sender
-	resolver         Resolver
-	mu               sync.Mutex
-	requests         map[string]*nativeRequest
-	tts              map[string]*nativeRequest
-	streams          map[uint32]*nativeRequest
-	blocked          map[uint32]*nativeRequest
-	probes           map[string]*probeEntry
-	probeStreams     map[uint32]struct{}
-	probeBusy        atomic.Bool
-	wg               sync.WaitGroup
-	OnRoute          func(id, route string)
-	GateText         bool
-	ShouldListen     bool
-	Voice            VoiceConfig
-	DecisionDelay    time.Duration
-	ProgressAfter    time.Duration
-	ProgressInterval time.Duration
-	SpeechTimeout    time.Duration
+	connectionScope   string
+	ctx               context.Context
+	cancel            context.CancelFunc
+	up, down          Sender
+	resolver          Resolver
+	mu                sync.Mutex
+	requests          map[string]*nativeRequest
+	tts               map[string]*nativeRequest
+	streams           map[uint32]*nativeRequest
+	blocked           map[uint32]*nativeRequest
+	probes            map[string]*probeEntry
+	probeStreams      map[uint32]struct{}
+	probeBusy         atomic.Bool
+	wg                sync.WaitGroup
+	OnRoute           func(id, route string)
+	GateText          bool
+	ShouldListen      bool
+	Voice             VoiceConfig
+	DecisionDelay     time.Duration
+	ProgressAfter     time.Duration
+	ProgressInterval  time.Duration
+	SpeechTimeout     time.Duration
+	FirstFrameTimeout time.Duration
+	OnCloudStall      func()
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -120,6 +126,7 @@ func (n *Native) Close() {
 		p.canceled = true
 		p.cancel()
 		p.expires.Stop()
+		p.cloudWatchdogGen++
 	}
 	for id, probe := range n.probes {
 		if probe.cleanup != nil {
@@ -214,6 +221,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			defer n.mu.Unlock()
 			p.canceled = true
 			p.cancel()
+			p.cloudWatchdogGen++
 			delete(n.requests, p.id)
 			delete(n.tts, p.ttsID)
 			delete(n.tts, p.progressTTS)
@@ -266,12 +274,18 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		n.mu.Lock()
 		p := n.requests[c.GetRequestMessageId()]
 		ttsID := ""
+		cloudCancelHandled := false
 		if p != nil {
 			p.canceled = true
 			p.cancel()
+			p.cloudWatchdogGen++
 			ttsID = p.ttsID
+			cloudCancelHandled = p.cloudWatchdogFired
 		}
 		n.mu.Unlock()
+		if cloudCancelHandled {
+			return nil
+		}
 		if ttsID != "" {
 			_ = n.sendCancel(ctx, ttsID)
 		}
@@ -352,6 +366,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			_, probeStream := n.probeStreams[streamID]
 			p := n.streams[streamID]
 			drop := probeStream || n.blocked[streamID] != nil || (p != nil && p.canceled)
+			if p != nil && !drop {
+				n.cloudFrameReceivedLocked(p)
+			}
 			if p != nil && p.streaming && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
@@ -395,10 +412,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		if p == nil {
 			p = n.streams[uint32(sc.GetStreamId())]
 		}
+		original := n.requests[sc.GetMessageId()]
+		if p != nil {
+			n.cloudFrameReceivedLocked(p)
+		} else if original != nil {
+			n.cloudFrameReceivedLocked(original)
+		}
 		if sc.GetClose() != nil {
 			delete(n.streams, uint32(sc.GetStreamId()))
 		}
-		original := n.requests[sc.GetMessageId()]
 		if p != nil {
 			if p.canceled {
 				n.mu.Unlock()
@@ -464,6 +486,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		delete(n.blocked, uint32(e.GetHeader().GetStreamId()))
 	}
 	p, isTTS := n.findLocked(e.GetHeader())
+	if p != nil {
+		n.cloudFrameReceivedLocked(p)
+	}
 	if r := e.GetAliceResponse(); r != nil {
 		var ds []string
 		for _, d := range r.GetResponse().GetDirectives() {
@@ -683,6 +708,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if result.Route == "yandex" {
 			p.cloud = true
 			var err error
+			submitted := false
 			if p.gated {
 				control := p.continuation
 				if control == nil {
@@ -690,14 +716,19 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 				if err == nil {
 					err = n.up(p.ctx, websocket.MessageBinary, control)
+					submitted = err == nil
 				}
 			} else {
 				err = n.up(p.ctx, websocket.MessageBinary, p.input)
+				submitted = err == nil
 				if err == nil && p.continuation != nil {
 					err = n.up(p.ctx, websocket.MessageBinary, p.continuation)
 				}
 			}
 			n.mu.Unlock()
+			if submitted && n.FirstFrameTimeout > 0 {
+				n.armCloudWatchdog(p)
+			}
 			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
 			return
 		}
@@ -718,6 +749,94 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 	})
 }
+
+func (n *Native) armCloudWatchdog(p *nativeRequest) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.FirstFrameTimeout <= 0 || p.canceled || p.local || !p.cloud || p.cloudFirstFrameSeen || p.cloudWatchdogFired || n.requests[p.id] != p {
+		return
+	}
+	p.cloudWatchdogGen++
+	gen := p.cloudWatchdogGen
+	slog.Info("native_cloud_watchdog_started", "request", requestTag(p.id), "timeout_ms", n.FirstFrameTimeout.Milliseconds())
+	time.AfterFunc(n.FirstFrameTimeout, func() { n.cloudWatchdogFiredCallback(p, gen) })
+}
+
+// cloudFrameReceivedLocked invalidates a request's timer on its first correlated upstream frame.
+func (n *Native) cloudFrameReceivedLocked(p *nativeRequest) {
+	if n.FirstFrameTimeout <= 0 || p == nil || !p.cloud || p.cloudFirstFrameSeen || p.cloudWatchdogFired {
+		return
+	}
+	p.cloudWatchdogGen++
+	p.cloudFirstFrameSeen = true
+	slog.Info("native_cloud_watchdog_first_frame", "request", requestTag(p.id))
+}
+
+func (n *Native) cloudWatchdogFiredCallback(p *nativeRequest, gen int64) {
+	n.mu.Lock()
+	if p.canceled || p.local || !p.cloud || p.cloudFirstFrameSeen || p.cloudWatchdogFired || p.cloudFallbackSent || p.cloudWatchdogGen != gen || n.requests[p.id] != p {
+		n.mu.Unlock()
+		return
+	}
+	p.cloudWatchdogFired = true
+	p.local = true
+	n.mu.Unlock()
+
+	if n.OnCloudStall != nil {
+		n.OnCloudStall()
+	}
+	slog.Warn("native_cloud_watchdog_fired", "request", requestTag(p.id), "timeout_ms", n.FirstFrameTimeout.Milliseconds())
+
+	cancelCtx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
+	_ = n.sendCancel(cancelCtx, p.id)
+	cancel()
+
+	if err := n.sendCloudFallback(p); err != nil {
+		slog.Warn("native_cloud_fallback_failed", "request", requestTag(p.id), "error", err)
+		return
+	}
+	n.mu.Lock()
+	p.cloudFallbackSent = true
+	n.mu.Unlock()
+	slog.Info("native_cloud_fallback_sent", "request", requestTag(p.id))
+}
+
+func (n *Native) sendCloudFallback(p *nativeRequest) error {
+	const text = "Сейчас не получилось получить ответ."
+	_ = n.queueSound(p.ctx, p, sound.Request{Sound: "error"})
+
+	requestID := p.request.GetHeader().GetRequestId()
+	if requestID == "" {
+		requestID = p.id
+	}
+	answer := &response.TAliceResponseProto{
+		Header: &response.TAliceResponseProto_THeader{
+			RequestId:      new(requestID),
+			ResponseId:     new(newID()),
+			DialogId:       new(p.request.GetHeader().GetDialogId()),
+			SequenceNumber: new(p.request.GetHeader().GetSequenceNumber()),
+		},
+		VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{
+			HasVoiceResponse: false,
+			ShouldListen:     false,
+			OutputSpeech:     &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("")},
+		},
+		Response: &response.TAliceResponseProto_TResponse{
+			Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}},
+		},
+	}
+	answer.Response.Directives = n.takeSound(p)
+	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+		Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id},
+		Event:  &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer},
+	}}}
+	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(p.ctx, websocket.MessageBinary, b)
+}
+
 func (n *Native) sendCancel(ctx context.Context, id string) error {
 	m := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_CancelRequest{CancelRequest: &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_LocalExecution{LocalExecution: &cancellation.TCancelRequest_TReasonLocalExecution{}}}}}}}
 	b, err := (wire.Frame{Client: m, Prefix: []byte("AAPI")}).Marshal()

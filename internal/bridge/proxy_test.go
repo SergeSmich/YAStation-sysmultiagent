@@ -68,3 +68,80 @@ func TestProxyRejectsUnavailableUpstreamBeforeUpgrade(t *testing.T) {
 		t.Fatalf("status=%d, want 502", w.Code)
 	}
 }
+
+func TestProxyUpstreamPingFailureClosesConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	p := &Proxy{
+		Upstream:             "ws" + strings.TrimPrefix(upstream.URL, "http"),
+		UpstreamPingInterval: 100 * time.Millisecond,
+		UpstreamPingTimeout:  50 * time.Millisecond,
+	}
+	server := httptest.NewServer(p)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if _, _, err := conn.Read(ctx); err == nil {
+		t.Fatal("client connection remained open after upstream ping failure")
+	}
+	if got := p.UpstreamPingFailuresTotal(); got < 1 {
+		t.Fatalf("ping failures=%d", got)
+	}
+}
+
+func TestProxyUpstreamPingSuccessKeepsConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			kind, data, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			if err := conn.Write(r.Context(), kind, data); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+	p := &Proxy{
+		Upstream:             "ws" + strings.TrimPrefix(upstream.URL, "http"),
+		UpstreamPingInterval: 100 * time.Millisecond,
+		UpstreamPingTimeout:  300 * time.Millisecond,
+	}
+	server := httptest.NewServer(p)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	time.Sleep(350 * time.Millisecond)
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("still-open")); err != nil {
+		t.Fatalf("downstream connection closed: %v", err)
+	}
+	_, data, err := conn.Read(ctx)
+	if err != nil || string(data) != "still-open" {
+		t.Fatalf("connection did not echo after ping: data=%q err=%v", data, err)
+	}
+	if got := p.UpstreamPingFailuresTotal(); got != 0 {
+		t.Fatalf("ping failures=%d", got)
+	}
+}

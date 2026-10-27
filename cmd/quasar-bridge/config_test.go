@@ -227,6 +227,39 @@ func TestLocalProgressConfiguration(t *testing.T) {
 	}
 }
 
+func TestUpstreamWatchdogConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		body       string
+		firstFrame int
+		interval   int
+		timeout    int
+	}{
+		{`{"mode":"observe"}`, 0, 0, 0},
+		{`{"mode":"observe","first_frame_ms":8000,"upstream_ping":{}}`, 8000, 0, 0},
+		{`{"mode":"observe","first_frame_ms":5000,"upstream_ping":{"interval_ms":30000,"timeout_ms":10000}}`, 5000, 30000, 10000},
+	} {
+		cfg, err := readConfig(configFile(t, tc.body))
+		if err != nil {
+			t.Fatalf("configuration rejected: %v", err)
+		}
+		if cfg.FirstFrameMS != tc.firstFrame || cfg.UpstreamPing.IntervalMS != tc.interval || cfg.UpstreamPing.TimeoutMS != tc.timeout {
+			t.Fatalf("unexpected upstream watchdog settings: %+v", cfg)
+		}
+	}
+	for _, body := range []string{
+		`{"mode":"observe","first_frame_ms":-1}`,
+		`{"mode":"observe","first_frame_ms":60001}`,
+		`{"mode":"observe","upstream_ping":{"interval_ms":999,"timeout_ms":100}}`,
+		`{"mode":"observe","upstream_ping":{"interval_ms":1000,"timeout_ms":99}}`,
+		`{"mode":"observe","upstream_ping":{"interval_ms":1000,"timeout_ms":1000}}`,
+		`{"mode":"observe","upstream_ping":{"timeout_ms":100}}`,
+	} {
+		if _, err := readConfig(configFile(t, body)); err == nil {
+			t.Fatalf("invalid watchdog configuration accepted: %s", body)
+		}
+	}
+}
+
 func TestDialogueContextDefaultsAndValidation(t *testing.T) {
 	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
 	if err != nil {

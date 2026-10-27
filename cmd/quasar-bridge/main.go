@@ -114,10 +114,12 @@ func main() {
 	var clientCount, serverCount atomic.Int64
 	var liveNativeMu sync.RWMutex
 	var liveNative *bridge.Native
-	proxy := &bridge.Proxy{Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
+	var proxy *bridge.Proxy
+	proxy = &bridge.Proxy{Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
 		d := wire.ClientToServer
 		var count int64
 		if direction == "server" {
+			proxy.RecordUpstreamFrame()
 			d = wire.ServerToClient
 			count = serverCount.Add(1)
 		} else {
@@ -158,6 +160,8 @@ func main() {
 			slog.Info("frame", attrs...)
 		}
 	}}
+	proxy.UpstreamPingInterval = time.Duration(cfg.UpstreamPing.IntervalMS) * time.Millisecond
+	proxy.UpstreamPingTimeout = time.Duration(cfg.UpstreamPing.TimeoutMS) * time.Millisecond
 	logs := new(journal.Writer)
 	lc := &llm.Client{
 		BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY"),
@@ -271,6 +275,8 @@ func main() {
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
 			n.Voice = cfg.LocalVoice
+			n.FirstFrameTimeout = time.Duration(cfg.FirstFrameMS) * time.Millisecond
+			n.OnCloudStall = proxy.RecordUpstreamStall
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
@@ -300,12 +306,7 @@ func main() {
 			}
 		}
 	}
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil})
-		_, _ = w.Write(data)
-	})
+	mux.HandleFunc("GET /healthz", healthzHandler(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, &clientCount, &serverCount))
 	mux.HandleFunc("POST /voice-probe", func(w http.ResponseWriter, r *http.Request) {
 		if !requestIsLoopback(r) {
 			writeProbeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
@@ -408,6 +409,15 @@ func main() {
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("listener failed")
 		os.Exit(1)
+	}
+}
+
+func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		state := engine.RoutingStatus()
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS()})
+		_, _ = w.Write(data)
 	}
 }
 

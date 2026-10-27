@@ -2,11 +2,13 @@ package bridge
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"quasarbridge/internal/journal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -17,7 +19,28 @@ type Proxy struct {
 	Upstream   string
 	Observer   func(direction string, kind websocket.MessageType, data []byte)
 	NewSession func(context.Context, Sender, Sender) Session
+
+	UpstreamPingInterval time.Duration
+	UpstreamPingTimeout  time.Duration
+
+	upstreamStallsTotal       atomic.Int64
+	upstreamPingFailuresTotal atomic.Int64
+	upstreamLastFrameMS       atomic.Int64
 }
+
+func (p *Proxy) RecordUpstreamStall() { p.upstreamStallsTotal.Add(1) }
+
+func (p *Proxy) RecordUpstreamFrame() {
+	p.upstreamLastFrameMS.Store(time.Now().UnixMilli())
+}
+
+func (p *Proxy) UpstreamStallsTotal() int64 { return p.upstreamStallsTotal.Load() }
+
+func (p *Proxy) UpstreamPingFailuresTotal() int64 {
+	return p.upstreamPingFailuresTotal.Load()
+}
+
+func (p *Proxy) UpstreamLastFrameMS() int64 { return p.upstreamLastFrameMS.Load() }
 
 type Sender func(context.Context, websocket.MessageType, []byte) error
 type Session interface {
@@ -134,5 +157,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Go(func() { copyMessages(up, down, "client") })
 	wg.Go(func() { copyMessages(down, up, "server") })
+	if p.UpstreamPingInterval > 0 && p.UpstreamPingTimeout > 0 {
+		wg.Go(func() { p.pingLoop(ctx, up, cancel) })
+	}
 	wg.Wait()
+}
+
+func (p *Proxy) pingLoop(ctx context.Context, up *websocket.Conn, cancel context.CancelFunc) {
+	ticker := time.NewTicker(p.UpstreamPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, done := context.WithTimeout(ctx, p.UpstreamPingTimeout)
+			err := up.Ping(pingCtx)
+			done()
+			if err != nil {
+				p.upstreamPingFailuresTotal.Add(1)
+				slog.Warn("upstream_ping_failed", "error", err)
+				cancel()
+				return
+			}
+		}
+	}
 }

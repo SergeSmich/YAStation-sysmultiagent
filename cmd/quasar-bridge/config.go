@@ -23,6 +23,11 @@ type progressConfig struct {
 	IntervalMS int  `json:"interval_ms"`
 }
 
+type upstreamPingConfig struct {
+	IntervalMS int `json:"interval_ms"`
+	TimeoutMS  int `json:"timeout_ms"`
+}
+
 type config struct {
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
@@ -45,6 +50,8 @@ type config struct {
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 	LocalVoice         bridge.VoiceConfig   `json:"local_voice"`
+	FirstFrameMS       int                  `json:"first_frame_ms"`
+	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
 }
 
 func readConfig(path string) (config, error) {
@@ -184,6 +191,17 @@ func readConfig(path string) (config, error) {
 	}
 	if err := cfg.LocalVoice.Validate(); err != nil {
 		return cfg, err
+	}
+	if cfg.FirstFrameMS < 0 || cfg.FirstFrameMS > 60000 {
+		return cfg, errors.New("first_frame_ms must be 0..60000")
+	}
+	if cfg.UpstreamPing.IntervalMS != 0 || cfg.UpstreamPing.TimeoutMS != 0 {
+		if cfg.UpstreamPing.IntervalMS < 1000 || cfg.UpstreamPing.IntervalMS > 60000 {
+			return cfg, errors.New("upstream_ping.interval_ms must be 1000..60000")
+		}
+		if cfg.UpstreamPing.TimeoutMS < 100 || cfg.UpstreamPing.TimeoutMS >= cfg.UpstreamPing.IntervalMS {
+			return cfg, errors.New("upstream_ping.timeout_ms must be 100..interval_ms")
+		}
 	}
 	return cfg, nil
 }
