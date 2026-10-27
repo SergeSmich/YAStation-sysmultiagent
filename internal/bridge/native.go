@@ -58,6 +58,7 @@ type nativeRequest struct {
 	request                         *request.TAliceRequestProto
 	text                            string
 	route                           string
+	voice                           VoiceSettings
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
@@ -90,6 +91,7 @@ type Native struct {
 	OnRoute          func(id, route string)
 	GateText         bool
 	ShouldListen     bool
+	Voice            VoiceConfig
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
@@ -445,6 +447,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 
 		if resolver, ok := n.resolver.(FallbackResolver); ok && n.isRefusal(text) {
 			p.local = true
+			p.voice = n.Voice.Resolve("llm")
 			if n.OnRoute != nil {
 				n.OnRoute(p.id, "llm")
 			}
@@ -573,6 +576,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.OnRoute(p.id, result.Route)
 		}
 		p.route = result.Route
+		p.voice = n.Voice.Resolve(result.Route)
 		if result.Route == "yandex" {
 			p.cloud = true
 			var err error
@@ -655,12 +659,31 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	return n.synthesize(p, text)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
-	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
+	voice, route := n.synthesisVoice(p)
+	generate := &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}
+	if voice.Voice != "" {
+		generate.Voice = new(voice.Voice)
+		if voice.Emotion != "" {
+			generate.Emotion = new(voice.Emotion)
+		}
+		if voice.Speed > 0 {
+			generate.Speed = new(voice.Speed)
+		}
+		slog.Info("native_tts_voice", "request", requestTag(p.id), "route", route, "voice", voice.Voice, "emotion", voice.Emotion, "speed", voice.Speed)
+	}
+	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
 	return n.up(p.ctx, websocket.MessageBinary, b)
+}
+
+// synthesisVoice reads the resolved speech settings; both are written under n.mu.
+func (n *Native) synthesisVoice(p *nativeRequest) (VoiceSettings, string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return p.voice, p.route
 }
 func requestTag(id string) string {
 	sum := sha256.Sum256([]byte(id))

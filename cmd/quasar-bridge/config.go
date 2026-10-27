@@ -44,6 +44,7 @@ type config struct {
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
+	LocalVoice         bridge.VoiceConfig   `json:"local_voice"`
 }
 
 func readConfig(path string) (config, error) {
@@ -101,6 +102,11 @@ func readConfig(path string) (config, error) {
 		if err := llm.ValidateChatParameters(cfg.LLMChatParameters); err != nil {
 			return cfg, err
 		}
+	}
+	// encoding/json/v2 round-trips an absent map as an empty one; normalize it
+	// so a configuration reload sees identical values.
+	if len(cfg.LocalVoice.Routes) == 0 {
+		cfg.LocalVoice.Routes = nil
 	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
@@ -171,6 +177,9 @@ func readConfig(path string) (config, error) {
 		return cfg, err
 	}
 	if _, err := bridge.CompileRouting(cfg.Routing); err != nil {
+		return cfg, err
+	}
+	if err := cfg.LocalVoice.Validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
