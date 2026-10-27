@@ -144,7 +144,10 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	// Local patch (not upstream): the spoken label lets the user tell this answer
+	// apart from the stock Alice voice, and the leading phrase is treated as an
+	// address to this model instead of a missing tool call.
+	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Начинай каждый ответ словом «Нейросеть:» — так пользователь отличает тебя от штатной Алисы. Обороты «спроси нейросеть», «спроси свою модель», «спроси у нейросети» — это обращение к тебе самому: не ищи для них инструмент, пропусти вводную и отвечай на суть; если после вводной вопроса нет, коротко попроси его задать. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	private := snapshot.PrivateHistory
