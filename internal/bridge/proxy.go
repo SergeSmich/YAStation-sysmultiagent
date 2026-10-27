@@ -89,6 +89,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		session = p.NewSession(ctx, up.Write, downSend)
 		if n, ok := session.(*Native); ok && trace != nil {
 			n.OnRoute = trace.route
+		} else if native, ok := session.(interface{ NativeSession() *Native }); ok && trace != nil {
+			native.NativeSession().OnRoute = trace.route
 		}
 		defer session.Close()
 	}

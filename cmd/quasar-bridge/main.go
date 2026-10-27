@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,6 +29,23 @@ import (
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/wire"
 )
+
+type probeSession struct {
+	*bridge.Native
+	onClose   func(*bridge.Native)
+	closeOnce sync.Once
+}
+
+func (s *probeSession) NativeSession() *bridge.Native { return s.Native }
+
+func (s *probeSession) Close() {
+	s.closeOnce.Do(func() {
+		s.Native.Close()
+		if s.onClose != nil {
+			s.onClose(s.Native)
+		}
+	})
+}
 
 func main() {
 	path := flag.String("config", "config.json", "configuration file")
@@ -93,6 +112,8 @@ func main() {
 		return
 	}
 	var clientCount, serverCount atomic.Int64
+	var liveNativeMu sync.RWMutex
+	var liveNative *bridge.Native
 	proxy := &bridge.Proxy{Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
 		d := wire.ClientToServer
 		var count int64
@@ -255,7 +276,16 @@ func main() {
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
 			}
 
-			return n
+			liveNativeMu.Lock()
+			liveNative = n
+			liveNativeMu.Unlock()
+			return &probeSession{Native: n, onClose: func(closed *bridge.Native) {
+				liveNativeMu.Lock()
+				if liveNative == closed {
+					liveNative = nil
+				}
+				liveNativeMu.Unlock()
+			}}
 		}
 	}
 	mux := http.NewServeMux()
@@ -275,6 +305,54 @@ func main() {
 		state := engine.RoutingStatus()
 		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil})
 		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("POST /voice-probe", func(w http.ResponseWriter, r *http.Request) {
+		if !requestIsLoopback(r) {
+			writeProbeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return
+		}
+		var body struct {
+			Cases     []bridge.VoiceProbeCase `json:"cases"`
+			Names     []string                `json:"names"`
+			PerCaseMS int64                   `json:"per_case_ms"`
+		}
+		decoder := stdjson.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err := decoder.Decode(&body); err != nil {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if len(body.Cases) > 0 && len(body.Names) > 0 {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": "use cases or names, not both"})
+			return
+		}
+		cases := body.Cases
+		if len(body.Names) > 0 {
+			cases = make([]bridge.VoiceProbeCase, 0, len(body.Names))
+			for _, name := range body.Names {
+				cases = append(cases, bridge.VoiceProbeCase{Voice: name})
+			}
+		}
+		if len(cases) == 0 || len(cases) > 30 {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": "cases must contain 1 to 30 entries"})
+			return
+		}
+		liveNativeMu.RLock()
+		native := liveNative
+		liveNativeMu.RUnlock()
+		if native == nil {
+			writeProbeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no upstream session"})
+			return
+		}
+		perCaseMS := body.PerCaseMS
+		if perCaseMS > 5000 {
+			perCaseMS = 5000
+		}
+		results, err := native.Probe(r.Context(), cases, time.Duration(perCaseMS)*time.Millisecond)
+		if err != nil {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeProbeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 	})
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -331,4 +409,19 @@ func main() {
 		slog.Error("listener failed")
 		os.Exit(1)
 	}
+}
+
+func requestIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func writeProbeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = stdjson.NewEncoder(w).Encode(value)
 }

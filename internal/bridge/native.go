@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -94,6 +95,9 @@ type Native struct {
 	tts              map[string]*nativeRequest
 	streams          map[uint32]*nativeRequest
 	blocked          map[uint32]*nativeRequest
+	probes           map[string]*probeEntry
+	probeStreams     map[uint32]struct{}
+	probeBusy        atomic.Bool
 	wg               sync.WaitGroup
 	OnRoute          func(id, route string)
 	GateText         bool
@@ -107,7 +111,7 @@ type Native struct {
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -117,6 +121,17 @@ func (n *Native) Close() {
 		p.cancel()
 		p.expires.Stop()
 	}
+	for id, probe := range n.probes {
+		if probe.cleanup != nil {
+			probe.cleanup.Stop()
+		}
+		select {
+		case probe.done <- VoiceProbeResult{VoiceProbeCase: probe.value, Error: "closed", ElapsedMS: time.Since(probe.started).Milliseconds()}:
+		default:
+		}
+		delete(n.probes, id)
+	}
+	clear(n.probeStreams)
 	n.mu.Unlock()
 	n.wg.Wait()
 }
@@ -284,13 +299,59 @@ func (n *Native) findLocked(h *header.TEventHeader) (*nativeRequest, bool) {
 	}
 	return nil, false
 }
+
+func (n *Native) handleProbeResponseLocked(kind string, e *server.TServerMessage_TEvent) bool {
+	if e == nil || e.GetHeader() == nil {
+		return false
+	}
+	h := e.GetHeader()
+	var entry *probeEntry
+	for _, id := range []string{h.GetRefMessageId(), h.GetSubRequestRef().GetMessageId()} {
+		if id != "" {
+			entry = n.probes[id]
+			if entry != nil {
+				break
+			}
+		}
+	}
+	if entry == nil {
+		return false
+	}
+	result := VoiceProbeResult{VoiceProbeCase: entry.value, ElapsedMS: time.Since(entry.started).Milliseconds()}
+	if kind == "TtsSpeak" {
+		result.OK = true
+		if streamID := uint32(h.GetStreamId()); streamID != 0 {
+			n.probeStreams[streamID] = struct{}{}
+			if entry.streams == nil {
+				entry.streams = make(map[uint32]struct{})
+			}
+			entry.streams[streamID] = struct{}{}
+			// Keep the stream id until its audio ends, but never forever: a probe
+			// that is accepted and then goes quiet must not pin the id.
+			n.scheduleProbeCleanupLocked(entry, time.Minute)
+		}
+	} else if exception := e.GetEventException(); exception != nil {
+		result.Error = exception.GetError().GetErrorMessage()
+	}
+	if !entry.completed {
+		entry.completed = true
+		select {
+		case entry.done <- result:
+		default:
+		}
+	}
+	return true
+}
+
 func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byte) error {
 	f := wire.Decode(data, wire.ServerToClient)
 	if f.Server == nil {
 		if len(data) >= 4 {
 			n.mu.Lock()
-			p := n.streams[binary.BigEndian.Uint32(data)]
-			drop := n.blocked[binary.BigEndian.Uint32(data)] != nil || (p != nil && p.canceled)
+			streamID := binary.BigEndian.Uint32(data)
+			_, probeStream := n.probeStreams[streamID]
+			p := n.streams[streamID]
+			drop := probeStream || n.blocked[streamID] != nil || (p != nil && p.canceled)
 			if p != nil && p.streaming && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
@@ -311,6 +372,20 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	}
 	if sc := f.Server.GetStreamControl(); sc != nil {
 		n.mu.Lock()
+		streamID := uint32(sc.GetStreamId())
+		if _, probeStream := n.probeStreams[streamID]; probeStream {
+			if sc.GetClose() != nil {
+				delete(n.probeStreams, streamID)
+				for _, entry := range n.probes {
+					delete(entry.streams, streamID)
+					if entry.completed && len(entry.streams) == 0 {
+						n.scheduleProbeCleanupLocked(entry, entry.grace)
+					}
+				}
+			}
+			n.mu.Unlock()
+			return nil
+		}
 		if n.blocked[uint32(sc.GetStreamId())] != nil {
 			delete(n.blocked, uint32(sc.GetStreamId()))
 			n.mu.Unlock()
@@ -378,6 +453,12 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	}
 
 	n.mu.Lock()
+	if (f.Kind() == "TtsSpeak" || f.Kind() == "EventException") && len(n.probes) > 0 {
+		if n.handleProbeResponseLocked(f.Kind(), e) {
+			n.mu.Unlock()
+			return nil
+		}
+	}
 	if f.Kind() == "TtsSpeak" {
 		delete(n.streams, uint32(e.GetHeader().GetStreamId()))
 		delete(n.blocked, uint32(e.GetHeader().GetStreamId()))
