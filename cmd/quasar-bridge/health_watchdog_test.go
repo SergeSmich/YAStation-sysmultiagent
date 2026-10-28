@@ -14,7 +14,9 @@ func TestHealthzReportsUpstreamCounters(t *testing.T) {
 	proxy := new(bridge.Proxy)
 	proxy.RecordUpstreamStall()
 	proxy.RecordUpstreamFrame()
-	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, proxy, new(atomic.Int64), new(atomic.Int64))
+	voice := new(voiceState)
+	voice.Store(bridge.VoiceConfig{Voice: "omazh", Volume: 1.2})
+	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, proxy, voice, new(atomic.Int64), new(atomic.Int64))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/healthz", nil))
 	if response.Code != 200 {
@@ -26,5 +28,9 @@ func TestHealthzReportsUpstreamCounters(t *testing.T) {
 	}
 	if payload["upstream_stalls_total"] != float64(1) || payload["upstream_ping_failures_total"] != float64(0) || payload["upstream_last_frame_ms"].(float64) <= 0 {
 		t.Fatalf("upstream health fields: %v", payload)
+	}
+	voicePayload, ok := payload["local_voice"].(map[string]any)
+	if !ok || voicePayload["voice"] != "omazh" || voicePayload["volume"] != 1.2 || payload["local_voice_revision"] != float64(1) {
+		t.Fatalf("local voice fields: %v", payload)
 	}
 }

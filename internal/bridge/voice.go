@@ -9,11 +9,12 @@ import (
 // generates itself. Local patch (not upstream): the stock Alice voice is used
 // when the section is empty, so an empty configuration keeps prior behaviour.
 type VoiceConfig struct {
-	Voice      string            `json:"voice"`
-	Emotion    string            `json:"emotion"`
-	Speed      float64           `json:"speed"`
-	Routes     map[string]string `json:"routes"`
-	Candidates []string          `json:"candidates"`
+	Voice      string            `json:"voice,omitempty"`
+	Emotion    string            `json:"emotion,omitempty"`
+	Speed      float64           `json:"speed,omitempty"`
+	Volume     float64           `json:"volume,omitempty"`
+	Routes     map[string]string `json:"routes,omitempty"`
+	Candidates []string          `json:"candidates,omitempty"`
 }
 
 // VoiceSettings is the resolved request shape for one answer.
@@ -21,6 +22,7 @@ type VoiceSettings struct {
 	Voice   string
 	Emotion string
 	Speed   float64
+	Volume  float64
 }
 
 // Resolve returns the voice for a locally spoken answer of the given route.
@@ -39,6 +41,9 @@ func (c VoiceConfig) Resolve(route string) VoiceSettings {
 	settings := VoiceSettings{Voice: voice, Emotion: strings.TrimSpace(c.Emotion)}
 	if c.Speed > 0 {
 		settings.Speed = c.Speed
+	}
+	if c.Volume > 0 {
+		settings.Volume = c.Volume
 	}
 	return settings
 }
@@ -86,6 +91,9 @@ func (c VoiceConfig) Validate() error {
 	}
 	if c.Speed < 0 || (c.Speed > 0 && (c.Speed < 0.1 || c.Speed > 3)) {
 		return errors.New("local_voice.speed must be between 0.1 and 3")
+	}
+	if c.Volume < 0 || (c.Volume > 0 && (c.Volume < 0.1 || c.Volume > 3)) {
+		return errors.New("local_voice.volume must be between 0.1 and 3")
 	}
 	for _, name := range c.Candidates {
 		if err := validateVoiceName(name); err != nil {

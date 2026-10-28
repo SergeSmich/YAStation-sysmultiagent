@@ -18,6 +18,10 @@ func reloadRouting(path string, initial config, engine *bridge.Engine, logs ...*
 	a, b := initial, next
 	a.Routing = bridge.RoutingConfig{}
 	b.Routing = bridge.RoutingConfig{}
+	// The local voice is hot-applied by the caller, so a voice tuning must not
+	// force a restart through this comparison.
+	a.LocalVoice = bridge.VoiceConfig{}
+	b.LocalVoice = bridge.VoiceConfig{}
 	if len(logs) > 0 {
 		a.ConversationLog = journal.Config{}
 		b.ConversationLog = journal.Config{}

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,14 +67,14 @@ func TestNativeSynthesizesLocalAnswerWithVoice(t *testing.T) {
 		config VoiceConfig
 		want   VoiceSettings
 	}{
-		{name: "configured", config: VoiceConfig{Voice: "filipp", Emotion: "neutral", Speed: 1.1}, want: VoiceSettings{Voice: "filipp", Emotion: "neutral", Speed: 1.1}},
+		{name: "configured", config: VoiceConfig{Voice: "filipp", Emotion: "neutral", Speed: 1.1, Volume: 1.3}, want: VoiceSettings{Voice: "filipp", Emotion: "neutral", Speed: 1.1, Volume: 1.3}},
 		{name: "empty", config: VoiceConfig{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
 				return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
 			}))
-			n.Voice = tc.config
+			n.SetVoice(tc.config)
 			if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
 				t.Fatal(err)
 			}
@@ -92,6 +93,9 @@ func TestNativeSynthesizesLocalAnswerWithVoice(t *testing.T) {
 				if generate.GetSpeed() != tc.want.Speed {
 					t.Fatalf("speed = %v, want %v", generate.GetSpeed(), tc.want.Speed)
 				}
+				if generate.GetVolume() != tc.want.Volume {
+					t.Fatalf("volume = %v, want %v", generate.GetVolume(), tc.want.Volume)
+				}
 				if generate.GetText() != "Ответ своей модели" {
 					t.Fatalf("text = %q", generate.GetText())
 				}
@@ -105,7 +109,7 @@ func TestNativeRetriesRejectedVoiceWithDefault(t *testing.T) {
 	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
 		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
 	}))
-	n.Voice = VoiceConfig{Voice: "filipp"}
+	n.SetVoice(VoiceConfig{Voice: "filipp"})
 	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +155,7 @@ func TestNativeVoiceChainTriesCandidatesInOrder(t *testing.T) {
 	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
 		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
 	}))
-	n.Voice = VoiceConfig{Voice: "filipp", Emotion: "neutral", Speed: 1.1, Candidates: []string{"ermil", "zahar"}}
+	n.SetVoice(VoiceConfig{Voice: "filipp", Emotion: "neutral", Speed: 1.1, Volume: 1.3, Candidates: []string{"ermil", "zahar"}})
 	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +176,9 @@ func TestNativeVoiceChainTriesCandidatesInOrder(t *testing.T) {
 			t.Fatalf("attempt %d voice = %q, want %q", i, generate.GetVoice(), name)
 		}
 		if name != "" {
-			if generate.GetEmotion() != "neutral" || generate.GetSpeed() != 1.1 {
-				t.Fatalf("attempt %d lost emotion/speed: %+v", i, generate)
+			// A candidate answers with the same delivery as the configured voice.
+			if generate.GetEmotion() != "neutral" || generate.GetSpeed() != 1.1 || generate.GetVolume() != 1.3 {
+				t.Fatalf("attempt %d lost emotion/speed/volume: %+v", i, generate)
 			}
 		}
 		if i == len(want)-1 {
@@ -194,7 +199,7 @@ func TestNativeSpeechWatchdogAdvancesOnSilence(t *testing.T) {
 	n, up, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
 		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
 	}))
-	n.Voice = VoiceConfig{Voice: "filipp", Candidates: []string{"ermil"}}
+	n.SetVoice(VoiceConfig{Voice: "filipp", Candidates: []string{"ermil"}})
 	n.SpeechTimeout = 150 * time.Millisecond
 	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("voice")); err != nil {
 		t.Fatal(err)
@@ -216,4 +221,42 @@ func TestNativeSpeechWatchdogAdvancesOnSilence(t *testing.T) {
 		t.Fatalf("unexpected frame after the final retry: %s", f.Kind())
 	case <-time.After(400 * time.Millisecond):
 	}
+}
+
+// TestNativeVoiceHotSwapIsConcurrencySafe covers the hot-apply path: the voice
+// of a live session is replaced from the HTTP goroutine while answers read it,
+// so the swap must never race.
+func TestNativeVoiceHotSwapIsConcurrencySafe(t *testing.T) {
+	n, _, _ := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+		return Resolution{Route: "llm", Answer: "Ответ своей модели"}, nil
+	}))
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n.SetVoice(VoiceConfig{Voice: "omazh", Volume: 1.2, Candidates: []string{"oksana"}})
+			// The other goroutine may win the swap, so only the invariants that
+			// hold for both writers are checked here.
+			got := n.Voice().Resolve("llm")
+			if got.Volume != 1.2 || (got.Voice != "omazh" && got.Voice != "jane") {
+				t.Errorf("resolved voice = %+v", got)
+				return
+			}
+		}
+	}()
+	for range 200 {
+		n.SetVoice(VoiceConfig{Voice: "jane", Volume: 1.2})
+		if got := n.Voice(); got.Volume != 1.2 || (got.Voice != "jane" && got.Voice != "omazh") {
+			t.Fatalf("voice = %+v", got)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }

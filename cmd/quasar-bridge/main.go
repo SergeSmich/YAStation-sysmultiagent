@@ -114,6 +114,13 @@ func main() {
 	var clientCount, serverCount atomic.Int64
 	var liveNativeMu sync.RWMutex
 	var liveNative *bridge.Native
+	voice := new(voiceState)
+	voice.Store(cfg.LocalVoice)
+	liveVoice := func() *bridge.Native {
+		liveNativeMu.RLock()
+		defer liveNativeMu.RUnlock()
+		return liveNative
+	}
 	var proxy *bridge.Proxy
 	proxy = &bridge.Proxy{Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
 		d := wire.ClientToServer
@@ -274,7 +281,7 @@ func main() {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
-			n.Voice = cfg.LocalVoice
+			n.SetVoice(voice.Load())
 			n.FirstFrameTimeout = time.Duration(cfg.FirstFrameMS) * time.Millisecond
 			n.OnCloudStall = proxy.RecordUpstreamStall
 			if cfg.LocalProgress.Enabled {
@@ -306,7 +313,10 @@ func main() {
 			}
 		}
 	}
-	mux.HandleFunc("GET /healthz", healthzHandler(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, &clientCount, &serverCount))
+	mux.HandleFunc("GET /healthz", healthzHandler(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount))
+	voiceHandler := voiceConfigHandler(path, voice, liveVoice)
+	mux.HandleFunc("GET /api/voice-config", voiceHandler)
+	mux.HandleFunc("PUT /api/voice-config", voiceHandler)
 	mux.HandleFunc("POST /voice-probe", func(w http.ResponseWriter, r *http.Request) {
 		if !requestIsLoopback(r) {
 			writeProbeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
@@ -387,10 +397,15 @@ func main() {
 			case <-reloads:
 				if err := reloadRouting(*path, cfg, engine, logs); err != nil {
 					slog.Warn("routing_reload_rejected", "error", err)
-					continue
+				} else {
+					state := engine.RoutingStatus()
+					slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules)
 				}
-				state := engine.RoutingStatus()
-				slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules)
+				// The voice section is independent of routing: apply it even when
+				// the routing part of the file was rejected.
+				if _, err := voice.reloadVoice(*path, liveVoice); err != nil {
+					slog.Warn("local_voice_reload_failed", "error", err)
+				}
 			}
 		}
 	}()
@@ -412,11 +427,11 @@ func main() {
 	}
 }
 
-func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
+func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS()})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()})
 		_, _ = w.Write(data)
 	}
 }

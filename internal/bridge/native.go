@@ -106,7 +106,7 @@ type Native struct {
 	OnRoute           func(id, route string)
 	GateText          bool
 	ShouldListen      bool
-	Voice             VoiceConfig
+	voice             atomic.Pointer[VoiceConfig]
 	DecisionDelay     time.Duration
 	ProgressAfter     time.Duration
 	ProgressInterval  time.Duration
@@ -118,6 +118,24 @@ type Native struct {
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
 	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}}
+}
+
+// SetVoice replaces the speech configuration for every answer that has not
+// resolved its voice yet. It is safe to call while a session is live: the
+// pointer swap is atomic, so an in-flight answer keeps the settings it took and
+// no reconnect is needed to change the voice.
+func (n *Native) SetVoice(cfg VoiceConfig) {
+	c := cfg
+	n.voice.Store(&c)
+}
+
+// Voice returns the speech configuration currently in force. A missing value
+// keeps the stock Alice voice.
+func (n *Native) Voice() VoiceConfig {
+	if cfg := n.voice.Load(); cfg != nil {
+		return *cfg
+	}
+	return VoiceConfig{}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -575,7 +593,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 
 		if resolver, ok := n.resolver.(FallbackResolver); ok && n.isRefusal(text) {
 			p.local = true
-			p.voice = n.Voice.Resolve("llm")
+			p.voice = n.Voice().Resolve("llm")
 			if n.OnRoute != nil {
 				n.OnRoute(p.id, "llm")
 			}
@@ -704,7 +722,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.OnRoute(p.id, result.Route)
 		}
 		p.route = result.Route
-		p.voice = n.Voice.Resolve(result.Route)
+		p.voice = n.Voice().Resolve(result.Route)
 		if result.Route == "yandex" {
 			p.cloud = true
 			var err error
@@ -892,7 +910,10 @@ func (n *Native) synthesize(p *nativeRequest, text string) error {
 		if voice.Speed > 0 {
 			generate.Speed = new(voice.Speed)
 		}
-		slog.Info("native_tts_voice", "request", requestTag(p.id), "route", route, "voice", voice.Voice, "emotion", voice.Emotion, "speed", voice.Speed)
+		if voice.Volume > 0 {
+			generate.Volume = new(voice.Volume)
+		}
+		slog.Info("native_tts_voice", "request", requestTag(p.id), "route", route, "voice", voice.Voice, "emotion", voice.Emotion, "speed", voice.Speed, "volume", voice.Volume)
 	}
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
@@ -934,7 +955,7 @@ func (n *Native) speechRetry(p *nativeRequest, attempt int) (VoiceSettings, bool
 	}
 	if !p.voiceChainReady {
 		p.voiceChainReady = true
-		p.voiceQueue = n.Voice.candidatesFor(p.route)
+		p.voiceQueue = n.Voice().candidatesFor(p.route)
 	}
 	delete(n.tts, p.ttsID)
 	p.ttsID = newID()
@@ -943,7 +964,7 @@ func (n *Native) speechRetry(p *nativeRequest, attempt int) (VoiceSettings, bool
 	if len(p.voiceQueue) > 0 {
 		name := p.voiceQueue[0]
 		p.voiceQueue = p.voiceQueue[1:]
-		p.voice = VoiceSettings{Voice: name, Emotion: p.voice.Emotion, Speed: p.voice.Speed}
+		p.voice = VoiceSettings{Voice: name, Emotion: p.voice.Emotion, Speed: p.voice.Speed, Volume: p.voice.Volume}
 		return p.voice, true
 	}
 	p.voiceFallback = true
