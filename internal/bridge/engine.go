@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"quasarbridge/internal/dialogue"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type Engine struct {
 	Dialogue     *dialogue.Store
 	dialogueOnce sync.Once
 	routing      atomic.Pointer[RoutingPolicy]
+	agents       atomic.Pointer[map[string]*Agent]
 }
 
 func (e *Engine) dialogue() *dialogue.Store {
@@ -86,8 +88,18 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		}
 		return Resolution{Route: "llm", Answer: "Начинаем новый разговор."}, nil
 	}
-	if route != "llm" && !e.dialogue().Clear(ctx, ticket) {
+	if route != "llm" && !isAgentRoute(route) && !e.dialogue().Clear(ctx, ticket) {
 		return Resolution{Route: route}, context.Canceled
+	}
+	if name, ok := ParseAgentRoute(route); ok {
+		// A role keeps the dialogue history: it is the same assistant with a
+		// different model and prompt, not a one-shot command.
+		return e.answerAs(ctx, route, text, name)
+	}
+	if hasAgentPrefix(route) {
+		// A misspelled role must not fall through to the cloud: the caller asked
+		// for a configured profile that does not exist.
+		return Resolution{Route: route}, fmt.Errorf("invalid agent route %q", route)
 	}
 	result := Resolution{Route: route}
 	switch route {
@@ -128,18 +140,39 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		return Resolution{Route: "yandex"}, nil
 	}
 }
+
+const defaultAnswerPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Начинай каждый ответ словом «Нейросеть:» — так пользователь отличает тебя от штатной Алисы. Обороты «спроси нейросеть», «спроси свою модель», «спроси у нейросети» — это обращение к тебе самому: не ищи для них инструмент, пропусти вводную и отвечай на суть; если после вводной вопроса нет, коротко попроси его задать. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."
+
+// roleTail keeps a role prompt compatible with a spoken answer: the author of a
+// role describes the task, not the output format.
+const roleTail = "\nОтвет будет прочитан вслух: без Markdown, списков и служебных рассуждений, обычно до трёх предложений."
+
+func answerPrompt(role string) string {
+	if strings.TrimSpace(role) == "" {
+		return defaultAnswerPrompt
+	}
+	return role + roleTail
+}
+
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
-	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
-		text = webaddress.Normalize(text)
-	}
-	r := Resolution{Route: "llm"}
-	if e.LLM == nil && e.Assistant == nil {
-		return r, errors.New("LLM is not configured")
-	}
 	answerer := e.LLM
 	if e.Assistant != nil {
 		answerer = e.Assistant
 	}
+	if answerer == nil {
+		return Resolution{Route: "llm"}, errNoAnswerer
+	}
+	return e.answer(ctx, "llm", text, answerer, "")
+}
+
+// answer runs one local turn with the given model client. An empty prompt means
+// the shared assistant prompt; a role prompt replaces it and keeps only the
+// constraints that make an answer speakable.
+func (e *Engine) answer(ctx context.Context, route, text string, answerer Completer, prompt string) (Resolution, error) {
+	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
+		text = webaddress.Normalize(text)
+	}
+	r := Resolution{Route: route}
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
@@ -147,7 +180,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	// Local patch (not upstream): the spoken label lets the user tell this answer
 	// apart from the stock Alice voice, and the leading phrase is treated as an
 	// address to this model instead of a missing tool call.
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Начинай каждый ответ словом «Нейросеть:» — так пользователь отличает тебя от штатной Алисы. Обороты «спроси нейросеть», «спроси свою модель», «спроси у нейросети» — это обращение к тебе самому: не ищи для них инструмент, пропусти вводную и отвечай на суть; если после вводной вопроса нет, коротко попроси его задать. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	messages := []llm.Message{{Role: "system", Content: answerPrompt(prompt)}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	private := snapshot.PrivateHistory

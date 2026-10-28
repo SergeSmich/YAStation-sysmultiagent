@@ -68,7 +68,7 @@ func TestReloadChatParametersRequiresRestart(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"llm_chat_parameters":{"temperature":null}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := reloadRouting(path, initial, engine); err == nil || !strings.Contains(err.Error(), "restart required") {
+	if err := reloadRouting(path, initial, engine, nil); err == nil || !strings.Contains(err.Error(), "restart required") {
 		t.Fatalf("changed chat parameters did not require restart: %v", err)
 	}
 }

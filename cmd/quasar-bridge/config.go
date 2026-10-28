@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
@@ -28,6 +30,25 @@ type progressConfig struct {
 type upstreamPingConfig struct {
 	IntervalMS int `json:"interval_ms"`
 	TimeoutMS  int `json:"timeout_ms"`
+}
+
+// agentConfig declares one named answering role. Local patch (not upstream): a
+// role owns its model client and prompt, while the dialogue history and the
+// local voice machinery stay shared with the default assistant. Empty model,
+// base_url, api and max_output_tokens fall back to the top-level llm_* values,
+// so a role that only changes its prompt needs just a name.
+type agentConfig struct {
+	Name            string   `json:"name"`
+	Model           string   `json:"model"`
+	BaseURL         string   `json:"base_url"`
+	API             string   `json:"api"`
+	APIKeyEnv       string   `json:"api_key_env"`
+	ReasoningEffort string   `json:"reasoning_effort"`
+	MaxOutputTokens int      `json:"max_output_tokens"`
+	HostedTools     []string `json:"hosted_tools"`
+	SystemPrompt    string   `json:"system_prompt"`
+	Voice           string   `json:"voice"`
+	AssistantTools  bool     `json:"assistant_tools"`
 }
 
 // deviceContextConfig is the place the bridge reports on behalf of the station.
@@ -79,6 +100,7 @@ type config struct {
 	FirstFrameMS       int                  `json:"first_frame_ms"`
 	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
 	Panel              panelConfig          `json:"panel"`
+	Agents             []agentConfig        `json:"agents"`
 }
 
 func readConfig(path string) (config, error) {
@@ -224,6 +246,9 @@ func readConfig(path string) (config, error) {
 	if err := cfg.LocalVoice.Validate(); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateAgents(); err != nil {
+		return cfg, err
+	}
 	if c := cfg.DeviceContext; c.Enabled {
 		if math.Abs(c.Lat) > 90 || math.Abs(c.Lon) > 180 {
 			return cfg, errors.New("device_context lat/lon out of range")
@@ -254,6 +279,96 @@ func readConfig(path string) (config, error) {
 	}
 	return cfg, nil
 }
+
+// validateAgents checks every role and folds its voice into local_voice.routes,
+// so the panel and a SIGHUP reload see the same effective voice configuration.
+func (c *config) validateAgents() error {
+	if len(c.Agents) == 0 {
+		c.Agents = nil
+		return nil
+	}
+	seen := make(map[string]bool, len(c.Agents))
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		if !bridge.ValidAgentName(a.Name) {
+			return errors.New("agents[].name must be 1..32 characters of a-z, 0-9, '-' or '_'")
+		}
+		if seen[a.Name] {
+			return errors.New("agents[].name must be unique")
+		}
+		seen[a.Name] = true
+		if a.API == "" {
+			a.API = c.LLMAPI
+		}
+		if a.API != "chat_completions" && a.API != "responses" {
+			return errors.New("agents[].api must be chat_completions or responses")
+		}
+		if a.BaseURL == "" {
+			a.BaseURL = c.LLMBaseURL
+		} else if !validEndpoint(a.BaseURL, "http", "https") {
+			return errors.New("invalid agents[].base_url")
+		}
+		if a.Model == "" {
+			a.Model = c.LLMModel
+		}
+		if a.Model == "" {
+			return errors.New("agents[].model is required")
+		}
+		if a.MaxOutputTokens < 0 {
+			return errors.New("agents[].max_output_tokens must not be negative")
+		}
+		if a.MaxOutputTokens == 0 {
+			a.MaxOutputTokens = c.LLMMaxOutputTokens
+		}
+		if a.ReasoningEffort != "" {
+			if a.API != "responses" {
+				return errors.New("agents[].reasoning_effort requires api responses")
+			}
+			if !slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, a.ReasoningEffort) {
+				return errors.New("invalid agents[].reasoning_effort")
+			}
+		}
+		if len(a.HostedTools) == 0 {
+			a.HostedTools = nil
+		} else {
+			if a.API != "responses" {
+				return errors.New("agents[].hosted_tools requires api responses")
+			}
+			tools := make(map[string]bool, len(a.HostedTools))
+			for _, name := range a.HostedTools {
+				if name != "web_search" && name != "code_interpreter" {
+					return errors.New("agents[].hosted_tools supports web_search and code_interpreter")
+				}
+				if tools[name] {
+					return errors.New("duplicate agents[].hosted_tools entry")
+				}
+				tools[name] = true
+			}
+		}
+		if utf8.RuneCountInString(a.SystemPrompt) > bridge.MaxAgentPromptRunes {
+			return errors.New("agents[].system_prompt is too long")
+		}
+		if a.AssistantTools && !c.AssistantTools.Enabled {
+			return errors.New("agents[].assistant_tools requires assistant_tools.enabled")
+		}
+		if a.Voice == "" {
+			continue
+		}
+		if !bridge.IsKnownVoice(a.Voice) {
+			return fmt.Errorf("agents[].voice must be one of: %s", bridge.KnownVoicesList())
+		}
+		route := bridge.AgentRoute(a.Name)
+		if c.LocalVoice.Routes == nil {
+			c.LocalVoice.Routes = make(map[string]string, len(c.Agents))
+		}
+		if current, ok := c.LocalVoice.Routes[route]; ok && current != a.Voice {
+			return errors.New("agents[].voice conflicts with local_voice.routes")
+		}
+		c.LocalVoice.Routes[route] = a.Voice
+	}
+	return nil
+}
+
 func validEndpoint(raw string, schemes ...string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" {

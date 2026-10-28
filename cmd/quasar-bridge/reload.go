@@ -8,7 +8,7 @@ import (
 	"quasarbridge/internal/journal"
 )
 
-func reloadRouting(path string, initial config, engine *bridge.Engine, logs ...*journal.Writer) error {
+func reloadRouting(path string, initial config, engine *bridge.Engine, applyAgents func(config) error, logs ...*journal.Writer) error {
 	next, err := readConfig(path)
 	if err != nil {
 		return err
@@ -22,6 +22,8 @@ func reloadRouting(path string, initial config, engine *bridge.Engine, logs ...*
 	// force a restart through this comparison.
 	a.LocalVoice = bridge.VoiceConfig{}
 	b.LocalVoice = bridge.VoiceConfig{}
+	// Roles are hot-applied through applyAgents for the same reason.
+	a.Agents, b.Agents = nil, nil
 	if len(logs) > 0 {
 		a.ConversationLog = journal.Config{}
 		b.ConversationLog = journal.Config{}
@@ -34,5 +36,11 @@ func reloadRouting(path string, initial config, engine *bridge.Engine, logs ...*
 			return err
 		}
 	}
-	return engine.SetRouting(next.Routing)
+	if err := engine.SetRouting(next.Routing); err != nil {
+		return err
+	}
+	if applyAgents != nil {
+		return applyAgents(next)
+	}
+	return nil
 }

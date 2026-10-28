@@ -192,6 +192,7 @@ func main() {
 	}
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
 	var musicQueue *assistant.MusicQueue
+	var tools *assistant.Tools
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
 		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc}
@@ -223,7 +224,7 @@ func main() {
 			musicPlayback = assistant.NewMusicPlayback(musicQueue)
 			engine.Playback = musicPlayback
 		}
-		tools := &assistant.Tools{Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		tools = &assistant.Tools{Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
 		engine.Music = tools
 		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
@@ -231,6 +232,20 @@ func main() {
 		slog.Error("routing rejected", "error", err)
 		os.Exit(1)
 	}
+	applyAgents := func(next config) error {
+		built, err := buildAgents(next, tools)
+		if err != nil {
+			return err
+		}
+		return engine.SetAgents(built)
+	}
+	if err := applyAgents(cfg); err != nil {
+		slog.Error("agents rejected", "error", err)
+		os.Exit(1)
+	}
+	// A role list is logged even when empty: operators need to see that the
+	// section was read and that no role is answering.
+	slog.Info("agents_ready", "agents", engine.AgentNames())
 	if *query != "" || *check || *route != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
@@ -460,11 +475,11 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-reloads:
-				if err := reloadRouting(*path, cfg, engine, logs); err != nil {
+				if err := reloadRouting(*path, cfg, engine, applyAgents, logs); err != nil {
 					slog.Warn("routing_reload_rejected", "error", err)
 				} else {
 					state := engine.RoutingStatus()
-					slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules)
+					slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules, "agents", engine.AgentNames())
 				}
 				// The voice section is independent of routing: apply it even when
 				// the routing part of the file was rejected.
@@ -515,7 +530,7 @@ func main() {
 // never drift apart.
 func healthSnapshot(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) map[string]any {
 	state := engine.RoutingStatus()
-	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
+	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "agents": engine.AgentNames(), "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
 }
 
 func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {

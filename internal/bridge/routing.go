@@ -91,7 +91,9 @@ func DefaultRoutingConfig() RoutingConfig {
 		Refusal:      RefusalConfig{Enabled: true, Prefixes: []string{"не могу", "я не могу", "я не буду", "не буду", "не поняла", "я не поняла", "не понял", "я не понял", "извините", "простите", "к сожалению", "не знаю", "я не знаю", "я пока не умею", "пока не умею", "увы"}, ContainsAny: []string{"не могу помочь", "не могу обсуждать", "не могу выполнить", "не могу понять", "не могу ответить", "не буду отвечать", "не поняла", "не понял", "не понимаю", "не удалось понять", "не знаю", "не умею", "не отвечу"}},
 	}
 }
-func directRoute(route string) bool { return route == "home" || route == "llm" || route == "yandex" }
+func directRoute(route string) bool {
+	return route == "home" || route == "llm" || route == "yandex" || isAgentRoute(route)
+}
 func foldTerms(terms []string, refusal bool) ([]string, error) {
 	out := make([]string, len(terms))
 	for i, term := range terms {

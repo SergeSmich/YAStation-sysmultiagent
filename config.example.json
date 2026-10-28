@@ -12,6 +12,7 @@
   "llm_reasoning_effort": "",
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
+  "agents": [],
   "home_warm_area": "",
   "listen_after_reply": true,
   "routing": {
