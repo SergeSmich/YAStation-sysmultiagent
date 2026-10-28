@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json/v2"
 	"errors"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/wire"
 )
 
 type progressConfig struct {
@@ -28,11 +30,35 @@ type upstreamPingConfig struct {
 	TimeoutMS  int `json:"timeout_ms"`
 }
 
+// deviceContextConfig is the place the bridge reports on behalf of the station.
+// Local patch (not upstream): the station ignores the set_location and
+// set_timezone directives, so local skills receive requests without a place.
+// Disabled by default; the values are the Moscow defaults the station needs.
+type deviceContextConfig struct {
+	Enabled  bool    `json:"enabled"`
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	Accuracy float64 `json:"accuracy"`
+	Timezone string  `json:"timezone"`
+}
+
+func defaultDeviceContext() deviceContextConfig {
+	return deviceContextConfig{Lat: 55.7558, Lon: 37.6173, Accuracy: 1000, Timezone: "Europe/Moscow"}
+}
+
+func (c deviceContextConfig) wire() wire.DeviceContext {
+	if !c.Enabled {
+		return wire.DeviceContext{}
+	}
+	return wire.DeviceContext{Lat: c.Lat, Lon: c.Lon, Accuracy: c.Accuracy, Timezone: c.Timezone}
+}
+
 type config struct {
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
 	ConversationLog    journal.Config       `json:"conversation_log"`
+	DeviceContext      deviceContextConfig  `json:"device_context"`
 	Listen             string               `json:"listen"`
 	Upstream           string               `json:"upstream"`
 	TLSCert            string               `json:"tls_cert"`
@@ -56,7 +82,7 @@ type config struct {
 }
 
 func readConfig(path string) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, Panel: defaultPanelConfig()}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), DeviceContext: defaultDeviceContext(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, Panel: defaultPanelConfig()}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, errors.New("cannot read configuration file")
@@ -198,6 +224,20 @@ func readConfig(path string) (config, error) {
 	if err := cfg.LocalVoice.Validate(); err != nil {
 		return cfg, err
 	}
+	if c := cfg.DeviceContext; c.Enabled {
+		if math.Abs(c.Lat) > 90 || math.Abs(c.Lon) > 180 {
+			return cfg, errors.New("device_context lat/lon out of range")
+		}
+		if c.Lat == 0 && c.Lon == 0 {
+			return cfg, errors.New("device_context requires lat and lon")
+		}
+		if c.Accuracy < 0 || c.Accuracy > 100000 {
+			return cfg, errors.New("device_context accuracy must be 0..100000")
+		}
+		if c.Timezone != "" && !validTimezone(c.Timezone) {
+			return cfg, errors.New("invalid device_context timezone")
+		}
+	}
 	if cfg.FirstFrameMS < 0 || cfg.FirstFrameMS > 60000 {
 		return cfg, errors.New("first_frame_ms must be 0..60000")
 	}
@@ -225,4 +265,23 @@ func validEndpoint(raw string, schemes ...string) bool {
 		}
 	}
 	return false
+}
+
+// validTimezone accepts an IANA name such as "Europe/Moscow". The station has
+// no tzdata, and the cloud expects the raw identifier, so the value is only
+// checked for shape: spaces and control characters would corrupt the frame or
+// the log.
+func validTimezone(name string) bool {
+	if len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '/', r == '_', r == '+', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }

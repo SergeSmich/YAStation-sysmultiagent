@@ -114,6 +114,9 @@ type Native struct {
 	SpeechTimeout     time.Duration
 	FirstFrameTimeout time.Duration
 	OnCloudStall      func()
+	// DeviceContext is patched into every client input. The zero value keeps
+	// the station's own frames untouched.
+	DeviceContext wire.DeviceContext
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -218,6 +221,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		p.isText = f.Kind() == "TextInput"
 		p.input = append([]byte{}, data...)
 		p.gated = !p.isText || n.GateText
+		if applied := n.patchDeviceContext(id, f.Kind(), &p.input); applied.Location || applied.Timezone || applied.TimezoneSkipped {
+			slog.Info("native_device_context", "request", requestTag(id), "kind", f.Kind(), "location", applied.Location, "timezone", applied.Timezone, "timezone_skipped", applied.TimezoneSkipped)
+		}
 
 		slog.Info("native_request_shape", "request", requestTag(id), "text_bytes", len(p.text), "event_type", req.GetRequest().GetEvent().GetType().String(), "stream", e.GetHeader().GetStreamId(), "unknown_request_bytes", len(req.ProtoReflect().GetUnknown()), "payload_bytes", len(req.GetRequest().GetEvent().GetPayloadRaw()))
 		n.mu.Lock()
@@ -239,6 +245,12 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		p.expires = time.AfterFunc(90*time.Second, func() {
 			n.mu.Lock()
 			defer n.mu.Unlock()
+			if !p.started {
+				// The final recognition never arrived, so no route was ever
+				// chosen. Without this line the turn disappears from the log
+				// without a trace of what it was waiting for.
+				slog.Info("native_request_expired", "request", requestTag(p.id), "final", p.final, "cloud", p.cloud, "local", p.local, "text_bytes", len(strings.TrimSpace(p.text)))
+			}
 			p.canceled = true
 			p.cancel()
 			p.cloudWatchdogGen++
@@ -263,6 +275,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			if err != nil {
 				return err
 			}
+			n.patchDeviceContext(id, f.Kind(), &gated)
 			if err := n.up(ctx, k, gated); err != nil {
 				return err
 			}
@@ -533,6 +546,12 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_cloud_shape", "matched", p != nil, "directives", ds, "cards", len(r.GetResponse().GetCards()), "voice_text_bytes", len(r.GetVoiceResponse().GetOutputSpeech().GetText()))
 	}
 	if p == nil {
+		if result := e.GetAsrResult(); result != nil && result.GetEndOfUtt() {
+			// A final recognition that matches no live request is the other half
+			// of a silent turn: the frame is proxied, but nothing is routed and
+			// no other line would explain why.
+			slog.Info("native_asr_unmatched", "hypotheses", len(result.GetRecognition()), "code", result.GetResponseCode().String())
+		}
 		n.mu.Unlock()
 		return n.down(ctx, k, data)
 	}
@@ -681,6 +700,26 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	n.captureCloud(p, e)
 	return nil
 }
+
+// patchDeviceContext writes the configured location and time zone into a client
+// frame. The station never reports either by itself: without the patch a
+// weather or time question carries no place, and the skill answers that it has
+// nothing to say. A failed patch leaves the frame untouched, because a request
+// without a location is better than a malformed one.
+func (n *Native) patchDeviceContext(id, kind string, raw *[]byte) wire.ContextPatch {
+	ctx := n.DeviceContext
+	if !ctx.Enabled() || raw == nil || len(*raw) == 0 {
+		return wire.ContextPatch{}
+	}
+	patched, applied, err := wire.AddDeviceContext(*raw, kind, ctx)
+	if err != nil {
+		slog.Warn("native_device_context_failed", "request", requestTag(id), "kind", kind)
+		return wire.ContextPatch{}
+	}
+	*raw = patched
+	return applied
+}
+
 func (n *Native) maybeResolve(p *nativeRequest) {
 	n.mu.Lock()
 	if p.started || p.canceled || (strings.TrimSpace(p.text) == "" && !p.final) {
@@ -698,9 +737,16 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
+		if strings.TrimSpace(text) == "" {
+			// A final recognition without a single word: routing it would send
+			// the audio to the cloud and the station would play nothing at all.
+			// A short answer confirms that the activation itself worked.
+			n.respondUnheard(p)
+			return
+		}
 		result := Resolution{Route: "yandex"}
 		var err error
-		if n.resolver != nil && strings.TrimSpace(text) != "" {
+		if n.resolver != nil {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
 				n.mu.Lock()
@@ -766,16 +812,8 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 			}
 			n.mu.Unlock()
-			// An activation that caught no words has nothing to fall back to:
-			// arming the watchdog would only make the station announce a
-			// failure after a request it never understood. The request still
-			// goes upstream, because the cloud re-recognizes the audio itself.
-			empty := strings.TrimSpace(text) == ""
-			if submitted && n.FirstFrameTimeout > 0 && !empty {
+			if submitted && n.FirstFrameTimeout > 0 {
 				n.armCloudWatchdog(p)
-			}
-			if empty {
-				slog.Info("native_empty_asr", "request", requestTag(p.id), "sent", submitted)
 			}
 			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
 			return
@@ -796,6 +834,41 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))
 		}
 	})
+}
+
+// respondUnheard answers an activation that caught no words. The request is
+// never routed: an empty transcript would only reach the cloud as raw audio and
+// the station would stay silent, which is indistinguishable from a lost turn.
+// The gated frame is cancelled first, so the cloud releases the audio stream.
+func (n *Native) respondUnheard(p *nativeRequest) {
+	const answer = "Я вас не расслышала."
+	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
+	p.local = true
+	p.route = "unheard"
+	p.voice = n.Voice().Resolve("unheard")
+	if !p.streaming {
+		p.ttsID = newID()
+		n.tts[p.ttsID] = p
+	}
+	if n.OnRoute != nil {
+		n.OnRoute(p.id, "unheard")
+	}
+	n.mu.Unlock()
+	slog.Info("native_empty_asr", "request", requestTag(p.id), "action", "local_reply")
+	if p.gated && !p.streaming {
+		// A failed cancel only leaves the cloud stream open: the station still
+		// deserves the answer, so the turn must not end in silence here.
+		if err := n.sendCancel(p.ctx, p.id); err != nil {
+			slog.Warn("native_cancel_failed", "request", requestTag(p.id))
+		}
+	}
+	if err := n.reply(p, answer); err != nil {
+		slog.Warn("native_reply_failed", "request", requestTag(p.id))
+	}
 }
 
 func (n *Native) armCloudWatchdog(p *nativeRequest) {

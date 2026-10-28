@@ -383,7 +383,9 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			up := make(chan []byte, 16)
+			resolved := make(chan string, 1)
 			var resolver Resolver = resolverFunc(func(_ context.Context, text string) (Resolution, error) {
+				resolved <- text
 				if text != "включи свет" {
 					t.Errorf("text=%q", text)
 				}
@@ -415,7 +417,7 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 			case b := <-up:
 				kind := wire.Decode(b, wire.ClientToServer).Kind()
 				want := "ContinueRequest"
-				if route == "home" {
+				if route == "home" || route == "empty" {
 					want = "CancelRequest"
 				}
 				if kind != want {
@@ -424,7 +426,79 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("no decision")
 			}
+			if route == "empty" {
+				if len(resolved) != 0 {
+					t.Fatalf("empty transcript was routed to %q", <-resolved)
+				}
+			}
 		})
+	}
+}
+
+func TestUnheardActivationAnswersLocally(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	up := make(chan []byte, 8)
+	down := make(chan []byte, 8)
+	routes := make(chan string, 1)
+	n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, resolverFunc(func(context.Context, string) (Resolution, error) {
+		t.Error("an empty transcript must not be routed")
+		return Resolution{Route: "llm", Answer: "x"}, nil
+	}))
+	n.OnRoute = func(_, route string) { routes <- route }
+	defer n.Close()
+
+	voice := aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "unheard", StreamId: new(int64(9))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
+	if err := n.Client(ctx, websocket.MessageBinary, voice); err != nil {
+		t.Fatal(err)
+	}
+	if !wire.Decode(<-up, wire.ClientToServer).Client.GetEvent().GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() {
+		t.Fatal("ungated voice")
+	}
+	// A final recognition with no hypotheses: exactly what the station sends
+	// when the activation caught only noise.
+	final := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "unheard"}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true)}}}}})
+	if err := n.Server(ctx, websocket.MessageBinary, final); err != nil {
+		t.Fatal(err)
+	}
+	if kind := wire.Decode(<-up, wire.ClientToServer).Kind(); kind != "CancelRequest" {
+		t.Fatalf("upstream=%s want CancelRequest", kind)
+	}
+	var answer *response.TAliceResponseProto
+	for answer == nil {
+		select {
+		case b := <-down:
+			if f := wire.Decode(b, wire.ServerToClient); f.Server != nil {
+				answer = f.Server.GetEvent().GetAliceResponse()
+			}
+		case <-ctx.Done():
+			t.Fatal("no local answer")
+		}
+	}
+	if got := answer.GetVoiceResponse().GetOutputSpeech().GetText(); got != "Я вас не расслышала." {
+		t.Fatalf("answer=%q", got)
+	}
+	if !answer.GetVoiceResponse().GetHasVoiceResponse() {
+		t.Fatal("local answer is silent")
+	}
+	select {
+	case route := <-routes:
+		if route != "unheard" {
+			t.Fatalf("route=%s", route)
+		}
+	case <-ctx.Done():
+		t.Fatal("route not recorded")
+	}
+	for {
+		select {
+		case b := <-up:
+			switch kind := wire.Decode(b, wire.ClientToServer).Kind(); kind {
+			case "ContinueRequest", "VoiceInput":
+				t.Fatalf("unexpected %s upstream", kind)
+			}
+		default:
+			return
+		}
 	}
 }
 

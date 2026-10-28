@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"quasarbridge/internal/bridge"
+	"quasarbridge/internal/wire"
 )
 
 func TestReadConfigLLMAPISettings(t *testing.T) {
@@ -31,6 +32,35 @@ func TestReadConfigLLMAPISettings(t *testing.T) {
 				t.Fatalf("LLM settings: %+v", cfg)
 			}
 		})
+	}
+}
+
+func TestDeviceContextConfig(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DeviceContext.Enabled || cfg.DeviceContext.Timezone != "Europe/Moscow" || cfg.DeviceContext.wire() != (wire.DeviceContext{}) {
+		t.Fatalf("defaults: %+v", cfg.DeviceContext)
+	}
+	cfg, err = readConfig(configFile(t, `{"device_context":{"enabled":true,"lat":55.7558,"lon":37.6173,"accuracy":1000,"timezone":"Europe/Moscow"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.DeviceContext.wire()
+	if got.Timezone != "Europe/Moscow" || got.Lat != 55.7558 || got.Accuracy != 1000 {
+		t.Fatalf("wire context: %+v", got)
+	}
+	for _, body := range []string{
+		`{"device_context":{"enabled":true,"lat":91,"lon":37.6173}}`,
+		`{"device_context":{"enabled":true,"lat":55.7558,"lon":181}}`,
+		`{"device_context":{"enabled":true,"lat":0,"lon":0}}`,
+		`{"device_context":{"enabled":true,"lat":55.7558,"lon":37.6173,"accuracy":-1}}`,
+		`{"device_context":{"enabled":true,"lat":55.7558,"lon":37.6173,"timezone":"Europe/Moscow 1"}}`,
+	} {
+		if _, err := readConfig(configFile(t, body)); err == nil {
+			t.Fatalf("accepted %s", body)
+		}
 	}
 }
 

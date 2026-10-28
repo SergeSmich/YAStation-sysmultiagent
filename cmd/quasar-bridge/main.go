@@ -297,6 +297,7 @@ func main() {
 			n.ShouldListen = cfg.ListenAfterReply
 			n.SetVoice(voice.Load())
 			n.FirstFrameTimeout = time.Duration(cfg.FirstFrameMS) * time.Millisecond
+			n.DeviceContext = cfg.DeviceContext.wire()
 			n.OnCloudStall = proxy.RecordUpstreamStall
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond

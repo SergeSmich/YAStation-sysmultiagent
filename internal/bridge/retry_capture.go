@@ -17,6 +17,12 @@ func (n *Native) captureDelivered(p *nativeRequest, text string, final, action, 
 		return
 	}
 	n.mu.Lock()
+	if strings.TrimSpace(p.text) == "" {
+		// An unheard activation has no question. Capturing it would leave an
+		// empty turn in the replay history and make the next retry repeat it.
+		n.mu.Unlock()
+		return
+	}
 	if p.canceled || p.ctx.Err() != nil || p.local != local {
 		n.mu.Unlock()
 		return
