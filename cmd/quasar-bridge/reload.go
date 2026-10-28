@@ -8,13 +8,21 @@ import (
 	"quasarbridge/internal/journal"
 )
 
-func reloadRouting(path string, initial config, engine *bridge.Engine, applyAgents func(config) error, logs ...*journal.Writer) error {
+// reloadHooks are the sections of the configuration the running process can
+// swap without a restart. Everything else still needs one: the listener, the
+// credentials and the backend clients stay bound to the original deployment.
+type reloadHooks struct {
+	applyAgents func(config) error
+	applyWake   func(config) error
+	logs        *journal.Writer
+}
+
+func reloadRouting(path string, initial config, engine *bridge.Engine, hooks reloadHooks) error {
 	next, err := readConfig(path)
 	if err != nil {
 		return err
 	}
-	// Listener, credentials, backend clients and warm-up jobs remain bound to the
-	// original deployment. Do not silently pretend those settings were reloaded.
+	// Do not silently pretend a non-reloadable setting was applied.
 	a, b := initial, next
 	a.Routing = bridge.RoutingConfig{}
 	b.Routing = bridge.RoutingConfig{}
@@ -22,25 +30,31 @@ func reloadRouting(path string, initial config, engine *bridge.Engine, applyAgen
 	// force a restart through this comparison.
 	a.LocalVoice = bridge.VoiceConfig{}
 	b.LocalVoice = bridge.VoiceConfig{}
-	// Roles are hot-applied through applyAgents for the same reason.
+	// Roles and start words are hot-applied for the same reason.
 	a.Agents, b.Agents = nil, nil
-	if len(logs) > 0 {
+	a.WakeWords, b.WakeWords = wakeWordsConfig{}, wakeWordsConfig{}
+	if hooks.logs != nil {
 		a.ConversationLog = journal.Config{}
 		b.ConversationLog = journal.Config{}
 	}
 	if !reflect.DeepEqual(a, b) {
 		return errors.New("non-routing settings changed; restart required")
 	}
-	if len(logs) > 0 {
-		if err := logs[0].Configure(next.ConversationLog); err != nil {
+	if hooks.logs != nil {
+		if err := hooks.logs.Configure(next.ConversationLog); err != nil {
 			return err
 		}
 	}
 	if err := engine.SetRouting(next.Routing); err != nil {
 		return err
 	}
-	if applyAgents != nil {
-		return applyAgents(next)
+	if hooks.applyAgents != nil {
+		if err := hooks.applyAgents(next); err != nil {
+			return err
+		}
+	}
+	if hooks.applyWake != nil {
+		return hooks.applyWake(next)
 	}
 	return nil
 }

@@ -13,6 +13,10 @@
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
   "agents": [],
+  "wake_words": {
+    "dry_run": false,
+    "words": []
+  },
   "home_warm_area": "",
   "listen_after_reply": true,
   "routing": {

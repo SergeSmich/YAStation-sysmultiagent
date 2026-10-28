@@ -32,7 +32,7 @@ func TestReloadLLMSettingsRequiresRestart(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := reloadRouting(path, initial, engine, nil); err == nil || !strings.Contains(err.Error(), "restart required") {
+		if err := reloadRouting(path, initial, engine, reloadHooks{}); err == nil || !strings.Contains(err.Error(), "restart required") {
 			t.Fatalf("changed LLM settings accepted: %s: %v", settings, err)
 		}
 		if engine.RoutingStatus().Revision != revision {
@@ -55,7 +55,7 @@ func TestReloadListenAfterReplyRequiresRestart(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"listen_after_reply":false}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := reloadRouting(path, initial, engine, nil); err == nil || !strings.Contains(err.Error(), "restart required") {
+	if err := reloadRouting(path, initial, engine, reloadHooks{}); err == nil || !strings.Contains(err.Error(), "restart required") {
 		t.Fatalf("changed listen_after_reply accepted: %v", err)
 	}
 	if engine.RoutingStatus().Revision != revision {
@@ -81,7 +81,7 @@ func TestReloadRoutingKeepsLastGoodSnapshot(t *testing.T) {
 		}
 	}
 	write(`{"routing":{"rules":[],"default_route":"llm"}}`)
-	if err := reloadRouting(path, initial, engine, nil); err != nil {
+	if err := reloadRouting(path, initial, engine, reloadHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	good := engine.RoutingStatus().Revision
@@ -95,7 +95,7 @@ func TestReloadRoutingKeepsLastGoodSnapshot(t *testing.T) {
 		`{"routing":`,
 	} {
 		write(bad)
-		if err := reloadRouting(path, initial, engine, nil); err == nil {
+		if err := reloadRouting(path, initial, engine, reloadHooks{}); err == nil {
 			t.Fatal("bad reload accepted")
 		}
 		if engine.RoutingStatus().Revision != good {
@@ -129,7 +129,7 @@ func TestReloadJournalKeepsWorkingPolicyOnOpenFailure(t *testing.T) {
 		}
 	}
 	write()
-	if err := reloadRouting(path, initial, engine, nil, logs); err != nil {
+	if err := reloadRouting(path, initial, engine, reloadHooks{logs: logs}); err != nil {
 		t.Fatal(err)
 	}
 	if !logs.Enabled() {
@@ -139,7 +139,7 @@ func TestReloadJournalKeepsWorkingPolicyOnOpenFailure(t *testing.T) {
 	next.Routing.DefaultRoute = "llm"
 	next.ConversationLog.Path = filepath.Dir(next.ConversationLog.Path)
 	write()
-	if reloadRouting(path, initial, engine, nil, logs) == nil {
+	if reloadRouting(path, initial, engine, reloadHooks{logs: logs}) == nil {
 		t.Fatal("bad path accepted")
 	}
 	if !logs.Enabled() || engine.RoutingStatus().Revision != old {

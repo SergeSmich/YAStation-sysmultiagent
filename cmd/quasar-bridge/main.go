@@ -246,6 +246,13 @@ func main() {
 	// A role list is logged even when empty: operators need to see that the
 	// section was read and that no role is answering.
 	slog.Info("agents_ready", "agents", engine.AgentNames())
+	wake := new(wakeState)
+	applyWake := func(next config) error {
+		wake.set(next.WakeWords)
+		return nil
+	}
+	applyWake(cfg)
+	slog.Info("wake_words_ready", "words", wake.load().size(), "dry_run", cfg.WakeWords.DryRun)
 	if *query != "" || *check || *route != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
@@ -395,14 +402,16 @@ func main() {
 		}
 		writeProbeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 	})
-	mux.HandleFunc("POST /ask", askHandler(func() textInjector {
+	injector := func() textInjector {
 		liveNativeMu.RLock()
 		defer liveNativeMu.RUnlock()
 		if liveNative == nil {
 			return nil
 		}
 		return liveNative
-	}))
+	}
+	mux.HandleFunc("POST /ask", askHandler(injector))
+	mux.HandleFunc("POST /api/wake", wakeHandler(wake.load, injector))
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(cfg.AllowedIPs) > 0 {
@@ -475,11 +484,12 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-reloads:
-				if err := reloadRouting(*path, cfg, engine, applyAgents, logs); err != nil {
+				hooks := reloadHooks{applyAgents: applyAgents, applyWake: applyWake, logs: logs}
+				if err := reloadRouting(*path, cfg, engine, hooks); err != nil {
 					slog.Warn("routing_reload_rejected", "error", err)
 				} else {
 					state := engine.RoutingStatus()
-					slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules, "agents", engine.AgentNames())
+					slog.Info("routing_reloaded", "revision", state.Revision, "active_rules", state.ActiveRules, "agents", engine.AgentNames(), "wake_words", wake.load().size())
 				}
 				// The voice section is independent of routing: apply it even when
 				// the routing part of the file was rejected.

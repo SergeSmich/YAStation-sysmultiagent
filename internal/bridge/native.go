@@ -45,23 +45,28 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
-	streaming                       bool
-	listenOnStreamStart             bool
-	partial                         uint32
-	asrPartials                     uint32
-	asrHeard                        bool
-	replySilent                     bool
-	responseID                      string
-	final                           bool
-	header                          *header.TEventHeader
-	isText                          bool
-	ttsStarted                      bool
-	gated                           bool
-	input                           []byte
-	id                              string
-	request                         *request.TAliceRequestProto
-	text                            string
-	route                           string
+	streaming           bool
+	listenOnStreamStart bool
+	partial             uint32
+	asrPartials         uint32
+	asrHeard            bool
+	replySilent         bool
+	responseID          string
+	final               bool
+	header              *header.TEventHeader
+	isText              bool
+	ttsStarted          bool
+	gated               bool
+	input               []byte
+	id                  string
+	request             *request.TAliceRequestProto
+	text                string
+	route               string
+
+	// pin is a route chosen by the bridge before the turn started: a start word
+	// carries a preset phrase, so its text is not classified again.
+	pin string
+
 	voice                           VoiceSettings
 	voiceQueue                      []string
 	voiceChainReady                 bool
@@ -222,6 +227,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		app := req.GetApplication()
 		slog.Info("native_request_client", "request", requestTag(id), "kind", f.Kind(), "has_application", app != nil, "has_device", app.GetDeviceId() != "", "has_uuid", app.GetUuid() != "", "has_timezone", app.GetTimezone() != "", "lang", app.GetLang(), "app_id", app.GetAppId(), "client_time_bytes", len(app.GetClientTime()))
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
+		// A pinned route is read from the caller's context, not from p.ctx: p.ctx
+		// is bound to the session and would leak the pin onto later turns.
+		p.pin, _ = PinnedRoute(ctx)
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
 			return n.queueSound(ctx, p, request)
 		})
@@ -749,6 +757,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	p.started = true
 	text := p.text
 	heard := p.asrHeard
+	pin := p.pin
 	n.mu.Unlock()
 	n.wg.Go(func() {
 		if n.DecisionDelay > 0 {
@@ -776,18 +785,31 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		var err error
 		if n.resolver != nil {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
-				decision := routed.Decide(p.ctx, text)
+				var decision RouteDecision
+				if pin != "" {
+					// The bridge named the executor for this injected turn.
+					decision = RouteDecision{Route: pin, Source: "pinned"}
+				} else {
+					decision = routed.Decide(p.ctx, text)
+				}
 				n.mu.Lock()
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
-				if decision.Route != "yandex" && n.ProgressAfter > 0 {
+				// A pinned turn is a short preset answer; a filler phrase would
+				// interrupt it instead of covering a slow classification.
+				if decision.Source != "pinned" && decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
 				stop()
 			} else {
+				if pin != "" {
+					// Only a resolver that accepts a prepared decision can honour a
+					// pin; say so instead of silently classifying a named turn.
+					slog.Warn("pin_ignored", "request", requestTag(p.id), "route", pin, "reason", "resolver does not accept a prepared decision")
+				}
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}
 		}

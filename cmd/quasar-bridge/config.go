@@ -51,6 +51,30 @@ type agentConfig struct {
 	AssistantTools  bool     `json:"assistant_tools"`
 }
 
+// wakeWordConfig is one start word: what the bridge does when the wake-word
+// daemon reports hearing it. Local patch (not upstream): the daemon only
+// reports the hit, the reaction lives here so the panel and SIGHUP can change it
+// without rebuilding the daemon.
+//
+// "listen" opens the microphone as the stock assistant does, "ask" injects the
+// preset text without a microphone and pins it to the role's route, "command"
+// injects the preset text and lets routing pick the executor (home, music,
+// cloud), so a start word can turn a light on deterministically.
+type wakeWordConfig struct {
+	Word   string `json:"word"`
+	Action string `json:"action"`
+	Text   string `json:"text"`
+	Agent  string `json:"agent"`
+}
+
+// wakeWordsConfig is the start-word table. DryRun keeps detection and logging
+// but never acts silently: every word just opens the microphone, so a new word
+// can be tried without surprising the household.
+type wakeWordsConfig struct {
+	DryRun bool             `json:"dry_run"`
+	Words  []wakeWordConfig `json:"words"`
+}
+
 // deviceContextConfig is the place the bridge reports on behalf of the station.
 // Local patch (not upstream): the station ignores the set_location and
 // set_timezone directives, so local skills receive requests without a place.
@@ -101,6 +125,7 @@ type config struct {
 	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
 	Panel              panelConfig          `json:"panel"`
 	Agents             []agentConfig        `json:"agents"`
+	WakeWords          wakeWordsConfig      `json:"wake_words"`
 }
 
 func readConfig(path string) (config, error) {
@@ -249,6 +274,9 @@ func readConfig(path string) (config, error) {
 	if err := cfg.validateAgents(); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateWakeWords(); err != nil {
+		return cfg, err
+	}
 	if c := cfg.DeviceContext; c.Enabled {
 		if math.Abs(c.Lat) > 90 || math.Abs(c.Lon) > 180 {
 			return cfg, errors.New("device_context lat/lon out of range")
@@ -365,6 +393,71 @@ func (c *config) validateAgents() error {
 			return errors.New("agents[].voice conflicts with local_voice.routes")
 		}
 		c.LocalVoice.Routes[route] = a.Voice
+	}
+	return nil
+}
+
+// validateWakeWords normalizes the start-word table and checks it against the
+// role registry: a word that names an unknown role would answer silently with
+// nothing, and a "listen" word with text would look active while ignoring it.
+func (c *config) validateWakeWords() error {
+	if len(c.WakeWords.Words) == 0 {
+		c.WakeWords.Words = nil
+		return nil
+	}
+	seen := make(map[string]bool, len(c.WakeWords.Words))
+	for i := range c.WakeWords.Words {
+		w := &c.WakeWords.Words[i]
+		w.Word = normalizeWakeWord(w.Word)
+		if w.Word == "" || utf8.RuneCountInString(w.Word) > maxWakeWordRunes {
+			return fmt.Errorf("wake_words.words[]: word must be 1..%d characters", maxWakeWordRunes)
+		}
+		if seen[w.Word] {
+			return fmt.Errorf("wake_words: word %q is listed twice", w.Word)
+		}
+		seen[w.Word] = true
+		if w.Action == "" {
+			w.Action = wakeListen
+		}
+		w.Text = strings.TrimSpace(w.Text)
+		w.Agent = strings.TrimSpace(w.Agent)
+		switch w.Action {
+		case wakeListen:
+			if w.Text != "" || w.Agent != "" {
+				return fmt.Errorf("wake_words: word %q: action listen takes no text or agent", w.Word)
+			}
+		case wakeAsk:
+			if w.Text == "" {
+				return fmt.Errorf("wake_words: word %q: action ask needs text", w.Word)
+			}
+			if w.Agent != "" {
+				if !bridge.ValidAgentName(w.Agent) {
+					return fmt.Errorf("wake_words: word %q: invalid agent name", w.Word)
+				}
+				known := false
+				for _, a := range c.Agents {
+					if a.Name == w.Agent {
+						known = true
+						break
+					}
+				}
+				if !known {
+					return fmt.Errorf("wake_words: word %q: unknown agent %q", w.Word, w.Agent)
+				}
+			}
+		case wakeCommand:
+			if w.Text == "" {
+				return fmt.Errorf("wake_words: word %q: action command needs text", w.Word)
+			}
+			if w.Agent != "" {
+				return fmt.Errorf("wake_words: word %q: action command takes no agent", w.Word)
+			}
+		default:
+			return fmt.Errorf("wake_words: word %q: action must be listen, ask or command", w.Word)
+		}
+		if utf8.RuneCountInString(w.Text) > bridge.MaxSyntheticTextRunes {
+			return fmt.Errorf("wake_words: word %q: text is too long", w.Word)
+		}
 	}
 	return nil
 }

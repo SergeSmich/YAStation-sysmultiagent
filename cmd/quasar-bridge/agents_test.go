@@ -159,7 +159,7 @@ func TestReloadAgentsRejectsUnrelatedChanges(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"llm_model":"other-model","agents":[{"name":"briefing"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := reloadRouting(path, initial, engine, apply); err == nil || !strings.Contains(err.Error(), "restart required") {
+	if err := reloadRouting(path, initial, engine, reloadHooks{applyAgents: apply}); err == nil || !strings.Contains(err.Error(), "restart required") {
 		t.Fatalf("unrelated change accepted: %v", err)
 	}
 	if applied != 0 {
@@ -192,7 +192,7 @@ func TestReloadAgentsIsHotApplied(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"llm_model":"your-model","agents":[{"name":"briefing","system_prompt":"новый"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := reloadRouting(path, initial, engine, apply); err != nil {
+	if err := reloadRouting(path, initial, engine, reloadHooks{applyAgents: apply}); err != nil {
 		t.Fatalf("agent change required a restart: %v", err)
 	}
 	if applied != 2 {
