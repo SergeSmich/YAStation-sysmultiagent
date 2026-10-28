@@ -455,6 +455,12 @@ func TestUnheardActivationAnswersLocally(t *testing.T) {
 	if !wire.Decode(<-up, wire.ClientToServer).Client.GetEvent().GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() {
 		t.Fatal("ungated voice")
 	}
+	// A speaking window always streams hypotheses before the final: without one
+	// the empty final would be read as silence, not as a lost phrase.
+	partial := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "unheard"}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(false), Recognition: []*recognition.TAsrRecognition{{Normalized: new("слушай")}}}}}}})
+	if err := n.Server(ctx, websocket.MessageBinary, partial); err != nil {
+		t.Fatal(err)
+	}
 	// A final recognition with no hypotheses: exactly what the station sends
 	// when the activation caught only noise.
 	final := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "unheard"}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true)}}}}})
@@ -498,6 +504,74 @@ func TestUnheardActivationAnswersLocally(t *testing.T) {
 			}
 		default:
 			return
+		}
+	}
+}
+
+func TestSilentWindowAfterAnswerIsNotAnswered(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	up := make(chan []byte, 8)
+	down := make(chan []byte, 8)
+	routed := make(chan string, 1)
+	n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, resolverFunc(func(_ context.Context, text string) (Resolution, error) {
+		routed <- text
+		return Resolution{Route: "llm", Answer: "x"}, nil
+	}))
+	n.OnRoute = func(_, route string) { routed <- route }
+	defer n.Close()
+
+	voice := aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "silence", StreamId: new(int64(9))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
+	if err := n.Client(ctx, websocket.MessageBinary, voice); err != nil {
+		t.Fatal(err)
+	}
+	if !wire.Decode(<-up, wire.ClientToServer).Client.GetEvent().GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() {
+		t.Fatal("ungated voice")
+	}
+	// The station reopens the microphone after every answer. Nobody speaks into
+	// that window, so there is no hypothesis at all and the turn must end
+	// silently: any spoken answer would talk over the person and open the next
+	// empty window.
+	final := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "silence"}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true)}}}}})
+	if err := n.Server(ctx, websocket.MessageBinary, final); err != nil {
+		t.Fatal(err)
+	}
+	if kind := wire.Decode(<-up, wire.ClientToServer).Kind(); kind != "CancelRequest" {
+		t.Fatalf("upstream=%s want CancelRequest", kind)
+	}
+	var answer *response.TAliceResponseProto
+	for answer == nil {
+		select {
+		case b := <-down:
+			if f := wire.Decode(b, wire.ServerToClient); f.Server != nil {
+				answer = f.Server.GetEvent().GetAliceResponse()
+			}
+		case <-ctx.Done():
+			t.Fatal("a silent window was not closed")
+		}
+	}
+	if answer.GetVoiceResponse().GetHasVoiceResponse() {
+		t.Fatal("a silent window was answered out loud")
+	}
+	if answer.GetVoiceResponse().GetShouldListen() {
+		t.Fatal("a silent window keeps the microphone open")
+	}
+	if text := answer.GetVoiceResponse().GetOutputSpeech().GetText(); text != "" {
+		t.Fatalf("answer=%q", text)
+	}
+	for {
+		select {
+		case b := <-up:
+			if kind := wire.Decode(b, wire.ClientToServer).Kind(); kind == "TtsGenerate" {
+				t.Fatal("a silent window was voiced")
+			}
+		case <-time.After(100 * time.Millisecond):
+			select {
+			case route := <-routed:
+				t.Fatalf("a silent window was routed to %q", route)
+			default:
+				return
+			}
 		}
 	}
 }

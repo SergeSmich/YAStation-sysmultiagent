@@ -48,6 +48,9 @@ type nativeRequest struct {
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
+	asrPartials                     uint32
+	asrHeard                        bool
+	replySilent                     bool
 	responseID                      string
 	final                           bool
 	header                          *header.TEventHeader
@@ -675,6 +678,18 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
 		asr := e.GetAsrResult()
+		// The station streams hypotheses while the person is still speaking and
+		// closes an untouched window without a single one. Counting them is the
+		// only way to tell "nobody spoke" from "spoke but was not recognized".
+		if !asr.GetEndOfUtt() {
+			for _, r := range asr.GetRecognition() {
+				if strings.TrimSpace(r.GetNormalized()) != "" || len(r.GetWords()) > 0 {
+					p.asrHeard = true
+					p.asrPartials++
+					break
+				}
+			}
+		}
 		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
 			r := asr.GetRecognition()[0]
 			p.text = r.GetNormalized()
@@ -690,7 +705,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			p.final = true
 			// The length, not the text: an empty recognition silently sends the
 			// request back to the cloud, and that is invisible without a size.
-			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)))
+			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)), "partials", p.asrPartials)
 		}
 	case "SpotterValidation":
 		sv := e.GetSpotterValidation()
@@ -733,6 +748,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	}
 	p.started = true
 	text := p.text
+	heard := p.asrHeard
 	n.mu.Unlock()
 	n.wg.Go(func() {
 		if n.DecisionDelay > 0 {
@@ -743,9 +759,16 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			}
 		}
 		if strings.TrimSpace(text) == "" {
-			// A final recognition without a single word: routing it would send
-			// the audio to the cloud and the station would play nothing at all.
-			// A short answer confirms that the activation itself worked.
+			// A final recognition without a single word. Whether that is a lost
+			// turn or the natural end of the previous one depends on speech:
+			// the station reopens the microphone right after every answer.
+			if !heard {
+				n.skipUnheard(p)
+				return
+			}
+			// The person did speak, the recognizer gave nothing back: routing it
+			// would send the audio to the cloud and the station would play
+			// nothing at all. A short answer confirms that the activation worked.
 			n.respondUnheard(p)
 			return
 		}
@@ -841,6 +864,33 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	})
 }
 
+// skipUnheard ends an activation that caught no speech at all. Every answer
+// reopens the microphone, and the person usually says nothing to that window:
+// answering it would talk over them and chain empty turn after empty turn. The
+// turn is closed with a silent response, so the station leaves the listening
+// state instead of waiting for an answer that never comes, and the cloud stream
+// is cancelled to release the audio of the window.
+func (n *Native) skipUnheard(p *nativeRequest) {
+	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
+	p.local = true
+	p.replySilent = true
+	partials := p.asrPartials
+	n.mu.Unlock()
+	slog.Info("native_empty_asr", "request", requestTag(p.id), "action", "ignored", "partials", partials)
+	if p.gated && !p.streaming {
+		if err := n.sendCancel(p.ctx, p.id); err != nil {
+			slog.Warn("native_cancel_failed", "request", requestTag(p.id))
+		}
+	}
+	if err := n.reply(p, ""); err != nil {
+		slog.Warn("native_reply_failed", "request", requestTag(p.id))
+	}
+}
+
 // respondUnheard answers an activation that caught no words. The request is
 // never routed: an empty transcript would only reach the cloud as raw audio and
 // the station would stay silent, which is indistinguishable from a lost turn.
@@ -854,6 +904,7 @@ func (n *Native) respondUnheard(p *nativeRequest) {
 	}
 	p.local = true
 	p.route = "unheard"
+	partials := p.asrPartials
 	p.voice = n.Voice().Resolve("unheard")
 	if !p.streaming {
 		p.ttsID = newID()
@@ -863,7 +914,7 @@ func (n *Native) respondUnheard(p *nativeRequest) {
 		n.OnRoute(p.id, "unheard")
 	}
 	n.mu.Unlock()
-	slog.Info("native_empty_asr", "request", requestTag(p.id), "action", "local_reply")
+	slog.Info("native_empty_asr", "request", requestTag(p.id), "action", "local_reply", "partials", partials)
 	if p.gated && !p.streaming {
 		// A failed cancel only leaves the cloud stream open: the station still
 		// deserves the answer, so the turn must not end in silence here.
@@ -993,7 +1044,7 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
-	silentPlayback := n.hasSilentPlayback(p)
+	silentPlayback := n.hasSilentPlayback(p) || p.replySilent
 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
