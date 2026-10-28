@@ -287,7 +287,7 @@ func panelMutation(t *testing.T, path string, body any, cookie *http.Cookie, csr
 
 func TestPanelRequiresSession(t *testing.T) {
 	panel, _, _ := panelTestServer(t)
-	for _, path := range []string{"/api/panel/state", "/api/panel/voice", "/api/panel/turns", "/api/panel/logs"} {
+	for _, path := range []string{"/api/panel/state", "/api/panel/voice", "/api/panel/turns", "/api/panel/logs", "/api/panel/metrics"} {
 		recorder := httptest.NewRecorder()
 		panel.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusUnauthorized {
@@ -560,22 +560,25 @@ func readPanelCertificate(t *testing.T, path string) *x509.Certificate {
 func TestPanelPathsResolveNextToConfig(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	configPath := filepath.Join(dir, "config.json")
-	auth, tls, logs, audit := panelPaths(configPath, defaultPanelConfig())
-	if auth != filepath.Join(dir, "panel_auth.json") {
-		t.Fatalf("auth = %s", auth)
+	files := panelPaths(configPath, defaultPanelConfig())
+	if files.Auth != filepath.Join(dir, "panel_auth.json") {
+		t.Fatalf("auth = %s", files.Auth)
 	}
-	if tls != filepath.Join(dir, "tls") {
-		t.Fatalf("tls = %s", tls)
+	if files.TLS != filepath.Join(dir, "tls") {
+		t.Fatalf("tls = %s", files.TLS)
 	}
-	if logs != filepath.Join(dir, "bridge.log") {
-		t.Fatalf("logs = %s", logs)
+	if files.Log != filepath.Join(dir, "bridge.log") {
+		t.Fatalf("logs = %s", files.Log)
 	}
-	if audit != filepath.Join(dir, "panel_audit.jsonl") {
-		t.Fatalf("audit = %s", audit)
+	if files.Audit != filepath.Join(dir, "panel_audit.jsonl") {
+		t.Fatalf("audit = %s", files.Audit)
 	}
-	absolute := panelConfig{TLSDir: filepath.Join(dir, "certs"), AuthFile: "auth.json", LogPath: "b.log", AuditFile: "a.jsonl"}
-	if _, tls, _, _ = panelPaths(configPath, absolute); tls != filepath.Join(dir, "certs") {
-		t.Fatalf("absolute tls = %s", tls)
+	if files.Metrics != filepath.Join(dir, "metrics.json") {
+		t.Fatalf("metrics = %s", files.Metrics)
+	}
+	absolute := panelConfig{TLSDir: filepath.Join(dir, "certs"), AuthFile: "auth.json", LogPath: "b.log", AuditFile: "a.jsonl", MetricsFile: "m.json"}
+	if got := panelPaths(configPath, absolute); got.TLS != filepath.Join(dir, "certs") || got.Metrics != filepath.Join(dir, "m.json") {
+		t.Fatalf("absolute paths = %+v", got)
 	}
 }
 

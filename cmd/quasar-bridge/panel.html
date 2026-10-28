@@ -24,6 +24,24 @@
     </section>
 
     <section>
+      <div class="section-head">
+        <h2>Станция</h2>
+        <div class="toolbar">
+          <span id="station-uptime" class="muted small">—</span>
+          <div id="metrics-range" class="ranges">
+            <button type="button" class="range" data-range="900">15 мин</button>
+            <button type="button" class="range is-active" data-range="3600">1 ч</button>
+            <button type="button" class="range" data-range="21600">6 ч</button>
+            <button type="button" class="range" data-range="86400">24 ч</button>
+          </div>
+        </div>
+      </div>
+      <div id="station-alerts" class="alerts"></div>
+      <div id="charts" class="charts"></div>
+      <p id="station-events" class="muted small"></p>
+    </section>
+
+    <section>
       <h2>Голос</h2>
       <div id="voice" class="panel">—</div>
       <form id="voice-form" class="panel form">

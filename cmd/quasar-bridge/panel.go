@@ -47,22 +47,24 @@ const (
 // read-only; stage B adds the few actions worth having from a browser, each
 // behind a session, a CSRF token and an audit record.
 type panelConfig struct {
-	Enabled   bool     `json:"enabled"`
-	Listen    string   `json:"listen"`
-	TLSDir    string   `json:"tls_dir"`
-	AuthFile  string   `json:"auth_file"`
-	AuditFile string   `json:"audit_file"`
-	LogPath   string   `json:"log_path"`
-	Hosts     []string `json:"hosts"`
+	Enabled     bool     `json:"enabled"`
+	Listen      string   `json:"listen"`
+	TLSDir      string   `json:"tls_dir"`
+	AuthFile    string   `json:"auth_file"`
+	AuditFile   string   `json:"audit_file"`
+	LogPath     string   `json:"log_path"`
+	MetricsFile string   `json:"metrics_file"`
+	Hosts       []string `json:"hosts"`
 }
 
 func defaultPanelConfig() panelConfig {
 	return panelConfig{
-		Listen:    "0.0.0.0:8444",
-		TLSDir:    "tls",
-		AuthFile:  "panel_auth.json",
-		AuditFile: "panel_audit.jsonl",
-		LogPath:   "bridge.log",
+		Listen:      "0.0.0.0:8444",
+		TLSDir:      "tls",
+		AuthFile:    "panel_auth.json",
+		AuditFile:   "panel_audit.jsonl",
+		LogPath:     "bridge.log",
+		MetricsFile: "metrics.json",
 	}
 }
 
@@ -87,6 +89,9 @@ func (c panelConfig) Validate() error {
 	if strings.TrimSpace(c.LogPath) == "" {
 		return errors.New("panel.log_path must not be empty")
 	}
+	if strings.TrimSpace(c.MetricsFile) == "" {
+		return errors.New("panel.metrics_file must not be empty")
+	}
 	for _, host := range c.Hosts {
 		if strings.TrimSpace(host) == "" {
 			return errors.New("panel.hosts must name hosts")
@@ -107,6 +112,7 @@ type panelDeps struct {
 	Voice      *voiceState
 	Journal    func() journal.Config
 	Live       func() *bridge.Native
+	Metrics    *panelMetrics
 }
 
 // panelServer is the second listener. It reads the same live state as /healthz
@@ -123,6 +129,7 @@ type panelServer struct {
 	voice      *voiceState
 	live       func() *bridge.Native
 	journal    func() journal.Config
+	metrics    *panelMetrics
 	logPath    string
 	login      *template.Template
 	mux        *http.ServeMux
@@ -148,8 +155,15 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		voice:      deps.Voice,
 		live:       deps.Live,
 		journal:    deps.Journal,
+		metrics:    deps.Metrics,
 		logPath:    cfg.LogPath,
 		login:      login,
+	}
+	// A panel built without a metrics collector still serves the endpoint: the
+	// series is simply empty, and the charts draw "нет данных" instead of the
+	// page failing to load.
+	if p.metrics == nil {
+		p.metrics = newPanelMetrics("")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.index)
@@ -163,6 +177,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
 	mux.HandleFunc("GET /api/panel/turns", p.requireSession(p.apiTurns))
 	mux.HandleFunc("GET /api/panel/logs", p.requireSession(p.apiLogs))
+	mux.HandleFunc("GET /api/panel/metrics", p.requireSession(p.apiMetrics))
 	mux.HandleFunc("POST /api/panel/voice", p.requireMutation(p.apiVoiceUpdate))
 	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
@@ -602,9 +617,19 @@ func panelTLSHosts(extra []string) []string {
 	return unique
 }
 
+// panelFiles are the state files the panel owns, all resolved next to the
+// configuration file.
+type panelFiles struct {
+	Auth    string
+	TLS     string
+	Log     string
+	Audit   string
+	Metrics string
+}
+
 // panelPaths resolves the panel files next to the configuration file, so the
 // process can be started from any working directory.
-func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath, auditPath string) {
+func panelPaths(configPath string, cfg panelConfig) panelFiles {
 	dir := filepath.Dir(configPath)
 	resolve := func(value string) string {
 		if filepath.IsAbs(value) {
@@ -612,5 +637,11 @@ func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath, 
 		}
 		return filepath.Join(dir, value)
 	}
-	return resolve(cfg.AuthFile), resolve(cfg.TLSDir), resolve(cfg.LogPath), resolve(cfg.AuditFile)
+	return panelFiles{
+		Auth:    resolve(cfg.AuthFile),
+		TLS:     resolve(cfg.TLSDir),
+		Log:     resolve(cfg.LogPath),
+		Audit:   resolve(cfg.AuditFile),
+		Metrics: resolve(cfg.MetricsFile),
+	}
 }

@@ -66,8 +66,8 @@ func main() {
 		if loaded, err := readConfig(*path); err == nil {
 			panel = loaded.Panel
 		}
-		authPath, _, _, _ := panelPaths(*path, panel)
-		if err := setPanelPassword(authPath, *panelLogin, os.Stdin, os.Stdout); err != nil {
+		files := panelPaths(*path, panel)
+		if err := setPanelPassword(files.Auth, *panelLogin, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -400,32 +400,36 @@ func main() {
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	var panelHTTP *http.Server
 	var panelCert, panelKey string
+	var metrics *panelMetrics
 	if cfg.Panel.Enabled {
-		authPath, tlsDir, logPath, auditPath := panelPaths(*path, cfg.Panel)
-		auth, err := newPanelAuthStore(authPath)
+		files := panelPaths(*path, cfg.Panel)
+		auth, err := newPanelAuthStore(files.Auth)
 		if err != nil {
 			slog.Error("panel rejected", "error", err)
 			os.Exit(1)
 		}
-		panelCert, panelKey, err = ensurePanelTLS(tlsDir, cfg.Panel.Hosts)
+		panelCert, panelKey, err = ensurePanelTLS(files.TLS, cfg.Panel.Hosts)
 		if err != nil {
 			slog.Error("panel certificate failed", "error", err)
 			os.Exit(1)
 		}
 		panelCfg := cfg.Panel
-		panelCfg.LogPath = logPath
-		panelCfg.AuditFile = auditPath
+		panelCfg.LogPath = files.Log
+		panelCfg.AuditFile = files.Audit
+		panelCfg.MetricsFile = files.Metrics
+		metrics = newPanelMetrics(files.Metrics)
 		snapshot := func() map[string]any {
 			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount)
 		}
 		panel, err := newPanelServer(panelCfg, panelDeps{
 			ConfigPath: *path,
-			AuthPath:   authPath,
+			AuthPath:   files.Auth,
 			Auth:       auth,
 			Snapshot:   snapshot,
 			Voice:      voice,
 			Journal:    logs.Config,
 			Live:       liveVoice,
+			Metrics:    metrics,
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
@@ -435,6 +439,9 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if metrics != nil {
+		go metrics.start(ctx)
+	}
 	reloads := make(chan os.Signal, 1)
 	signal.Notify(reloads, syscall.SIGHUP)
 	defer signal.Stop(reloads)
@@ -485,6 +492,12 @@ func main() {
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("listener failed")
 		os.Exit(1)
+	}
+	// Save synchronously on the way out: the sampler goroutine wakes on ctx.Done
+	// as well, but the process must not exit before the last points reach the
+	// disk, so the charts survive a restart.
+	if metrics != nil {
+		metrics.save(true)
 	}
 }
 

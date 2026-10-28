@@ -134,6 +134,32 @@ td.meta { white-space: nowrap; color: var(--muted); font-variant-numeric: tabula
 .logs .line-warn { color: var(--warn); }
 .logs .line-err { color: var(--err); }
 
+.ranges { display: inline-flex; gap: 6px; }
+.ranges button { padding: 3px 9px; font-size: 12px; }
+.ranges button.is-active { border-color: var(--accent); color: var(--accent); }
+
+.alerts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.alert {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+}
+.alert.warn { border-color: #5a4a24; color: var(--warn); }
+.alert.critical { border-color: #5c2f2b; color: var(--err); }
+
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.chart-box {
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px 4px;
+}
+.chart { display: block; width: 100%; height: auto; }
+
 button {
   font: inherit;
   color: var(--text);
