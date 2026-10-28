@@ -379,6 +379,14 @@ func main() {
 		}
 		writeProbeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 	})
+	mux.HandleFunc("POST /ask", askHandler(func() textInjector {
+		liveNativeMu.RLock()
+		defer liveNativeMu.RUnlock()
+		if liveNative == nil {
+			return nil
+		}
+		return liveNative
+	}))
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(cfg.AllowedIPs) > 0 {
@@ -530,4 +538,52 @@ func writeProbeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = stdjson.NewEncoder(w).Encode(value)
+}
+
+// textInjector is the slice of *bridge.Native that /ask needs: a synthetic frame
+// goes through the same Client entry point as a frame from the station.
+type textInjector interface {
+	Client(context.Context, websocket.MessageType, []byte) error
+}
+
+// askHandler lets the station ask a question on its own: it injects a synthetic
+// TextInput into the live session, so cloud turns can be exercised without
+// speaking. It is loopback-only, because the frame speaks with the station's
+// upstream credentials.
+func askHandler(native func() textInjector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requestIsLoopback(r) {
+			writeProbeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return
+		}
+		var body struct {
+			Text string `json:"text"`
+		}
+		decoder := stdjson.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+		if err := decoder.Decode(&body); err != nil {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		frame, id, err := bridge.SyntheticTextInput(body.Text)
+		if err != nil {
+			writeProbeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		injector := native()
+		if injector == nil {
+			writeProbeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no upstream session"})
+			return
+		}
+		// Detached from r.Context(): a caller that hangs up mid-routing must not
+		// cancel the turn that is already in flight.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+		defer cancel()
+		if err := injector.Client(ctx, websocket.MessageBinary, frame); err != nil {
+			slog.Error("ask_injected_failed", "request", id, "error", err)
+			writeProbeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Info("ask_injected", "request", id, "text_bytes", len(strings.TrimSpace(body.Text)))
+		writeProbeJSON(w, http.StatusOK, map[string]any{"ok": true, "request": id})
+	}
 }
