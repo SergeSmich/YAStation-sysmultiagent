@@ -213,6 +213,11 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
+		// The station decides on its own whether to send the client info block;
+		// without it a patched time zone has nowhere to go. Log only the presence
+		// and the public descriptors, never the identifiers themselves.
+		app := req.GetApplication()
+		slog.Info("native_request_client", "request", requestTag(id), "kind", f.Kind(), "has_application", app != nil, "has_device", app.GetDeviceId() != "", "has_uuid", app.GetUuid() != "", "has_timezone", app.GetTimezone() != "", "lang", app.GetLang(), "app_id", app.GetAppId(), "client_time_bytes", len(app.GetClientTime()))
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
 			return n.queueSound(ctx, p, request)
