@@ -181,7 +181,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		timestamps := stat.GetTimestamps()
 		reported := func(value string) bool { return value != "" && value != "0" }
-		slog.Info("native_playback_status", "request", requestTag(stat.GetRequestMessageId()), "error_class", kind, "playback_reported", reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()), "finished_reported", reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()))
+		slog.Info("native_playback_status", "request", requestTag(stat.GetRequestMessageId()), "error_class", kind, "error", statError(stat.GetError()), "playback_reported", reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()), "finished_reported", reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()))
 	}
 	var req *request.TAliceRequestProto
 	switch f.Kind() {
@@ -521,7 +521,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 	}
 	p, isTTS := n.findLocked(e.GetHeader())
-	if p != nil {
+	if p != nil && cloudAnswerFrame(f.Kind()) {
 		n.cloudFrameReceivedLocked(p)
 	}
 	if r := e.GetAliceResponse(); r != nil {
@@ -651,10 +651,6 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
 		asr := e.GetAsrResult()
-		if asr.GetEndOfUtt() {
-			p.final = true
-			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String())
-		}
 		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
 			r := asr.GetRecognition()[0]
 			p.text = r.GetNormalized()
@@ -666,6 +662,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				p.text = strings.Join(words, " ")
 			}
 		}
+		if asr.GetEndOfUtt() {
+			p.final = true
+			// The length, not the text: an empty recognition silently sends the
+			// request back to the cloud, and that is invisible without a size.
+			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)))
+		}
+	case "SpotterValidation":
+		sv := e.GetSpotterValidation()
+		slog.Info("native_spotter_validation", "request", requestTag(p.id), "result", sv.GetResult().String(), "canceled_cause", sv.GetCanceledCauseOfMultiactivation())
 
 	}
 	n.mu.Unlock()
@@ -761,8 +766,16 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 			}
 			n.mu.Unlock()
-			if submitted && n.FirstFrameTimeout > 0 {
+			// An activation that caught no words has nothing to fall back to:
+			// arming the watchdog would only make the station announce a
+			// failure after a request it never understood. The request still
+			// goes upstream, because the cloud re-recognizes the audio itself.
+			empty := strings.TrimSpace(text) == ""
+			if submitted && n.FirstFrameTimeout > 0 && !empty {
 				n.armCloudWatchdog(p)
+			}
+			if empty {
+				slog.Info("native_empty_asr", "request", requestTag(p.id), "sent", submitted)
 			}
 			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
 			return
@@ -795,6 +808,19 @@ func (n *Native) armCloudWatchdog(p *nativeRequest) {
 	gen := p.cloudWatchdogGen
 	slog.Info("native_cloud_watchdog_started", "request", requestTag(p.id), "timeout_ms", n.FirstFrameTimeout.Milliseconds())
 	time.AfterFunc(n.FirstFrameTimeout, func() { n.cloudWatchdogFiredCallback(p, gen) })
+}
+
+// cloudAnswerFrame reports whether an upstream event is the answer starting
+// rather than protocol chatter. The cloud also correlates SpotterValidation,
+// AsrResult and RequestStatAck with the request and the station answers within
+// milliseconds, so any of them counted as "the first frame" would disarm the
+// stall watchdog for good: the fallback could never fire.
+func cloudAnswerFrame(kind string) bool {
+	switch kind {
+	case "ServerRequestReady", "AliceResponse", "DeferredAliceResponse", "TtsSpeak", "EventException":
+		return true
+	}
+	return false
 }
 
 // cloudFrameReceivedLocked invalidates a request's timer on its first correlated upstream frame.
@@ -1041,6 +1067,23 @@ func requestTag(id string) string {
 	sum := sha256.Sum256([]byte(id))
 	return fmt.Sprintf("%x", sum[:4])
 }
+
+// statError keeps the station's own wording next to the class: every error that
+// is neither a timeout nor a cancellation collapses into "other", so without
+// the text a failed turn cannot be explained afterwards. The string comes from
+// the device, so control characters are flattened to spaces (a raw newline
+// would split a JSONL record if the handler ever runs in text mode) and the
+// length is bounded before it reaches the log the operator reads.
+func statError(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = statErrorControl.Replace(raw)
+	if runes := []rune(raw); len(runes) > 160 {
+		raw = string(runes[:160]) + "…"
+	}
+	return raw
+}
+
+var statErrorControl = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
 
 // Quasar uses Yandex TGUID spelling (8-8-8-8), not RFC UUID spelling.
 func newID() string {

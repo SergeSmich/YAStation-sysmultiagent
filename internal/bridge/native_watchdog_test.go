@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,9 @@ import (
 	recognition "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
 	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/request_stat_ack"
+	ready "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/server_request_ready"
+	spotter "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	fileplayer "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
@@ -115,14 +119,41 @@ func TestNativeCloudWatchdogFiresAndSendsErrorResponse(t *testing.T) {
 	}
 }
 
+func TestStatErrorFlattensAndBounds(t *testing.T) {
+	cases := map[string]string{
+		"":              "",
+		"  timeout  ":   "timeout",
+		"a\nb":          "a b",
+		"x\r\ny\tz":     "x  y z",
+		"\\ \"quoted\"": "\\ \"quoted\"",
+	}
+	// A newline from the device must not be able to break a JSONL record in
+	// two if the log handler is ever switched to text, and a very long message
+	// must not bloat the log the panel shows.
+	for raw, want := range cases {
+		if got := statError(raw); got != want {
+			t.Fatalf("statError(%q)=%q, want %q", raw, got, want)
+		}
+	}
+	long := strings.Repeat("я", 400)
+	got := statError(long)
+	if runes := []rune(got); len(runes) != 161 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("statError truncated to %d runes, want 161 ending in an ellipsis", len(runes))
+	}
+	// The device chooses the bytes: invalid UTF-8 must degrade, not panic.
+	if got := statError(string([]byte{0xff, 0xfe, 'a'})); !strings.HasSuffix(got, "a") {
+		t.Fatalf("invalid UTF-8 survived as %q", got)
+	}
+}
+
 func TestNativeCloudWatchdogStopsOnFirstFrame(t *testing.T) {
 	n, up, down, stalls := newWatchdogTestSession(t, 150*time.Millisecond, "yandex")
 	_ = waitWatchdogFrame(t, up, "TextInput")
-	progress := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+	readyFrame := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
 		Header: &header.TEventHeader{RefMessageId: "cloud-watchdog-request"},
-		Event:  &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{Recognition: []*recognition.TAsrRecognition{{Normalized: new("прогресс")}}}},
+		Event:  &server.TServerMessage_TEvent_ServerRequestReady{ServerRequestReady: &ready.TServerRequestReady{}},
 	}}}
-	if err := n.Server(t.Context(), websocket.MessageBinary, aa(progress)); err != nil {
+	if err := n.Server(t.Context(), websocket.MessageBinary, aa(readyFrame)); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -142,6 +173,45 @@ func TestNativeCloudWatchdogStopsOnFirstFrame(t *testing.T) {
 			t.Fatal("fallback sent after first server frame")
 		}
 	default:
+	}
+}
+
+// The cloud correlates its own acknowledgement frames with the request within
+// milliseconds of the forward. None of them is the answer, so none may disarm
+// the first-frame watchdog: otherwise a silent stall never falls back.
+func TestNativeCloudWatchdogIgnoresAcknowledgedChatter(t *testing.T) {
+	n, up, down, stalls := newWatchdogTestSession(t, 150*time.Millisecond, "yandex")
+	_ = waitWatchdogFrame(t, up, "TextInput")
+	eventHeader := func() *header.TEventHeader { return &header.TEventHeader{RefMessageId: "cloud-watchdog-request"} }
+	chatter := []*server.TServerMessage{
+		{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+			Header: eventHeader(),
+			Event:  &server.TServerMessage_TEvent_SpotterValidation{SpotterValidation: &spotter.TSpotterValidation{Result: spotter.TSpotterValidation_Ok}},
+		}}},
+		{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+			Header: eventHeader(),
+			Event:  &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), Recognition: []*recognition.TAsrRecognition{{Normalized: new("")}}}},
+		}}},
+		{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+			Header: eventHeader(),
+			Event:  &server.TServerMessage_TEvent_RequestStatAck{RequestStatAck: &ack.TRequestStatAck{}},
+		}}},
+	}
+	for _, msg := range chatter {
+		if err := n.Server(t.Context(), websocket.MessageBinary, aa(msg)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancel := waitWatchdogFrame(t, up, "CancelRequest")
+	if got := cancel.Client.GetEvent().GetCancelRequest().GetRequestMessageId(); got != "cloud-watchdog-request" {
+		t.Fatalf("cancel request id=%q", got)
+	}
+	answer := waitWatchdogFrame(t, down, "AliceResponse").Server.GetEvent().GetAliceResponse()
+	if got := answer.GetResponse().GetCards()[0].GetText(); got != "Сейчас не получилось получить ответ." {
+		t.Fatalf("fallback text=%q", got)
+	}
+	if stalls.Load() != 1 {
+		t.Fatalf("stall count=%d", stalls.Load())
 	}
 }
 
