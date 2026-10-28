@@ -16,7 +16,7 @@ func TestHealthzReportsUpstreamCounters(t *testing.T) {
 	proxy.RecordUpstreamFrame()
 	voice := new(voiceState)
 	voice.Store(bridge.VoiceConfig{Voice: "omazh", Volume: 1.2})
-	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, proxy, voice, new(atomic.Int64), new(atomic.Int64))
+	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, proxy, voice, new(wakeState), new(atomic.Int64), new(atomic.Int64))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/healthz", nil))
 	if response.Code != 200 {

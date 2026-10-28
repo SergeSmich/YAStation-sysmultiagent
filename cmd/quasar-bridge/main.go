@@ -253,6 +253,16 @@ func main() {
 	}
 	applyWake(cfg)
 	slog.Info("wake_words_ready", "words", wake.load().size(), "dry_run", cfg.WakeWords.DryRun)
+	// One hot-apply for the two operator-edited sections: the panel writes them
+	// together, so the roles and the words that name them are replaced the same
+	// way a restart would read them.
+	applySettingsConfig := func(next config) error {
+		if err := applyAgents(next); err != nil {
+			return err
+		}
+		applyWake(next)
+		return nil
+	}
 	if *query != "" || *check || *route != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
@@ -350,7 +360,7 @@ func main() {
 			}
 		}
 	}
-	mux.HandleFunc("GET /healthz", healthzHandler(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount))
+	mux.HandleFunc("GET /healthz", healthzHandler(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, wake, &clientCount, &serverCount))
 	voiceHandler := voiceConfigHandler(path, voice, liveVoice)
 	mux.HandleFunc("GET /api/voice-config", voiceHandler)
 	mux.HandleFunc("PUT /api/voice-config", voiceHandler)
@@ -452,7 +462,7 @@ func main() {
 		panelCfg.MetricsFile = files.Metrics
 		metrics = newPanelMetrics(files.Metrics)
 		snapshot := func() map[string]any {
-			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount)
+			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, wake, &clientCount, &serverCount)
 		}
 		panel, err := newPanelServer(panelCfg, panelDeps{
 			ConfigPath: *path,
@@ -463,6 +473,7 @@ func main() {
 			Journal:    logs.Config,
 			Live:       liveVoice,
 			Metrics:    metrics,
+			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig},
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
@@ -538,15 +549,15 @@ func main() {
 // healthSnapshot is the single description of the live bridge state: /healthz
 // serves it as JSON and the panel shows the same values, so the two views can
 // never drift apart.
-func healthSnapshot(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) map[string]any {
+func healthSnapshot(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, wake *wakeState, clientCount, serverCount *atomic.Int64) map[string]any {
 	state := engine.RoutingStatus()
-	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "agents": engine.AgentNames(), "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
+	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "agents": engine.AgentNames(), "wake_words": wake.status(), "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
 }
 
-func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
+func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, wake *wakeState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.Marshal(healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, clientCount, serverCount))
+		data, _ := json.Marshal(healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, wake, clientCount, serverCount))
 		_, _ = w.Write(data)
 	}
 }

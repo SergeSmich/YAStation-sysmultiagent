@@ -78,6 +78,13 @@ func (s *wakeState) load() *wakeTable { return s.table.Load() }
 // a reload that removes every word must really stop acting on them.
 func (s *wakeState) set(cfg wakeWordsConfig) { s.table.Store(newWakeTable(cfg)) }
 
+// status describes the table for /healthz and the panel. The words themselves
+// are not published there: they are user configuration, not bridge telemetry.
+func (s *wakeState) status() map[string]any {
+	table := s.load()
+	return map[string]any{"words": table.size(), "dry_run": table != nil && table.dryRun}
+}
+
 // wakeHandler accepts a start word reported by the wake-word daemon and decides
 // what the station should do next. Loopback only: it acts with the station's
 // upstream credentials and may open the microphone.

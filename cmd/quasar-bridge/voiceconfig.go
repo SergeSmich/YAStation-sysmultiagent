@@ -95,10 +95,17 @@ func (p voicePatch) apply(current bridge.VoiceConfig) bridge.VoiceConfig {
 }
 
 // writeLocalVoice replaces only the local_voice member of the configuration
-// file: every other member keeps the exact bytes it had, so a hand-edited
-// documented field is never re-serialized from our struct. The previous file is
-// kept next to it and the new one is swapped in atomically.
+// file. See writeConfigMembers for the guarantees; the snapshot keeps the name
+// the earlier releases documented.
 func writeLocalVoice(path string, voice bridge.VoiceConfig) error {
+	return writeConfigMembers(path, ".voice-prev", map[string]any{"local_voice": voice})
+}
+
+// writeConfigMembers replaces only the named members of the configuration file:
+// every other member keeps the exact bytes it had, so a hand-edited documented
+// field is never re-serialized from our struct. The previous file is kept next
+// to it under snapshotSuffix and the new one is swapped in atomically.
+func writeConfigMembers(path, snapshotSuffix string, members map[string]any) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return errors.New("cannot read configuration file")
@@ -107,16 +114,18 @@ func writeLocalVoice(path string, voice bridge.VoiceConfig) error {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return errors.New("invalid configuration JSON")
 	}
-	value, err := json.Marshal(voice)
-	if err != nil {
-		return err
+	for name, value := range members {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		top[name] = jsontext.Value(encoded)
 	}
-	top["local_voice"] = jsontext.Value(value)
 	data, err := json.Marshal(top, jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(path+".voice-prev", raw); err != nil {
+	if err := writeFileAtomic(path+snapshotSuffix, raw); err != nil {
 		return fmt.Errorf("cannot keep the previous configuration: %w", err)
 	}
 	return writeFileAtomic(path, data)

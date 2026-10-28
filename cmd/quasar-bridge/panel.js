@@ -6,6 +6,7 @@ const TURNS_URL = '/api/panel/turns?limit=50';
 const LOGS_URL = '/api/panel/logs?lines=200';
 const VOICE_URL = '/api/panel/voice';
 const VOICE_TEST_URL = '/api/panel/voice/test';
+const SETTINGS_URL = '/api/panel/settings';
 const PASSWORD_URL = '/api/panel/password';
 const METRICS_URL = '/api/panel/metrics?range=';
 const REFRESH_STATE_MS = 5000;
@@ -15,6 +16,10 @@ const REFRESH_METRICS_MS = 10000;
 let csrfToken = '';
 let voiceFormDirty = false;
 let metricsRange = 3600;
+let agentsState = [];
+let wordsState = [];
+let settingsActions = ['listen', 'ask', 'command'];
+let settingsVoices = [];
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -462,6 +467,256 @@ function parseCandidates(text) {
   return text.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
+const ACTION_LABELS = {
+  listen: 'открыть микрофон',
+  ask: 'тихий вопрос роли',
+  command: 'команда'
+};
+
+function settingsField(labelText, control, extraClass) {
+  const field = el('label', 'field' + (extraClass ? ' ' + extraClass : ''));
+  field.appendChild(el('span', null, labelText));
+  field.appendChild(control);
+  return field;
+}
+
+function option(value, label) {
+  const item = el('option', null, label);
+  item.value = value;
+  return item;
+}
+
+function settingsControl(tag, field, value, placeholder) {
+  const control = el(tag);
+  control.dataset.field = field;
+  control.value = value == null ? '' : String(value);
+  if (placeholder) control.placeholder = placeholder;
+  return control;
+}
+
+function renderWakeWords(force) {
+  const list = document.getElementById('wake-words-list');
+  if (!force && list.contains(document.activeElement)) return;
+  list.replaceChildren();
+  if (!wordsState.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет старт-слов. Добавьте первое слово.'));
+    return;
+  }
+  wordsState.forEach((word, index) => {
+    const row = el('div', 'settings-row form');
+    row.dataset.kind = 'word';
+    row.dataset.index = String(index);
+
+    const wordInput = settingsControl('input', 'word', word.word, 'например, брифинг');
+    wordInput.type = 'text';
+    wordInput.autocomplete = 'off';
+    row.appendChild(settingsField('Слово или фраза', wordInput));
+
+    const action = settingsControl('select', 'action', word.action || 'listen');
+    for (const name of settingsActions) {
+      action.appendChild(option(name, ACTION_LABELS[name] || name));
+    }
+    action.value = word.action || 'listen';
+    row.appendChild(settingsField('Действие', action));
+
+    const agent = settingsControl('select', 'agent', word.agent);
+    agent.className = 'word-agent-select';
+    agent.appendChild(option('', 'без роли'));
+    for (const item of agentsState) {
+      if (item.name) agent.appendChild(option(item.name, item.name));
+    }
+    row.appendChild(settingsField('Роль', agent));
+
+    const text = settingsControl('textarea', 'text', word.text, 'Фраза для роли или команды');
+    text.rows = 3;
+    const textField = settingsField('Текст / фраза', text, 'wide');
+    row.appendChild(textField);
+
+    const remove = el('button', 'ghost', 'Удалить');
+    remove.type = 'button';
+    remove.dataset.remove = 'word';
+    row.appendChild(remove);
+    list.appendChild(row);
+    updateWordRow(row, word);
+  });
+}
+
+function renderAgents(force) {
+  const list = document.getElementById('agents-list');
+  if (!force && list.contains(document.activeElement)) return;
+  list.replaceChildren();
+  if (!agentsState.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет ролей. Добавьте первую роль.'));
+    syncAgentSelects();
+    return;
+  }
+  agentsState.forEach((agent, index) => {
+    const row = el('div', 'settings-row form');
+    row.dataset.kind = 'agent';
+    row.dataset.index = String(index);
+    row.dataset.syncedName = agent.name || '';
+
+    const name = settingsControl('input', 'name', agent.name, 'латиница в нижнем регистре, цифры, - и _');
+    name.type = 'text';
+    name.autocomplete = 'off';
+    row.appendChild(settingsField('Имя роли', name));
+
+    const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
+    prompt.rows = 5;
+    row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
+
+    const voice = settingsControl('select', 'voice', agent.voice);
+    voice.appendChild(option('', 'голос Ассистента'));
+    for (const voiceName of settingsVoices) voice.appendChild(option(voiceName, voiceName));
+    voice.value = agent.voice || '';
+    row.appendChild(settingsField('Голос', voice));
+
+    const model = settingsControl('input', 'model', agent.model, 'модель по умолчанию');
+    model.type = 'text';
+    model.autocomplete = 'off';
+    row.appendChild(settingsField('Модель', model));
+
+    const remove = el('button', 'ghost', 'Удалить');
+    remove.type = 'button';
+    remove.dataset.remove = 'agent';
+    row.appendChild(remove);
+    list.appendChild(row);
+  });
+  syncAgentSelects();
+}
+
+function updateWordRow(row, word) {
+  const listening = word.action === 'listen';
+  const asking = word.action === 'ask';
+  const agent = row.querySelector('[data-field="agent"]');
+  const text = row.querySelector('[data-field="text"]');
+  if (agent) {
+    agent.value = word.agent || '';
+    agent.disabled = !asking;
+  }
+  if (text) {
+    text.value = word.text || '';
+    text.closest('.field').hidden = listening;
+  }
+}
+
+function syncAgentSelects() {
+  const list = document.getElementById('wake-words-list');
+  for (const select of list.querySelectorAll('.word-agent-select')) {
+    const index = Number(select.closest('[data-kind="word"]').dataset.index);
+    const word = wordsState[index];
+    if (!word) continue;
+    const current = word.agent || '';
+    const names = agentsState.map((agent) => agent.name).filter(Boolean);
+    if (current && !names.includes(current)) word.agent = '';
+    select.replaceChildren(option('', 'без роли'));
+    for (const name of names) select.appendChild(option(name, name));
+    select.value = word.agent || '';
+  }
+}
+
+function renderSettings(payload, force) {
+  agentsState = Array.isArray(payload.agents) ? payload.agents : [];
+  const wakeWords = payload.wake_words || {};
+  wordsState = Array.isArray(wakeWords.words) ? wakeWords.words : [];
+  settingsActions = Array.isArray(payload.actions) ? payload.actions : ['listen', 'ask', 'command'];
+  settingsVoices = Array.isArray(payload.voices) ? payload.voices : [];
+
+  const form = document.getElementById('settings-form');
+  if (force || !form.contains(document.activeElement)) {
+    document.getElementById('settings-dry-run').checked = Boolean(wakeWords.dry_run);
+  }
+  renderWakeWords(force);
+  renderAgents(force);
+}
+
+async function loadSettings() {
+  renderSettings(await getJSON(SETTINGS_URL), false);
+}
+
+async function refreshSettingsSafe() {
+  try {
+    await loadSettings();
+  } catch (error) {
+    const status = document.getElementById('settings-status');
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
+function editSettingsField(event) {
+  const control = event.target;
+  if (!control.dataset.field) return;
+  const row = control.closest('[data-kind]');
+  if (!row) return;
+  const index = Number(row.dataset.index);
+  if (row.dataset.kind === 'word') {
+    const word = wordsState[index];
+    if (!word) return;
+    word[control.dataset.field] = control.value;
+    if (control.dataset.field === 'action') {
+      if (word.action === 'listen') {
+        word.text = '';
+        word.agent = '';
+      } else if (word.action === 'command') {
+        word.agent = '';
+      }
+      updateWordRow(row, word);
+    }
+  } else if (row.dataset.kind === 'agent') {
+    const agent = agentsState[index];
+    if (!agent) return;
+    agent[control.dataset.field] = control.value;
+    if (control.dataset.field === 'name' && event.type === 'change') {
+      const previousName = row.dataset.syncedName || '';
+      if (previousName && previousName !== agent.name) {
+        for (const word of wordsState) {
+          if (word.agent === previousName) word.agent = agent.name;
+        }
+      }
+      row.dataset.syncedName = agent.name || '';
+      syncAgentSelects();
+    }
+  }
+}
+
+function removeSettingsItem(event) {
+  const button = event.target.closest('[data-remove]');
+  if (!button) return;
+  const row = button.closest('[data-kind]');
+  if (!row) return;
+  const index = Number(row.dataset.index);
+  if (row.dataset.kind === 'word') {
+    wordsState.splice(index, 1);
+    renderWakeWords(true);
+  } else if (row.dataset.kind === 'agent') {
+    agentsState.splice(index, 1);
+    syncAgentSelects();
+    renderAgents(true);
+  }
+}
+
+async function submitSettings(event) {
+  event.preventDefault();
+  const status = document.getElementById('settings-status');
+  status.classList.remove('error');
+  status.textContent = 'сохраняю…';
+  try {
+    const payload = await postJSON(SETTINGS_URL, {
+      agents: agentsState,
+      wake_words: {
+        dry_run: document.getElementById('settings-dry-run').checked,
+        words: wordsState
+      }
+    });
+    status.textContent = payload && payload.unchanged ? 'без изменений' : 'применено';
+    renderSettings(payload || {}, true);
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
 async function submitVoice(event) {
   event.preventDefault();
   const status = document.getElementById('voice-status');
@@ -562,12 +817,26 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('voice-form').addEventListener('submit', submitVoice);
   document.getElementById('voice-form').addEventListener('input', () => { voiceFormDirty = true; });
   document.getElementById('voice-test').addEventListener('click', testVoice);
+  const settingsForm = document.getElementById('settings-form');
+  settingsForm.addEventListener('submit', submitSettings);
+  settingsForm.addEventListener('input', editSettingsField);
+  settingsForm.addEventListener('change', editSettingsField);
+  settingsForm.addEventListener('click', removeSettingsItem);
+  document.getElementById('add-wake-word').addEventListener('click', () => {
+    wordsState.push({ word: '', action: 'listen', text: '', agent: '' });
+    renderWakeWords(true);
+  });
+  document.getElementById('add-agent').addEventListener('click', () => {
+    agentsState.push({ name: '', system_prompt: '', voice: '', model: '' });
+    renderAgents(true);
+  });
   document.getElementById('password-form').addEventListener('submit', submitPassword);
   loadSession()
     .then(() => {
       refreshAll();
       refreshLogsSafe();
       refreshMetricsSafe();
+      refreshSettingsSafe();
       startTimers();
     })
     .catch((error) => {

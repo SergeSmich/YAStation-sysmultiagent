@@ -72,6 +72,32 @@
     </section>
 
     <section>
+      <h2>Старт-слова и роли</h2>
+      <p class="muted">Слово, фраза и промпт задаются здесь и применяются без перезапуска моста.</p>
+      <form id="settings-form" class="panel settings-form">
+        <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry_run)</label>
+        <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
+
+        <h3>Старт-слова</h3>
+        <div id="wake-words-list" class="settings-list"></div>
+        <div class="actions">
+          <button type="button" id="add-wake-word">+ слово</button>
+        </div>
+
+        <h3>Роли</h3>
+        <div id="agents-list" class="settings-list"></div>
+        <div class="actions">
+          <button type="button" id="add-agent">+ роль</button>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="settings-save">Сохранить</button>
+          <span id="settings-status" class="muted" aria-live="polite"></span>
+        </div>
+      </form>
+    </section>
+
+    <section>
       <h2>Последние ходы</h2>
       <div id="turns" class="panel">—</div>
     </section>

@@ -238,6 +238,7 @@ func panelTestServer(t *testing.T) (*panelServer, *panelAuthStore, string) {
 		Voice:      voice,
 		Journal:    func() journal.Config { return journal.Config{Enabled: false} },
 		Live:       func() *bridge.Native { return nil },
+		Settings:   settingsDeps{Voice: voice, Live: func() *bridge.Native { return nil }},
 	})
 	if err != nil {
 		t.Fatal(err)

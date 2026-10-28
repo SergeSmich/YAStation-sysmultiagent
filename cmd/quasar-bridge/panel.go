@@ -113,6 +113,7 @@ type panelDeps struct {
 	Journal    func() journal.Config
 	Live       func() *bridge.Native
 	Metrics    *panelMetrics
+	Settings   settingsDeps
 }
 
 // panelServer is the second listener. It reads the same live state as /healthz
@@ -130,6 +131,7 @@ type panelServer struct {
 	live       func() *bridge.Native
 	journal    func() journal.Config
 	metrics    *panelMetrics
+	settings   settingsDeps
 	logPath    string
 	login      *template.Template
 	mux        *http.ServeMux
@@ -156,6 +158,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		live:       deps.Live,
 		journal:    deps.Journal,
 		metrics:    deps.Metrics,
+		settings:   deps.Settings,
 		logPath:    cfg.LogPath,
 		login:      login,
 	}
@@ -175,10 +178,12 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("GET /api/panel/session", p.requireSession(p.apiSession))
 	mux.HandleFunc("GET /api/panel/state", p.requireSession(p.apiState))
 	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
+	mux.HandleFunc("GET /api/panel/settings", p.requireSession(p.apiSettings))
 	mux.HandleFunc("GET /api/panel/turns", p.requireSession(p.apiTurns))
 	mux.HandleFunc("GET /api/panel/logs", p.requireSession(p.apiLogs))
 	mux.HandleFunc("GET /api/panel/metrics", p.requireSession(p.apiMetrics))
 	mux.HandleFunc("POST /api/panel/voice", p.requireMutation(p.apiVoiceUpdate))
+	mux.HandleFunc("POST /api/panel/settings", p.requireMutation(p.apiSettingsUpdate))
 	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
 	p.mux = mux
