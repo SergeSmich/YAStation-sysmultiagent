@@ -252,5 +252,13 @@
     "ttl_seconds": 300,
     "max_turns": 6,
     "max_chars": 12000
+  },
+  "panel": {
+    "enabled": false,
+    "listen": "0.0.0.0:8444",
+    "tls_dir": "tls",
+    "auth_file": "panel_auth.json",
+    "log_path": "bridge.log",
+    "hosts": []
   }
 }

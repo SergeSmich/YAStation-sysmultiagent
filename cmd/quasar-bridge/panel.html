@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Миди — Quasar Bridge</title>
+  <link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Миди <span class="muted">Quasar Bridge</span></h1>
+    <div class="bar-right">
+      <span id="stamp" class="muted">—</span>
+      <button id="refresh" type="button">Обновить</button>
+      <form method="post" action="/logout">
+        <button type="submit" class="ghost">Выйти</button>
+      </form>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <section>
+      <h2>Голос</h2>
+      <div id="voice" class="panel">—</div>
+    </section>
+
+    <section>
+      <h2>Последние ходы</h2>
+      <div id="turns" class="panel">—</div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Лог</h2>
+        <div class="toolbar">
+          <label class="check"><input type="checkbox" id="warn-only"> только WARN/ERROR</label>
+          <span id="log-path" class="muted"></span>
+        </div>
+      </div>
+      <pre id="logs" class="logs">—</pre>
+    </section>
+  </main>
+
+  <script src="/panel.js"></script>
+</body>
+</html>

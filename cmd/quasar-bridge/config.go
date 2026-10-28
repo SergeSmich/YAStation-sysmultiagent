@@ -52,10 +52,11 @@ type config struct {
 	LocalVoice         bridge.VoiceConfig   `json:"local_voice"`
 	FirstFrameMS       int                  `json:"first_frame_ms"`
 	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
+	Panel              panelConfig          `json:"panel"`
 }
 
 func readConfig(path string) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, Panel: defaultPanelConfig()}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, errors.New("cannot read configuration file")
@@ -84,6 +85,11 @@ func readConfig(path string) (config, error) {
 	}
 	if len(cfg.AllowedIPs) == 0 {
 		cfg.AllowedIPs = nil
+	}
+	// json/v2 turns an absent slice into an empty one; the reload comparison
+	// must see the same value for a file that was not edited.
+	if len(cfg.Panel.Hosts) == 0 {
+		cfg.Panel.Hosts = nil
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = "localhost:8443"
@@ -202,6 +208,9 @@ func readConfig(path string) (config, error) {
 		if cfg.UpstreamPing.TimeoutMS < 100 || cfg.UpstreamPing.TimeoutMS >= cfg.UpstreamPing.IntervalMS {
 			return cfg, errors.New("upstream_ping.timeout_ms must be 100..interval_ms")
 		}
+	}
+	if err := cfg.Panel.Validate(); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }

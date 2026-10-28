@@ -58,7 +58,21 @@ func main() {
 	speakerConfig := flag.String("speaker-config", "/system/vendor/quasar/quasar.cfg", "firmware configuration path")
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
+	panelPasswd := flag.Bool("panel-passwd", false, "set the LAN panel password (reads stdin; generates one on a terminal)")
+	panelLogin := flag.String("panel-login", "admin", "panel login name used by -panel-passwd")
 	flag.Parse()
+	if *panelPasswd {
+		panel := defaultPanelConfig()
+		if loaded, err := readConfig(*path); err == nil {
+			panel = loaded.Panel
+		}
+		authPath, _, _ := panelPaths(*path, panel)
+		if err := setPanelPassword(authPath, *panelLogin, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *speakerAction != "" {
 		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -384,6 +398,32 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	var panelHTTP *http.Server
+	var panelCert, panelKey string
+	if cfg.Panel.Enabled {
+		authPath, tlsDir, logPath := panelPaths(*path, cfg.Panel)
+		auth, err := loadPanelCredential(authPath)
+		if err != nil {
+			slog.Error("panel rejected", "error", err)
+			os.Exit(1)
+		}
+		panelCert, panelKey, err = ensurePanelTLS(tlsDir, cfg.Panel.Hosts)
+		if err != nil {
+			slog.Error("panel certificate failed", "error", err)
+			os.Exit(1)
+		}
+		panelCfg := cfg.Panel
+		panelCfg.LogPath = logPath
+		snapshot := func() map[string]any {
+			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount)
+		}
+		panel, err := newPanelServer(panelCfg, auth, snapshot, voice, logs.Config)
+		if err != nil {
+			slog.Error("panel setup failed", "error", err)
+			os.Exit(1)
+		}
+		panelHTTP = &http.Server{Addr: cfg.Panel.Listen, Handler: panel, ReadHeaderTimeout: 10 * time.Second}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	reloads := make(chan os.Signal, 1)
@@ -413,8 +453,20 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if panelHTTP != nil {
+			_ = panelHTTP.Shutdown(shutdownCtx)
+		}
 		_ = server.Shutdown(shutdownCtx)
 	}()
+	if panelHTTP != nil {
+		go func() {
+			slog.Info("panel listening", "address", cfg.Panel.Listen, "tls", true)
+			if err := panelHTTP.ListenAndServeTLS(panelCert, panelKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// The panel is auxiliary: losing it must not stop the voice bridge.
+				slog.Error("panel listener failed", "error", err)
+			}
+		}()
+	}
 	slog.Info("listening", "address", cfg.Listen, "mode", cfg.Mode, "routing_revision", engine.RoutingStatus().Revision)
 	if cfg.TLSCert != "" && cfg.TLSKey != "" {
 		err = server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
@@ -427,11 +479,18 @@ func main() {
 	}
 }
 
+// healthSnapshot is the single description of the live bridge state: /healthz
+// serves it as JSON and the panel shows the same values, so the two views can
+// never drift apart.
+func healthSnapshot(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) map[string]any {
+	state := engine.RoutingStatus()
+	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
+}
+
 func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()})
+		data, _ := json.Marshal(healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, clientCount, serverCount))
 		_, _ = w.Write(data)
 	}
 }

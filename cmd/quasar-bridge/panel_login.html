@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Миди — вход в панель</title>
+  <link rel="stylesheet" href="/panel.css">
+</head>
+<body class="login-body">
+  <form class="login" method="post" action="/login">
+    <h1>Миди <span class="muted">панель</span></h1>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <label>Логин
+      <input name="login" type="text" autocomplete="username" autocapitalize="none" required autofocus>
+    </label>
+    <label>Пароль
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Войти</button>
+    <p class="muted small">Пароль задаётся на станции: <code>quasar-bridge -panel-passwd</code></p>
+  </form>
+</body>
+</html>

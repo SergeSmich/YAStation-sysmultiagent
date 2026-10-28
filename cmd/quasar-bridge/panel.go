@@ -1,0 +1,582 @@
+package main
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"embed"
+	stdjson "encoding/json"
+	"encoding/pem"
+	"errors"
+	"html/template"
+	"io"
+	"log/slog"
+	"math/big"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"quasarbridge/internal/bridge"
+	"quasarbridge/internal/journal"
+)
+
+// panelAssets carries the single-page UI: no build step, no network fetches,
+// everything served from the bridge itself.
+//
+//go:embed panel.html panel_login.html panel.css panel.js
+var panelAssets embed.FS
+
+// Bounds for the two read-only views. The panel must never load a whole log or
+// a whole conversation file into the memory of a 1 GB station.
+const (
+	panelLogTailBytes    = 512 << 10
+	panelJournalBytes    = 4 << 20
+	panelLogLineLimit    = 400
+	panelTurnLimit       = 200
+	panelLoginBodyLimit  = 4 << 10
+	panelCertificateDays = 5 * 365
+)
+
+// panelConfig switches on the LAN monitoring panel: a second, TLS-only listener
+// that shows the bridge state, the recent turns and the log. Stage A is
+// read-only; every mutating view arrives later, behind the same session.
+type panelConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Listen   string   `json:"listen"`
+	TLSDir   string   `json:"tls_dir"`
+	AuthFile string   `json:"auth_file"`
+	LogPath  string   `json:"log_path"`
+	Hosts    []string `json:"hosts"`
+}
+
+func defaultPanelConfig() panelConfig {
+	return panelConfig{
+		Listen:   "0.0.0.0:8444",
+		TLSDir:   "tls",
+		AuthFile: "panel_auth.json",
+		LogPath:  "bridge.log",
+	}
+}
+
+// Validate checks the section only when the panel is enabled, so a disabled
+// panel can keep the defaults.
+func (c panelConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
+		return errors.New("panel.listen must be host:port")
+	}
+	if strings.TrimSpace(c.TLSDir) == "" {
+		return errors.New("panel.tls_dir must not be empty")
+	}
+	if strings.TrimSpace(c.AuthFile) == "" {
+		return errors.New("panel.auth_file must not be empty")
+	}
+	if strings.TrimSpace(c.LogPath) == "" {
+		return errors.New("panel.log_path must not be empty")
+	}
+	for _, host := range c.Hosts {
+		if strings.TrimSpace(host) == "" {
+			return errors.New("panel.hosts must name hosts")
+		}
+	}
+	return nil
+}
+
+// panelServer is the second listener. It reads the same live state as /healthz
+// through a snapshot closure, so the panel never opens a second WebSocket or a
+// second journal writer.
+type panelServer struct {
+	auth     panelCredential
+	sessions *panelSessions
+	limiter  *panelLimiter
+	snapshot func() map[string]any
+	voice    *voiceState
+	journal  func() journal.Config
+	logPath  string
+	login    *template.Template
+	mux      *http.ServeMux
+}
+
+func newPanelServer(cfg panelConfig, auth panelCredential, snapshot func() map[string]any, voice *voiceState, journalConfig func() journal.Config) (*panelServer, error) {
+	loginPage, err := panelAssets.ReadFile("panel_login.html")
+	if err != nil {
+		return nil, err
+	}
+	login, err := template.New("login").Parse(string(loginPage))
+	if err != nil {
+		return nil, err
+	}
+	p := &panelServer{
+		auth:     auth,
+		sessions: newPanelSessions(),
+		limiter:  newPanelLimiter(),
+		snapshot: snapshot,
+		voice:    voice,
+		journal:  journalConfig,
+		logPath:  cfg.LogPath,
+		login:    login,
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", p.index)
+	mux.HandleFunc("GET /login", p.showLogin)
+	mux.HandleFunc("POST /login", p.submitLogin)
+	mux.HandleFunc("POST /logout", p.logout)
+	mux.HandleFunc("GET /panel.css", p.asset("panel.css", "text/css; charset=utf-8"))
+	mux.HandleFunc("GET /panel.js", p.asset("panel.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /api/panel/state", p.requireSession(p.apiState))
+	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
+	mux.HandleFunc("GET /api/panel/turns", p.requireSession(p.apiTurns))
+	mux.HandleFunc("GET /api/panel/logs", p.requireSession(p.apiLogs))
+	p.mux = mux
+	return p, nil
+}
+
+// ServeHTTP adds the headers a small self-hosted UI should always send. The
+// policy forbids inline script and inline style, so the page ships them as
+// separate embedded files.
+func (p *panelServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Content-Security-Policy",
+		"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	p.mux.ServeHTTP(w, r)
+}
+
+func (p *panelServer) index(w http.ResponseWriter, r *http.Request) {
+	if !p.sessions.valid(panelSessionToken(r)) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	page, err := panelAssets.ReadFile("panel.html")
+	if err != nil {
+		http.Error(w, "panel is unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(page)
+}
+
+func (p *panelServer) asset(name, contentType string) http.HandlerFunc {
+	data, err := panelAssets.ReadFile(name)
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if err != nil {
+			http.NotFound(w, nil)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(data)
+	}
+}
+
+func (p *panelServer) showLogin(w http.ResponseWriter, r *http.Request) {
+	if p.sessions.valid(panelSessionToken(r)) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	p.renderLogin(w, http.StatusOK, "")
+}
+
+func (p *panelServer) submitLogin(w http.ResponseWriter, r *http.Request) {
+	ip := panelClientIP(r)
+	if p.limiter.blocked(ip) {
+		p.renderLogin(w, http.StatusTooManyRequests, "Слишком много неудачных попыток. Подождите несколько минут.")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, panelLoginBodyLimit)
+	if err := r.ParseForm(); err != nil {
+		p.renderLogin(w, http.StatusBadRequest, "Некорректный запрос.")
+		return
+	}
+	login := strings.TrimSpace(r.PostFormValue("login"))
+	password := r.PostFormValue("password")
+	if !p.auth.verify(login, password) {
+		blocked := p.limiter.fail(ip)
+		slog.Warn("panel_login_failed", "ip", ip, "blocked", blocked)
+		if blocked {
+			p.renderLogin(w, http.StatusTooManyRequests, "Слишком много неудачных попыток. Подождите несколько минут.")
+			return
+		}
+		p.renderLogin(w, http.StatusUnauthorized, "Неверный логин или пароль.")
+		return
+	}
+	token, expires := p.sessions.issue()
+	if token == "" {
+		p.renderLogin(w, http.StatusInternalServerError, "Не удалось создать сессию.")
+		return
+	}
+	p.limiter.forget(ip)
+	panelSetSessionCookie(w, token, expires)
+	slog.Info("panel_login_ok", "ip", ip, "login", login)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (p *panelServer) logout(w http.ResponseWriter, r *http.Request) {
+	p.sessions.revoke(panelSessionToken(r))
+	panelClearSessionCookie(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+func (p *panelServer) renderLogin(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = p.login.Execute(w, struct{ Error string }{Error: message})
+}
+
+func (p *panelServer) requireSession(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.sessions.valid(panelSessionToken(r)) {
+			writePanelJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (p *panelServer) apiState(w http.ResponseWriter, _ *http.Request) {
+	payload := map[string]any{
+		"bridge": p.snapshot(),
+		"voice":  map[string]any{"local_voice": p.voice.Load(), "revision": p.voice.Revision(), "supported": bridge.KnownVoices},
+		"panel":  map[string]any{"log_path": p.logPath, "now": time.Now().Format(time.RFC3339)},
+	}
+	writePanelJSON(w, http.StatusOK, payload)
+}
+
+func (p *panelServer) apiVoice(w http.ResponseWriter, _ *http.Request) {
+	writePanelJSON(w, http.StatusOK, map[string]any{
+		"local_voice": p.voice.Load(),
+		"revision":    p.voice.Revision(),
+		"supported":   bridge.KnownVoices,
+	})
+}
+
+// apiTurns aggregates the journal into one row per spoken turn. The panel shows
+// the same records the LLM history tool reads, so what the operator sees is
+// what the assistant remembered.
+func (p *panelServer) apiTurns(w http.ResponseWriter, r *http.Request) {
+	limit := panelQueryInt(r, "limit", 50, 1, panelTurnLimit)
+	cfg := p.journal()
+	if !cfg.Enabled {
+		writePanelJSON(w, http.StatusOK, map[string]any{"enabled": false, "turns": []panelTurn{}})
+		return
+	}
+	turns, truncated, err := readPanelTurns(cfg.Path, limit)
+	if err != nil {
+		writePanelJSON(w, http.StatusOK, map[string]any{"enabled": true, "turns": []panelTurn{}, "error": "журнал недоступен: " + filepath.Base(cfg.Path)})
+		return
+	}
+	writePanelJSON(w, http.StatusOK, map[string]any{
+		"enabled":   true,
+		"path":      cfg.Path,
+		"turns":     turns,
+		"truncated": truncated,
+	})
+}
+
+func (p *panelServer) apiLogs(w http.ResponseWriter, r *http.Request) {
+	limit := panelQueryInt(r, "lines", 120, 1, panelLogLineLimit)
+	level := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("level")))
+	lines, truncated, err := readPanelLog(p.logPath, limit, level)
+	if err != nil {
+		writePanelJSON(w, http.StatusOK, map[string]any{"path": p.logPath, "lines": []string{}, "error": "лог недоступен"})
+		return
+	}
+	writePanelJSON(w, http.StatusOK, map[string]any{
+		"path":      p.logPath,
+		"level":     level,
+		"lines":     lines,
+		"truncated": truncated,
+	})
+}
+
+// panelTurn is one spoken exchange, assembled from several journal events that
+// share the session id and the request id.
+type panelTurn struct {
+	Time      time.Time `json:"time"`
+	Session   string    `json:"session,omitempty"`
+	Route     string    `json:"route,omitempty"`
+	Speech    string    `json:"speech,omitempty"`
+	Answer    string    `json:"answer,omitempty"`
+	Delivered bool      `json:"delivered,omitempty"`
+	ElapsedMS int64     `json:"elapsed_ms,omitempty"`
+}
+
+// readPanelTurns parses the tail of the NDJSON journal, newest turn first.
+func readPanelTurns(path string, limit int) ([]panelTurn, bool, error) {
+	lines, truncated, err := readTailLines(path, panelJournalBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	var order []string
+	byKey := make(map[string]*panelTurn)
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event journal.Event
+		if err := stdjson.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		key := event.Session + "\x00" + event.Request
+		switch event.Event {
+		case "request":
+			turn := &panelTurn{Time: event.Time, Session: event.Session}
+			byKey[key] = turn
+			order = append(order, key)
+		case "transcript":
+			if turn := byKey[key]; turn != nil {
+				if event.Speech != "" {
+					turn.Speech = event.Speech
+				} else if event.Text != "" {
+					turn.Speech = event.Text
+				}
+			}
+		case "route":
+			if turn := byKey[key]; turn != nil && event.Route != "" {
+				turn.Route = event.Route
+			}
+		case "response", "cloud_response":
+			turn := byKey[key]
+			if turn == nil {
+				continue
+			}
+			if event.Text != "" {
+				turn.Answer = event.Text
+			} else if event.Speech != "" {
+				turn.Answer = event.Speech
+			}
+			turn.Delivered = event.Delivered
+			if event.ElapsedMS > 0 {
+				turn.ElapsedMS = event.ElapsedMS
+			}
+		}
+	}
+	turns := make([]panelTurn, 0, limit)
+	for i := len(order) - 1; i >= 0 && len(turns) < limit; i-- {
+		turn := byKey[order[i]]
+		if turn == nil {
+			continue
+		}
+		turns = append(turns, *turn)
+	}
+	return turns, truncated, nil
+}
+
+// readPanelLog returns the last lines of the bridge log, optionally filtered to
+// one slog level. Non-JSON lines written by the run.sh wrapper are kept unmatched
+// only in the unfiltered view.
+func readPanelLog(path string, limit int, level string) ([]string, bool, error) {
+	lines, truncated, err := readTailLines(path, panelLogTailBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	selected := make([]string, 0, limit)
+	for i := len(lines) - 1; i >= 0 && len(selected) < limit; i-- {
+		line := lines[i]
+		if level != "" && !strings.Contains(strings.ToUpper(line), "\"LEVEL\":\""+level+"\"") && !strings.Contains(strings.ToUpper(line), level) {
+			continue
+		}
+		selected = append(selected, line)
+	}
+	// Reverse back into file order: the UI reads top-down.
+	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
+		selected[left], selected[right] = selected[right], selected[left]
+	}
+	return selected, truncated, nil
+}
+
+// readTailLines returns the lines of the last maxBytes of a file. The boolean
+// reports that older lines exist outside that window.
+func readTailLines(path string, maxBytes int64) ([]string, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if info.IsDir() {
+		return nil, false, errors.New("not a file")
+	}
+	size := info.Size()
+	start := int64(0)
+	truncated := false
+	if size > maxBytes {
+		start = size - maxBytes
+		truncated = true
+	}
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes))
+	if err != nil {
+		return nil, false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	if start > 0 && len(lines) > 0 {
+		lines = lines[1:] // the first line is likely cut in half
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, truncated, nil
+}
+
+func panelQueryInt(r *http.Request, name string, fallback, low, high int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback
+	}
+	value := 0
+	for _, digit := range raw {
+		if digit < '0' || digit > '9' {
+			return fallback
+		}
+		value = value*10 + int(digit-'0')
+		if value > high {
+			return high
+		}
+	}
+	if value < low {
+		return low
+	}
+	return value
+}
+
+func writePanelJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	encoder := stdjson.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(payload)
+}
+
+// ensurePanelTLS generates a self-signed certificate on first start and reuses
+// it afterwards, so the browser warning stays stable across restarts.
+func ensurePanelTLS(dir string, extraHosts []string) (string, string, error) {
+	certPath := filepath.Join(dir, "panel.crt")
+	keyPath := filepath.Join(dir, "panel.key")
+	certOK := panelRegularFile(certPath)
+	keyOK := panelRegularFile(keyPath)
+	if certOK && keyOK {
+		return certPath, keyPath, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", err
+	}
+	if err := generatePanelCertificate(certPath, keyPath, panelTLSHosts(extraHosts)); err != nil {
+		return "", "", err
+	}
+	return certPath, keyPath, nil
+}
+
+func panelRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+func generatePanelCertificate(certPath, keyPath string, hosts []string) error {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Midi panel", Organization: []string{"quasar-bridge"}},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(0, 0, panelCertificateDays),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	for _, host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+			continue
+		}
+		template.DNSNames = append(template.DNSNames, host)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := writeFileAtomic(keyPath, keyPEM); err != nil {
+		return err
+	}
+	return writeFileAtomic(certPath, certPEM)
+}
+
+// panelTLSHosts lists every name the certificate should cover: the loopback, the
+// station hostname, every interface address and the configured extras. The
+// browser is then happy with whichever address the operator typed.
+func panelTLSHosts(extra []string) []string {
+	hosts := []string{"localhost", "127.0.0.1", "::1"}
+	if name, err := os.Hostname(); err == nil && strings.TrimSpace(name) != "" {
+		hosts = append(hosts, name)
+	}
+	if interfaces, err := net.Interfaces(); err == nil {
+		for _, iface := range interfaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP != nil {
+					hosts = append(hosts, ipnet.IP.String())
+				}
+			}
+		}
+	}
+	hosts = append(hosts, extra...)
+	seen := make(map[string]bool, len(hosts))
+	unique := hosts[:0]
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		unique = append(unique, host)
+	}
+	return unique
+}
+
+// panelPaths resolves the panel files next to the configuration file, so the
+// process can be started from any working directory.
+func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath string) {
+	dir := filepath.Dir(configPath)
+	resolve := func(value string) string {
+		if filepath.IsAbs(value) {
+			return value
+		}
+		return filepath.Join(dir, value)
+	}
+	return resolve(cfg.AuthFile), resolve(cfg.TLSDir), resolve(cfg.LogPath)
+}
