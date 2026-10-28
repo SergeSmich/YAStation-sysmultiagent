@@ -1,10 +1,17 @@
 'use strict';
 
 const STATE_URL = '/api/panel/state';
+const SESSION_URL = '/api/panel/session';
 const TURNS_URL = '/api/panel/turns?limit=50';
 const LOGS_URL = '/api/panel/logs?lines=200';
+const VOICE_URL = '/api/panel/voice';
+const VOICE_TEST_URL = '/api/panel/voice/test';
+const PASSWORD_URL = '/api/panel/password';
 const REFRESH_STATE_MS = 5000;
 const REFRESH_LOGS_MS = 15000;
+
+let csrfToken = '';
+let voiceFormDirty = false;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -27,6 +34,35 @@ async function getJSON(url) {
     throw new Error(url + ' -> ' + response.status);
   }
   return response.json();
+}
+
+async function postJSON(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'X-Panel-CSRF': csrfToken
+    },
+    cache: 'no-store',
+    body: JSON.stringify(body)
+  });
+  if (response.status === 401) {
+    window.location.replace('/login');
+    throw new Error('unauthorized');
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+  if (!response.ok) {
+    const message = (payload && (payload.error || payload.message)) || ('ошибка ' + response.status);
+    throw new Error(message);
+  }
+  return payload;
 }
 
 function card(label, value, note, tone) {
@@ -101,6 +137,30 @@ function renderState(payload) {
     kv.appendChild(el('dd', null, value));
   }
   voiceBox.appendChild(kv);
+  syncVoiceForm(local, voice.supported);
+}
+
+// syncVoiceForm mirrors the live settings into the edit form, unless the
+// operator is typing in it: a refresh must never overwrite a half-typed value.
+function syncVoiceForm(local, supported) {
+  const select = document.getElementById('voice-name');
+  if (!select.dataset.filled) {
+    const fallback = el('option', null, 'штатный голос Алисы');
+    fallback.value = '';
+    select.appendChild(fallback);
+    for (const name of supported || []) {
+      const option = el('option', null, name);
+      option.value = name;
+      select.appendChild(option);
+    }
+    select.dataset.filled = '1';
+  }
+  const form = document.getElementById('voice-form');
+  if (voiceFormDirty || form.contains(document.activeElement)) return;
+  select.value = local.voice || '';
+  document.getElementById('voice-candidates').value = (local.candidates || []).join(', ');
+  document.getElementById('voice-speed').value = local.speed ? String(local.speed) : '';
+  document.getElementById('voice-volume').value = local.volume ? String(local.volume) : '';
 }
 
 function renderTurns(payload) {
@@ -200,6 +260,85 @@ async function refreshLogsSafe() {
   }
 }
 
+function parseCandidates(text) {
+  return text.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+}
+
+async function submitVoice(event) {
+  event.preventDefault();
+  const status = document.getElementById('voice-status');
+  status.textContent = 'применяю…';
+  const patch = {
+    voice: document.getElementById('voice-name').value,
+    candidates: parseCandidates(document.getElementById('voice-candidates').value)
+  };
+  const speed = document.getElementById('voice-speed').value.trim();
+  if (speed !== '') patch.speed = Number(speed);
+  const volume = document.getElementById('voice-volume').value.trim();
+  if (volume !== '') patch.volume = Number(volume);
+  try {
+    const payload = await postJSON(VOICE_URL, patch);
+    voiceFormDirty = false;
+    status.textContent = payload && payload.unchanged ? 'без изменений' : 'применено';
+    await refreshState();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function testVoice() {
+  const status = document.getElementById('voice-status');
+  const play = document.getElementById('voice-play').checked;
+  status.textContent = play ? 'синтез и воспроизведение на станции…' : 'синтез…';
+  try {
+    const payload = await postJSON(VOICE_TEST_URL, {
+      voice: document.getElementById('voice-name').value,
+      play: play,
+      per_case_ms: 5000
+    });
+    const result = payload && payload.results && payload.results[0];
+    if (result && result.ok) {
+      status.textContent = 'голос принят, ' + result.elapsed_ms + ' мс' + (play ? ' — слушайте станцию' : '');
+    } else {
+      status.textContent = 'ошибка: ' + ((result && result.error) || 'нет ответа');
+    }
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function submitPassword(event) {
+  event.preventDefault();
+  const status = document.getElementById('pw-status');
+  const current = document.getElementById('pw-current').value;
+  const next = document.getElementById('pw-next').value;
+  const confirm = document.getElementById('pw-confirm').value;
+  if (next !== confirm) {
+    status.textContent = 'новые пароли не совпадают';
+    return;
+  }
+  if (next.length < 8) {
+    status.textContent = 'пароль короче 8 символов';
+    return;
+  }
+  status.textContent = 'меняю…';
+  try {
+    await postJSON(PASSWORD_URL, { current: current, next: next });
+    status.textContent = 'пароль изменён, остальные сессии закрыты';
+    document.getElementById('password-form').reset();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+// loadSession fetches the CSRF token bound to this browser session. Without it
+// every mutating request is refused by the server.
+async function loadSession() {
+  const session = await getJSON(SESSION_URL);
+  csrfToken = session.csrf || '';
+  if (!csrfToken) throw new Error('no csrf token');
+}
+
 function startTimers() {
   setInterval(() => { if (!document.hidden) refreshAll(); }, REFRESH_STATE_MS);
   setInterval(() => { if (!document.hidden) refreshLogsSafe(); }, REFRESH_LOGS_MS);
@@ -211,7 +350,18 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshLogsSafe();
   });
   document.getElementById('warn-only').addEventListener('change', refreshLogsSafe);
-  refreshAll();
-  refreshLogsSafe();
-  startTimers();
+  document.getElementById('voice-form').addEventListener('submit', submitVoice);
+  document.getElementById('voice-form').addEventListener('input', () => { voiceFormDirty = true; });
+  document.getElementById('voice-test').addEventListener('click', testVoice);
+  document.getElementById('password-form').addEventListener('submit', submitPassword);
+  loadSession()
+    .then(() => {
+      refreshAll();
+      refreshLogsSafe();
+      startTimers();
+    })
+    .catch((error) => {
+      console.error(error);
+      document.getElementById('stamp').textContent = 'нет связи';
+    });
 });

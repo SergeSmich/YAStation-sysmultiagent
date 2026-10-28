@@ -101,6 +101,7 @@ type Native struct {
 	blocked           map[uint32]*nativeRequest
 	probes            map[string]*probeEntry
 	probeStreams      map[uint32]struct{}
+	probePlay         map[uint32]struct{}
 	probeBusy         atomic.Bool
 	wg                sync.WaitGroup
 	OnRoute           func(id, route string)
@@ -117,7 +118,7 @@ type Native struct {
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}}
+	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}, probePlay: map[uint32]struct{}{}}
 }
 
 // SetVoice replaces the speech configuration for every answer that has not
@@ -157,6 +158,7 @@ func (n *Native) Close() {
 		delete(n.probes, id)
 	}
 	clear(n.probeStreams)
+	clear(n.probePlay)
 	n.mu.Unlock()
 	n.wg.Wait()
 }
@@ -354,6 +356,11 @@ func (n *Native) handleProbeResponseLocked(kind string, e *server.TServerMessage
 		result.OK = true
 		if streamID := uint32(h.GetStreamId()); streamID != 0 {
 			n.probeStreams[streamID] = struct{}{}
+			if entry.play() {
+				// The sample is meant to be heard: its audio frames are forwarded
+				// to the station instead of being swallowed with the probe.
+				n.probePlay[streamID] = struct{}{}
+			}
 			if entry.streams == nil {
 				entry.streams = make(map[uint32]struct{})
 			}
@@ -372,7 +379,9 @@ func (n *Native) handleProbeResponseLocked(kind string, e *server.TServerMessage
 		default:
 		}
 	}
-	return true
+	// A playing probe keeps its TtsSpeak on the normal path, so the station
+	// learns about the stream it is about to hear.
+	return !(entry.play() && kind == "TtsSpeak")
 }
 
 func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byte) error {
@@ -382,8 +391,10 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Lock()
 			streamID := binary.BigEndian.Uint32(data)
 			_, probeStream := n.probeStreams[streamID]
+			_, probePlay := n.probePlay[streamID]
 			p := n.streams[streamID]
-			drop := probeStream || n.blocked[streamID] != nil || (p != nil && p.canceled)
+			// A playing probe is the one exception: its audio goes to the speaker.
+			drop := (probeStream && !probePlay) || n.blocked[streamID] != nil || (p != nil && p.canceled)
 			if p != nil && !drop {
 				n.cloudFrameReceivedLocked(p)
 			}
@@ -411,6 +422,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		if _, probeStream := n.probeStreams[streamID]; probeStream {
 			if sc.GetClose() != nil {
 				delete(n.probeStreams, streamID)
+				delete(n.probePlay, streamID)
 				for _, entry := range n.probes {
 					delete(entry.streams, streamID)
 					if entry.completed && len(entry.streams) == 0 {
@@ -500,8 +512,13 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 	}
 	if f.Kind() == "TtsSpeak" {
-		delete(n.streams, uint32(e.GetHeader().GetStreamId()))
-		delete(n.blocked, uint32(e.GetHeader().GetStreamId()))
+		// A played probe shares this path; never drop a real stream that happens
+		// to carry the same id.
+		streamID := uint32(e.GetHeader().GetStreamId())
+		if _, probe := n.probeStreams[streamID]; !probe {
+			delete(n.streams, streamID)
+			delete(n.blocked, streamID)
+		}
 	}
 	p, isTTS := n.findLocked(e.GetHeader())
 	if p != nil {

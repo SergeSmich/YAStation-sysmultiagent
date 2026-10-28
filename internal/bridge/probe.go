@@ -21,6 +21,9 @@ type VoiceProbeCase struct {
 	Speed   float64 `json:"speed"`
 	Volume  float64 `json:"volume"`
 	Text    string  `json:"text"`
+	// Play forwards the synthesized sample to the station instead of swallowing
+	// it, so the operator hears the candidate voice on the device itself.
+	Play bool `json:"play,omitempty"`
 }
 
 // VoiceProbeResult is the outcome of one case.
@@ -41,6 +44,9 @@ type probeEntry struct {
 	grace     time.Duration
 	cleanup   *time.Timer
 }
+
+// play reports whether the sample of this probe should be heard on the station.
+func (e *probeEntry) play() bool { return e != nil && e.value.Play }
 
 // Probe sends synthesis probes sequentially over the live upstream connection.
 func (n *Native) Probe(ctx context.Context, cases []VoiceProbeCase, perCase time.Duration) ([]VoiceProbeResult, error) {
@@ -161,6 +167,7 @@ func (n *Native) removeProbe(id string) {
 func (n *Native) dropProbeStreamsLocked(entry *probeEntry) {
 	for streamID := range entry.streams {
 		delete(n.probeStreams, streamID)
+		delete(n.probePlay, streamID)
 	}
 	entry.streams = nil
 }

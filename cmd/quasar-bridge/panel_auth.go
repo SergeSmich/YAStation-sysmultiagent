@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -166,34 +167,46 @@ func writePanelCredential(path string, c panelCredential) error {
 }
 
 // panelSessions keeps the issued tokens in memory: a restart of the bridge logs
-// every panel session out, which is the desired default for a home device.
+// every panel session out, which is the desired default for a home device. Each
+// session carries its own CSRF token, so a stray cross-site form post cannot
+// guess what to send.
 type panelSessions struct {
 	mu    sync.Mutex
-	items map[string]time.Time
+	items map[string]panelSessionEntry
 	now   func() time.Time
 }
 
-func newPanelSessions() *panelSessions {
-	return &panelSessions{items: make(map[string]time.Time), now: time.Now}
+type panelSessionEntry struct {
+	expires time.Time
+	csrf    string
 }
 
-func (s *panelSessions) issue() (string, time.Time) {
+func newPanelSessions() *panelSessions {
+	return &panelSessions{items: make(map[string]panelSessionEntry), now: time.Now}
+}
+
+func (s *panelSessions) issue() (string, string, time.Time) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return "", time.Time{}
+		return "", "", time.Time{}
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
+	csrfRaw := make([]byte, 24)
+	if _, err := rand.Read(csrfRaw); err != nil {
+		return "", "", time.Time{}
+	}
+	csrf := base64.RawURLEncoding.EncodeToString(csrfRaw)
 	expires := s.now().Add(panelSessionTTL)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	for id, deadline := range s.items {
-		if now.After(deadline) {
+	for id, entry := range s.items {
+		if now.After(entry.expires) {
 			delete(s.items, id)
 		}
 	}
-	s.items[token] = expires
-	return token, expires
+	s.items[token] = panelSessionEntry{expires: expires, csrf: csrf}
+	return token, csrf, expires
 }
 
 func (s *panelSessions) valid(token string) bool {
@@ -202,15 +215,29 @@ func (s *panelSessions) valid(token string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	deadline, ok := s.items[token]
+	entry, ok := s.items[token]
 	if !ok {
 		return false
 	}
-	if s.now().After(deadline) {
+	if s.now().After(entry.expires) {
 		delete(s.items, token)
 		return false
 	}
 	return true
+}
+
+// csrf returns the token bound to a live session, or an empty string.
+func (s *panelSessions) csrf(token string) string {
+	if token == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.items[token]
+	if !ok || s.now().After(entry.expires) {
+		return ""
+	}
+	return entry.csrf
 }
 
 func (s *panelSessions) revoke(token string) {
@@ -220,6 +247,92 @@ func (s *panelSessions) revoke(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.items, token)
+}
+
+// revokeAllExcept drops every session but the caller's, which is what a password
+// change should do to other browsers.
+func (s *panelSessions) revokeAllExcept(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.items {
+		if id != token {
+			delete(s.items, id)
+		}
+	}
+}
+
+// panelAuthStore holds the login record and re-reads panel_auth.json when the
+// file changes, so `-panel-passwd` or a password change from the panel applies
+// without restarting the bridge.
+type panelAuthStore struct {
+	mu   sync.Mutex
+	path string
+	cred panelCredential
+	mod  time.Time
+	size int64
+}
+
+func newPanelAuthStore(path string) (*panelAuthStore, error) {
+	cred, err := loadPanelCredential(path)
+	if err != nil {
+		return nil, err
+	}
+	store := &panelAuthStore{path: path, cred: cred}
+	if info, err := os.Stat(path); err == nil {
+		store.mod, store.size = info.ModTime(), info.Size()
+	}
+	return store, nil
+}
+
+// current returns the credential in force, reloading it when the file on disk
+// was replaced. A damaged replacement keeps the old credential in service: a
+// half-written file must not lock the operator out of a running bridge.
+func (s *panelAuthStore) current() panelCredential {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshLocked()
+	return s.cred
+}
+
+func (s *panelAuthStore) refreshLocked() {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return
+	}
+	if info.ModTime().Equal(s.mod) && info.Size() == s.size {
+		return
+	}
+	cred, err := loadPanelCredential(s.path)
+	if err != nil {
+		slog.Warn("panel_auth_reload_failed", "error", err)
+		return
+	}
+	s.cred, s.mod, s.size = cred, info.ModTime(), info.Size()
+	slog.Info("panel_auth_reloaded", "login", cred.Login)
+}
+
+// reload forces a re-read, used right after the panel itself wrote the file.
+func (s *panelAuthStore) reload() error {
+	cred, err := loadPanelCredential(s.path)
+	if err != nil {
+		return err
+	}
+	info, statErr := os.Stat(s.path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cred = cred
+	if statErr == nil {
+		s.mod, s.size = info.ModTime(), info.Size()
+	} else {
+		// Without a fresh stamp the next current() would compare against a stale
+		// one; an impossible size forces it to re-read the file instead.
+		s.mod, s.size = time.Time{}, -1
+	}
+	return nil
+}
+
+func (s *panelAuthStore) verify(login, password string) bool {
+	return s.current().verify(login, password)
 }
 
 // panelLimiter counts failed logins per remote address: five misses inside five

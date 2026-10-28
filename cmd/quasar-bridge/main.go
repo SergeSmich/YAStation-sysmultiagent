@@ -66,7 +66,7 @@ func main() {
 		if loaded, err := readConfig(*path); err == nil {
 			panel = loaded.Panel
 		}
-		authPath, _, _ := panelPaths(*path, panel)
+		authPath, _, _, _ := panelPaths(*path, panel)
 		if err := setPanelPassword(authPath, *panelLogin, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -401,8 +401,8 @@ func main() {
 	var panelHTTP *http.Server
 	var panelCert, panelKey string
 	if cfg.Panel.Enabled {
-		authPath, tlsDir, logPath := panelPaths(*path, cfg.Panel)
-		auth, err := loadPanelCredential(authPath)
+		authPath, tlsDir, logPath, auditPath := panelPaths(*path, cfg.Panel)
+		auth, err := newPanelAuthStore(authPath)
 		if err != nil {
 			slog.Error("panel rejected", "error", err)
 			os.Exit(1)
@@ -414,10 +414,19 @@ func main() {
 		}
 		panelCfg := cfg.Panel
 		panelCfg.LogPath = logPath
+		panelCfg.AuditFile = auditPath
 		snapshot := func() map[string]any {
 			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, proxy, voice, &clientCount, &serverCount)
 		}
-		panel, err := newPanelServer(panelCfg, auth, snapshot, voice, logs.Config)
+		panel, err := newPanelServer(panelCfg, panelDeps{
+			ConfigPath: *path,
+			AuthPath:   authPath,
+			Auth:       auth,
+			Snapshot:   snapshot,
+			Voice:      voice,
+			Journal:    logs.Config,
+			Live:       liveVoice,
+		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
 			os.Exit(1)

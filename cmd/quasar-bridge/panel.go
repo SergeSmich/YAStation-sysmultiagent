@@ -43,23 +43,26 @@ const (
 )
 
 // panelConfig switches on the LAN monitoring panel: a second, TLS-only listener
-// that shows the bridge state, the recent turns and the log. Stage A is
-// read-only; every mutating view arrives later, behind the same session.
+// that shows the bridge state, the recent turns and the log. Stage A was
+// read-only; stage B adds the few actions worth having from a browser, each
+// behind a session, a CSRF token and an audit record.
 type panelConfig struct {
-	Enabled  bool     `json:"enabled"`
-	Listen   string   `json:"listen"`
-	TLSDir   string   `json:"tls_dir"`
-	AuthFile string   `json:"auth_file"`
-	LogPath  string   `json:"log_path"`
-	Hosts    []string `json:"hosts"`
+	Enabled   bool     `json:"enabled"`
+	Listen    string   `json:"listen"`
+	TLSDir    string   `json:"tls_dir"`
+	AuthFile  string   `json:"auth_file"`
+	AuditFile string   `json:"audit_file"`
+	LogPath   string   `json:"log_path"`
+	Hosts     []string `json:"hosts"`
 }
 
 func defaultPanelConfig() panelConfig {
 	return panelConfig{
-		Listen:   "0.0.0.0:8444",
-		TLSDir:   "tls",
-		AuthFile: "panel_auth.json",
-		LogPath:  "bridge.log",
+		Listen:    "0.0.0.0:8444",
+		TLSDir:    "tls",
+		AuthFile:  "panel_auth.json",
+		AuditFile: "panel_audit.jsonl",
+		LogPath:   "bridge.log",
 	}
 }
 
@@ -78,6 +81,9 @@ func (c panelConfig) Validate() error {
 	if strings.TrimSpace(c.AuthFile) == "" {
 		return errors.New("panel.auth_file must not be empty")
 	}
+	if strings.TrimSpace(c.AuditFile) == "" {
+		return errors.New("panel.audit_file must not be empty")
+	}
 	if strings.TrimSpace(c.LogPath) == "" {
 		return errors.New("panel.log_path must not be empty")
 	}
@@ -89,22 +95,40 @@ func (c panelConfig) Validate() error {
 	return nil
 }
 
+// panelDeps are the pieces of the running bridge the panel is allowed to touch.
+// The panel never opens its own WebSocket, journal writer or configuration
+// parser: it reads the same snapshot as /healthz and writes through the same
+// hot-apply path as PUT /api/voice-config.
+type panelDeps struct {
+	ConfigPath string
+	AuthPath   string
+	Auth       *panelAuthStore
+	Snapshot   func() map[string]any
+	Voice      *voiceState
+	Journal    func() journal.Config
+	Live       func() *bridge.Native
+}
+
 // panelServer is the second listener. It reads the same live state as /healthz
 // through a snapshot closure, so the panel never opens a second WebSocket or a
 // second journal writer.
 type panelServer struct {
-	auth     panelCredential
-	sessions *panelSessions
-	limiter  *panelLimiter
-	snapshot func() map[string]any
-	voice    *voiceState
-	journal  func() journal.Config
-	logPath  string
-	login    *template.Template
-	mux      *http.ServeMux
+	auth       *panelAuthStore
+	audit      *panelAudit
+	authPath   string
+	configPath string
+	sessions   *panelSessions
+	limiter    *panelLimiter
+	snapshot   func() map[string]any
+	voice      *voiceState
+	live       func() *bridge.Native
+	journal    func() journal.Config
+	logPath    string
+	login      *template.Template
+	mux        *http.ServeMux
 }
 
-func newPanelServer(cfg panelConfig, auth panelCredential, snapshot func() map[string]any, voice *voiceState, journalConfig func() journal.Config) (*panelServer, error) {
+func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	loginPage, err := panelAssets.ReadFile("panel_login.html")
 	if err != nil {
 		return nil, err
@@ -114,14 +138,18 @@ func newPanelServer(cfg panelConfig, auth panelCredential, snapshot func() map[s
 		return nil, err
 	}
 	p := &panelServer{
-		auth:     auth,
-		sessions: newPanelSessions(),
-		limiter:  newPanelLimiter(),
-		snapshot: snapshot,
-		voice:    voice,
-		journal:  journalConfig,
-		logPath:  cfg.LogPath,
-		login:    login,
+		auth:       deps.Auth,
+		audit:      newPanelAudit(cfg.AuditFile),
+		authPath:   deps.AuthPath,
+		configPath: deps.ConfigPath,
+		sessions:   newPanelSessions(),
+		limiter:    newPanelLimiter(),
+		snapshot:   deps.Snapshot,
+		voice:      deps.Voice,
+		live:       deps.Live,
+		journal:    deps.Journal,
+		logPath:    cfg.LogPath,
+		login:      login,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.index)
@@ -130,10 +158,14 @@ func newPanelServer(cfg panelConfig, auth panelCredential, snapshot func() map[s
 	mux.HandleFunc("POST /logout", p.logout)
 	mux.HandleFunc("GET /panel.css", p.asset("panel.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /panel.js", p.asset("panel.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /api/panel/session", p.requireSession(p.apiSession))
 	mux.HandleFunc("GET /api/panel/state", p.requireSession(p.apiState))
 	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
 	mux.HandleFunc("GET /api/panel/turns", p.requireSession(p.apiTurns))
 	mux.HandleFunc("GET /api/panel/logs", p.requireSession(p.apiLogs))
+	mux.HandleFunc("POST /api/panel/voice", p.requireMutation(p.apiVoiceUpdate))
+	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
+	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
 	p.mux = mux
 	return p, nil
 }
@@ -203,6 +235,7 @@ func (p *panelServer) submitLogin(w http.ResponseWriter, r *http.Request) {
 	if !p.auth.verify(login, password) {
 		blocked := p.limiter.fail(ip)
 		slog.Warn("panel_login_failed", "ip", ip, "blocked", blocked)
+		p.audit.record("login", r, "denied", map[string]any{"login": login})
 		if blocked {
 			p.renderLogin(w, http.StatusTooManyRequests, "Слишком много неудачных попыток. Подождите несколько минут.")
 			return
@@ -210,13 +243,14 @@ func (p *panelServer) submitLogin(w http.ResponseWriter, r *http.Request) {
 		p.renderLogin(w, http.StatusUnauthorized, "Неверный логин или пароль.")
 		return
 	}
-	token, expires := p.sessions.issue()
+	token, _, expires := p.sessions.issue()
 	if token == "" {
 		p.renderLogin(w, http.StatusInternalServerError, "Не удалось создать сессию.")
 		return
 	}
 	p.limiter.forget(ip)
 	panelSetSessionCookie(w, token, expires)
+	p.audit.record("login", r, "ok", map[string]any{"login": login})
 	slog.Info("panel_login_ok", "ip", ip, "login", login)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -570,7 +604,7 @@ func panelTLSHosts(extra []string) []string {
 
 // panelPaths resolves the panel files next to the configuration file, so the
 // process can be started from any working directory.
-func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath string) {
+func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath, auditPath string) {
 	dir := filepath.Dir(configPath)
 	resolve := func(value string) string {
 		if filepath.IsAbs(value) {
@@ -578,5 +612,5 @@ func panelPaths(configPath string, cfg panelConfig) (authPath, tlsDir, logPath s
 		}
 		return filepath.Join(dir, value)
 	}
-	return resolve(cfg.AuthFile), resolve(cfg.TLSDir), resolve(cfg.LogPath)
+	return resolve(cfg.AuthFile), resolve(cfg.TLSDir), resolve(cfg.LogPath), resolve(cfg.AuditFile)
 }

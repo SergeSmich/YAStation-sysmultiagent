@@ -26,6 +26,31 @@
     <section>
       <h2>Голос</h2>
       <div id="voice" class="panel">—</div>
+      <form id="voice-form" class="panel form">
+        <div class="field">
+          <label for="voice-name">Голос</label>
+          <select id="voice-name"></select>
+        </div>
+        <div class="field">
+          <label for="voice-candidates">Кандидаты</label>
+          <input id="voice-candidates" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="через запятую: oksana, jane">
+        </div>
+        <div class="field narrow">
+          <label for="voice-speed">Скорость</label>
+          <input id="voice-speed" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+        </div>
+        <div class="field narrow">
+          <label for="voice-volume">Громкость</label>
+          <input id="voice-volume" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+        </div>
+        <div class="actions">
+          <button type="submit" id="voice-apply">Применить</button>
+          <button type="button" id="voice-test" class="ghost">Прослушать</button>
+          <label class="check"><input type="checkbox" id="voice-play"> на станции</label>
+          <span id="voice-status" class="muted"></span>
+        </div>
+      </form>
     </section>
 
     <section>
@@ -42,6 +67,29 @@
         </div>
       </div>
       <pre id="logs" class="logs">—</pre>
+    </section>
+
+    <section>
+      <h2>Доступ</h2>
+      <form id="password-form" class="panel form">
+        <div class="field">
+          <label for="pw-current">Текущий пароль</label>
+          <input id="pw-current" type="password" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="pw-next">Новый пароль (не короче 8 символов)</label>
+          <input id="pw-next" type="password" autocomplete="new-password" minlength="8">
+        </div>
+        <div class="field">
+          <label for="pw-confirm">Повторите новый</label>
+          <input id="pw-confirm" type="password" autocomplete="new-password" minlength="8">
+        </div>
+        <div class="actions">
+          <button type="submit">Сменить пароль</button>
+          <span id="pw-status" class="muted"></span>
+        </div>
+      </form>
+      <p class="muted small">После смены пароля остальные сессии закрываются; эта остаётся.</p>
     </section>
   </main>
 

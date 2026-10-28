@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/x509"
 	"encoding/hex"
+	stdjson "encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/journal"
 )
 
@@ -165,15 +167,21 @@ func TestPanelSessionsExpire(t *testing.T) {
 	sessions := newPanelSessions()
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	sessions.now = func() time.Time { return now }
-	token, _ := sessions.issue()
-	if token == "" || !sessions.valid(token) {
+	token, csrf, _ := sessions.issue()
+	if token == "" || csrf == "" || !sessions.valid(token) {
 		t.Fatal("fresh session invalid")
+	}
+	if sessions.csrf(token) != csrf {
+		t.Fatal("session csrf token lost")
 	}
 	now = now.Add(panelSessionTTL + time.Minute)
 	if sessions.valid(token) {
 		t.Fatal("expired session valid")
 	}
-	token, _ = sessions.issue()
+	if sessions.csrf(token) != "" {
+		t.Fatal("expired session still has a csrf token")
+	}
+	token, _, _ = sessions.issue()
 	sessions.revoke(token)
 	if sessions.valid(token) {
 		t.Fatal("revoked session valid")
@@ -183,25 +191,102 @@ func TestPanelSessionsExpire(t *testing.T) {
 	}
 }
 
-func panelTestServer(t *testing.T) (*panelServer, panelCredential) {
+func TestPanelSessionsRevokeOthers(t *testing.T) {
+	sessions := newPanelSessions()
+	first, firstCSRF, _ := sessions.issue()
+	second, _, _ := sessions.issue()
+	sessions.revokeAllExcept(first)
+	if !sessions.valid(first) || sessions.csrf(first) != firstCSRF {
+		t.Fatal("kept session lost")
+	}
+	if sessions.valid(second) {
+		t.Fatal("other session survived revokeAllExcept")
+	}
+}
+
+// panelTestServer builds a panel over a temporary configuration file, so the
+// mutating handlers can be exercised against a real config.json.
+func panelTestServer(t *testing.T) (*panelServer, *panelAuthStore, string) {
 	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte("{\n  \"local_voice\": {\"voice\": \"omazh\"}\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authPath := filepath.Join(dir, "panel_auth.json")
 	credential, err := newPanelCredential("admin", "test password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	voice := new(voiceState)
-	panel, err := newPanelServer(defaultPanelConfig(), credential,
-		func() map[string]any { return map[string]any{"status": "ok", "mode": "hybrid"} },
-		voice,
-		func() journal.Config { return journal.Config{Enabled: false} })
+	if err := writePanelCredential(authPath, credential); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := newPanelAuthStore(authPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return panel, credential
+	cfg := defaultPanelConfig()
+	cfg.LogPath = filepath.Join(dir, "bridge.log")
+	cfg.AuditFile = filepath.Join(dir, "panel_audit.jsonl")
+	voice := new(voiceState)
+	voice.SetIfChanged(bridge.VoiceConfig{Voice: "omazh"})
+	panel, err := newPanelServer(cfg, panelDeps{
+		ConfigPath: configPath,
+		AuthPath:   authPath,
+		Auth:       auth,
+		Snapshot:   func() map[string]any { return map[string]any{"status": "ok", "mode": "hybrid"} },
+		Voice:      voice,
+		Journal:    func() journal.Config { return journal.Config{Enabled: false} },
+		Live:       func() *bridge.Native { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return panel, auth, dir
+}
+
+// panelLogin logs in and returns the session cookie and its CSRF token.
+func panelLogin(t *testing.T, panel *panelServer) (*http.Cookie, string) {
+	t.Helper()
+	form := url.Values{"login": {"admin"}, "password": {"test password"}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.1.60:5555"
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("login = %d %s", recorder.Code, recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+	csrf := panel.sessions.csrf(cookies[0].Value)
+	if csrf == "" {
+		t.Fatal("login issued no csrf token")
+	}
+	return cookies[0], csrf
+}
+
+// panelMutation builds a JSON POST that passess the mutation guard.
+func panelMutation(t *testing.T, path string, body any, cookie *http.Cookie, csrf string) *http.Request {
+	t.Helper()
+	raw, err := stdjson.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(raw)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(panelCSRFHeader, csrf)
+	request.Host = "midi.local:8444"
+	request.Header.Set("Origin", "https://midi.local:8444")
+	request.RemoteAddr = "192.168.1.60:5555"
+	request.AddCookie(cookie)
+	return request
 }
 
 func TestPanelRequiresSession(t *testing.T) {
-	panel, _ := panelTestServer(t)
+	panel, _, _ := panelTestServer(t)
 	for _, path := range []string{"/api/panel/state", "/api/panel/voice", "/api/panel/turns", "/api/panel/logs"} {
 		recorder := httptest.NewRecorder()
 		panel.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
@@ -217,7 +302,7 @@ func TestPanelRequiresSession(t *testing.T) {
 }
 
 func TestPanelLoginFlow(t *testing.T) {
-	panel, _ := panelTestServer(t)
+	panel, _, _ := panelTestServer(t)
 
 	form := url.Values{"login": {"admin"}, "password": {"test password"}}
 	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
@@ -268,7 +353,7 @@ func TestPanelLoginFlow(t *testing.T) {
 }
 
 func TestPanelLoginRateLimit(t *testing.T) {
-	panel, _ := panelTestServer(t)
+	panel, _, _ := panelTestServer(t)
 	form := url.Values{"login": {"admin"}, "password": {"wrong"}}
 	for i := 1; i <= passwordAttempts(); i++ {
 		request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
@@ -289,7 +374,7 @@ func TestPanelLoginRateLimit(t *testing.T) {
 func passwordAttempts() int { return panelFailureLimit }
 
 func TestPanelRejectsOversizedLoginBody(t *testing.T) {
-	panel, _ := panelTestServer(t)
+	panel, _, _ := panelTestServer(t)
 	body := "login=admin&password=" + strings.Repeat("x", panelLoginBodyLimit)
 	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -475,7 +560,7 @@ func readPanelCertificate(t *testing.T, path string) *x509.Certificate {
 func TestPanelPathsResolveNextToConfig(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	configPath := filepath.Join(dir, "config.json")
-	auth, tls, logs := panelPaths(configPath, defaultPanelConfig())
+	auth, tls, logs, audit := panelPaths(configPath, defaultPanelConfig())
 	if auth != filepath.Join(dir, "panel_auth.json") {
 		t.Fatalf("auth = %s", auth)
 	}
@@ -485,8 +570,11 @@ func TestPanelPathsResolveNextToConfig(t *testing.T) {
 	if logs != filepath.Join(dir, "bridge.log") {
 		t.Fatalf("logs = %s", logs)
 	}
-	absolute := panelConfig{TLSDir: filepath.Join(dir, "certs"), AuthFile: "auth.json", LogPath: "b.log"}
-	if _, tls, _ = panelPaths(configPath, absolute); tls != filepath.Join(dir, "certs") {
+	if audit != filepath.Join(dir, "panel_audit.jsonl") {
+		t.Fatalf("audit = %s", audit)
+	}
+	absolute := panelConfig{TLSDir: filepath.Join(dir, "certs"), AuthFile: "auth.json", LogPath: "b.log", AuditFile: "a.jsonl"}
+	if _, tls, _, _ = panelPaths(configPath, absolute); tls != filepath.Join(dir, "certs") {
 		t.Fatalf("absolute tls = %s", tls)
 	}
 }
@@ -502,4 +590,289 @@ func itoa(value int) string {
 		value /= 10
 	}
 	return string(digits)
+}
+
+// TestPanelMutationRequiresCSRF pins the rule that a live session alone cannot
+// change anything: the page has to prove it read the session endpoint.
+func TestPanelMutationRequiresCSRF(t *testing.T) {
+	panel, _, _ := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+
+	request := panelMutation(t, "/api/panel/voice", map[string]string{"voice": "oksana"}, cookie, "")
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("post without csrf = %d", recorder.Code)
+	}
+
+	request = panelMutation(t, "/api/panel/voice", map[string]string{"voice": "oksana"}, cookie, "0"+csrf)
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("post with a wrong csrf = %d", recorder.Code)
+	}
+
+	request = panelMutation(t, "/api/panel/voice", map[string]string{"voice": "oksana"}, cookie, csrf)
+	request.Header.Set("Origin", "https://evil.example")
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin post = %d", recorder.Code)
+	}
+
+	// Nothing above may have changed the voice.
+	if got := panel.voice.Load().Voice; got != "omazh" {
+		t.Fatalf("voice changed by a rejected request: %q", got)
+	}
+}
+
+// TestPanelVoiceUpdateHotApplies walks the mutating voice path end to end: the
+// file is updated, the live state follows and the action is audited.
+func TestPanelVoiceUpdateHotApplies(t *testing.T) {
+	panel, _, dir := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+	before := panel.voice.Revision()
+
+	request := panelMutation(t, "/api/panel/voice", map[string]any{
+		"voice":      "oksana",
+		"candidates": []string{"jane"},
+		"volume":     1.2,
+	}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("voice update = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	loaded := panel.voice.Load()
+	if loaded.Voice != "oksana" || loaded.Volume != 1.2 || len(loaded.Candidates) != 1 || loaded.Candidates[0] != "jane" {
+		t.Fatalf("voice not applied: %+v", loaded)
+	}
+	if panel.voice.Revision() <= before {
+		t.Fatalf("revision did not grow: %d -> %d", before, panel.voice.Revision())
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "oksana") {
+		t.Fatalf("config.json not written: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.voice-prev")); err != nil {
+		t.Fatalf("previous configuration not kept: %v", err)
+	}
+
+	audit, err := os.ReadFile(filepath.Join(dir, "panel_audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"action":"voice_update"`, `"result":"ok"`, `"voice":"oksana"`} {
+		if !strings.Contains(string(audit), want) {
+			t.Fatalf("audit lacks %s: %s", want, audit)
+		}
+	}
+}
+
+// TestPanelVoiceUpdateRejectsUnknownVoice keeps the allowlist in force on the
+// panel path too, not only on the loopback API.
+func TestPanelVoiceUpdateRejectsUnknownVoice(t *testing.T) {
+	panel, _, dir := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+
+	request := panelMutation(t, "/api/panel/voice", map[string]string{"voice": "tanya"}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown voice = %d %s", recorder.Code, recorder.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "tanya") {
+		t.Fatalf("rejected voice reached the file: %s", raw)
+	}
+}
+
+// TestPanelVoiceTestNeedsASessionOnTheStation: a probe without an upstream is a
+// 503, never a panic or a hang.
+func TestPanelVoiceTestNeedsASessionOnTheStation(t *testing.T) {
+	panel, _, _ := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+
+	request := panelMutation(t, "/api/panel/voice/test", map[string]any{"voice": "omazh", "play": true}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("voice test without upstream = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestPanelPasswordChangeAppliesWithoutRestart is the whole reason the login
+// record is re-read from disk: the operator changes the password in the panel
+// and the next login uses it, while the other browsers are logged out.
+func TestPanelPasswordChangeAppliesWithoutRestart(t *testing.T) {
+	panel, auth, _ := panelTestServer(t)
+	first, firstCSRF := panelLogin(t, panel)
+	second, _ := panelLogin(t, panel)
+
+	request := panelMutation(t, "/api/panel/password", map[string]string{
+		"current": "test password",
+		"next":    "a much better password",
+	}, first, firstCSRF)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("password change = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	if !auth.verify("admin", "a much better password") {
+		t.Fatal("store still holds the old password")
+	}
+	if auth.verify("admin", "test password") {
+		t.Fatal("store still accepts the old password")
+	}
+
+	// The caller keeps its session, the other browser loses it.
+	request = httptest.NewRequest(http.MethodGet, "/api/panel/state", nil)
+	request.AddCookie(first)
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("current session after password change = %d", recorder.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/panel/state", nil)
+	request.AddCookie(second)
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("other session after password change = %d", recorder.Code)
+	}
+
+	// A fresh login uses the new password only.
+	old := url.Values{"login": {"admin"}, "password": {"test password"}}
+	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(old.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.1.61:5555"
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("login with the old password = %d", recorder.Code)
+	}
+	next := url.Values{"login": {"admin"}, "password": {"a much better password"}}
+	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(next.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.1.62:5555"
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("login with the new password = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestPanelPasswordChangeNeedsTheCurrentOne: a stolen session is not enough to
+// take the panel over.
+func TestPanelPasswordChangeNeedsTheCurrentOne(t *testing.T) {
+	panel, auth, _ := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+
+	request := panelMutation(t, "/api/panel/password", map[string]string{
+		"current": "wrong password",
+		"next":    "a much better password",
+	}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("password change with a wrong current = %d", recorder.Code)
+	}
+	if !auth.verify("admin", "test password") {
+		t.Fatal("the password changed despite a wrong current one")
+	}
+}
+
+// TestPanelAuthStoreReloadsFromDisk covers `-panel-passwd` on a running bridge:
+// a replaced file is picked up without a restart, and a damaged one is ignored.
+func TestPanelAuthStoreReloadsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "panel_auth.json")
+	first, err := newPanelCredential("admin", "first password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePanelCredential(path, first); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newPanelAuthStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.verify("admin", "first password") {
+		t.Fatal("fresh store rejects the stored password")
+	}
+
+	second, err := newPanelCredential("admin", "second password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePanelCredential(path, second); err != nil {
+		t.Fatal(err)
+	}
+	// Same size, so the modification time is the only signal; make it explicit
+	// instead of relying on the file system clock resolution.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if !store.verify("admin", "second password") {
+		t.Fatal("replaced credential not picked up")
+	}
+	if store.verify("admin", "first password") {
+		t.Fatal("old credential still accepted after the file was replaced")
+	}
+
+	// A half-written file must keep the last good credential in service.
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := future.Add(2 * time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if !store.verify("admin", "second password") {
+		t.Fatal("damaged file dropped the working credential")
+	}
+}
+
+func TestPanelSameOrigin(t *testing.T) {
+	base := httptest.NewRequest(http.MethodPost, "/api/panel/voice", nil)
+	base.Host = "midi.local:8444"
+	for _, tc := range []struct {
+		name    string
+		origin  string
+		fetch   string
+		allowed bool
+	}{
+		{name: "no headers", allowed: true},
+		{name: "same origin", origin: "https://midi.local:8444", allowed: true},
+		{name: "same origin other case", origin: "https://MIDI.local:8444", allowed: true},
+		{name: "other host", origin: "https://evil.example"},
+		{name: "null origin", origin: "null"},
+		{name: "same site fetch", fetch: "same-origin", allowed: true},
+		{name: "typed fetch", fetch: "none", allowed: true},
+		{name: "cross site fetch", fetch: "cross-site"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := base.Clone(base.Context())
+			if tc.origin != "" {
+				request.Header.Set("Origin", tc.origin)
+			}
+			if tc.fetch != "" {
+				request.Header.Set("Sec-Fetch-Site", tc.fetch)
+			}
+			if got := panelSameOrigin(request); got != tc.allowed {
+				t.Fatalf("panelSameOrigin = %v, want %v", got, tc.allowed)
+			}
+		})
+	}
 }

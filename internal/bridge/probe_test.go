@@ -129,6 +129,40 @@ func TestNativeProbeDropsAudio(t *testing.T) {
 	}
 }
 
+// TestNativeProbePlayIsHeardOnTheStation: with Play the probe sample is not a
+// silent check — the TtsSpeak and its audio reach the station, which is the
+// whole point of the panel's «Прослушать … на станции» button.
+func TestNativeProbePlayIsHeardOnTheStation(t *testing.T) {
+	n, up, down := soundSession(t, nil)
+	result := make(chan []VoiceProbeResult, 1)
+	go func() {
+		got, _ := n.Probe(t.Context(), []VoiceProbeCase{{Voice: "omazh", Play: true}}, time.Second)
+		result <- got
+	}()
+	frame := nextProbeGenerate(t, up)
+	id := frame.Client.GetEvent().GetHeader().GetMessageId()
+	if err := n.Server(t.Context(), websocket.MessageBinary, probeSpeak(id, 9)); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; len(got) != 1 || !got[0].OK {
+		t.Fatalf("unexpected probe result: %+v", got)
+	}
+	select {
+	case forwarded := <-down:
+		if forwarded.Kind() != "TtsSpeak" {
+			t.Fatalf("forwarded %s, want the probe TtsSpeak", forwarded.Kind())
+		}
+	default:
+		t.Fatal("played probe TtsSpeak was swallowed")
+	}
+	n.mu.Lock()
+	_, plays := n.probePlay[9]
+	n.mu.Unlock()
+	if !plays {
+		t.Fatal("played probe stream is not marked for forwarding")
+	}
+}
+
 func TestNativeProbeRejectsConcurrentRun(t *testing.T) {
 	n, up, _ := soundSession(t, nil)
 	firstResult := make(chan error, 1)
