@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -58,6 +59,40 @@ func TestVoiceConfigValidate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want bad=%v", err, tc.bad)
 			}
 		})
+	}
+}
+
+// TestVoiceConfigUnknownVoices covers the control-plane guard: the dispenser
+// rejects these names, so a patch that would make every answer fall back to the
+// stock Alice voice must be refused before it reaches config.json.
+func TestVoiceConfigUnknownVoices(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config VoiceConfig
+		want   []string
+	}{
+		{name: "empty"},
+		{name: "known", config: VoiceConfig{Voice: "omazh", Candidates: []string{"oksana", "jane"}, Routes: map[string]string{"llm": "zahar"}}},
+		{name: "rejected primary", config: VoiceConfig{Voice: "filipp"}, want: []string{"filipp"}},
+		{name: "silent candidate", config: VoiceConfig{Voice: "omazh", Candidates: []string{"tanya"}}, want: []string{"tanya"}},
+		{name: "route override", config: VoiceConfig{Routes: map[string]string{"llm": "silaerkan"}}, want: []string{"silaerkan"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.config.UnknownVoices(); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("UnknownVoices() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	for _, name := range KnownVoices {
+		if !IsKnownVoice(name) {
+			t.Fatalf("%s not recognised", name)
+		}
+	}
+	if IsKnownVoice("filipp") {
+		t.Fatal("filipp recognised")
+	}
+	if !strings.Contains(KnownVoicesList(), "omazh") {
+		t.Fatalf("KnownVoicesList() = %q", KnownVoicesList())
 	}
 }
 

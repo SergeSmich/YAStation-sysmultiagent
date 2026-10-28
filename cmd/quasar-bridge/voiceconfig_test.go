@@ -139,6 +139,9 @@ func TestVoiceConfigHandlerRejectsInvalidAndForeignWrites(t *testing.T) {
 
 	for _, body := range []string{
 		`{"voice":"fil ipp"}`,
+		`{"voice":"filipp"}`,
+		`{"candidates":["jane","tanya"]}`,
+		`{"routes":{"llm":"silaerkan"}}`,
 		`{"speed":9}`,
 		`{"volume":0.01}`,
 		`{"routes":{"yandex":"jane"}}`,

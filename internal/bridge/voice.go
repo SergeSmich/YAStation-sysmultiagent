@@ -17,6 +17,46 @@ type VoiceConfig struct {
 	Candidates []string          `json:"candidates,omitempty"`
 }
 
+// KnownVoices lists the voices the synthesis dispenser accepted when the list
+// was measured against the live upstream (see stage7\voices-available.json).
+// Any other name is rejected with "Unsupported voice" and makes every answer
+// fall back to the stock Alice voice, so the control plane refuses such settings
+// up front instead of letting them reach the synthesizer.
+var KnownVoices = []string{"jane", "omazh", "oksana", "ermil", "zahar"}
+
+// IsKnownVoice reports whether the dispenser is expected to accept the name.
+func IsKnownVoice(voice string) bool {
+	for _, name := range KnownVoices {
+		if name == voice {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownVoicesList renders the accepted names for error messages and logs.
+func KnownVoicesList() string { return strings.Join(KnownVoices, ", ") }
+
+// UnknownVoices returns the configured names the dispenser is not expected to
+// accept: the primary voice, the retry candidates and the per-route overrides.
+func (c VoiceConfig) UnknownVoices() []string {
+	var unknown []string
+	check := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" && !IsKnownVoice(name) {
+			unknown = append(unknown, name)
+		}
+	}
+	check(c.Voice)
+	for _, name := range c.Candidates {
+		check(name)
+	}
+	for _, name := range c.Routes {
+		check(name)
+	}
+	return unknown
+}
+
 // VoiceSettings is the resolved request shape for one answer.
 type VoiceSettings struct {
 	Voice   string

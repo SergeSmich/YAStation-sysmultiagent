@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -162,6 +163,12 @@ func (s *voiceState) reloadVoice(path string, live func() *bridge.Native) (uint6
 	if err != nil {
 		return 0, err
 	}
+	// A hand-edited config may still name a voice the dispenser rejects; the
+	// candidate chain covers it, but the operator should know why the chosen
+	// voice is not heard.
+	if unknown := next.LocalVoice.UnknownVoices(); len(unknown) > 0 {
+		slog.Warn("local_voice_unsupported", "voices", unknown, "supported", bridge.KnownVoicesList())
+	}
 	revision, changed := s.SetIfChanged(next.LocalVoice)
 	if !changed {
 		return revision, nil
@@ -213,6 +220,12 @@ func applyVoicePatch(path string, state *voiceState, patch voicePatch, live func
 	applied := patch.apply(next.LocalVoice)
 	if err := applied.Validate(); err != nil {
 		return http.StatusBadRequest, map[string]string{"error": err.Error()}
+	}
+	if unknown := applied.UnknownVoices(); len(unknown) > 0 {
+		return http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unsupported voice %s: the synthesizer accepts %s",
+				strings.Join(unknown, ", "), bridge.KnownVoicesList()),
+		}
 	}
 	if reflect.DeepEqual(applied, next.LocalVoice) {
 		return http.StatusOK, map[string]any{"local_voice": applied, "revision": state.Revision(), "unchanged": true}
