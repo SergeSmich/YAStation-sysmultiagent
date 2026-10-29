@@ -82,7 +82,7 @@ func (p *panelServer) apiLLMTest(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, key, err := p.panelProvider(name)
 	if err != nil {
-		p.audit.record("llm_test", r, "bad_request", map[string]any{"provider": name})
+		p.audit.record("llm_test", r, "bad_request", map[string]any{"provider": normalizeProviderName(name)})
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -141,7 +141,7 @@ func (p *panelServer) apiLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, key, err := p.panelProvider(name)
 	if err != nil {
-		p.audit.record("llm_models", r, "bad_request", map[string]any{"provider": name})
+		p.audit.record("llm_models", r, "bad_request", map[string]any{"provider": normalizeProviderName(name)})
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

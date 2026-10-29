@@ -372,6 +372,14 @@ func validateHostedTools(tools []string, api, field string) ([]string, error) {
 // The name doubles as the credential key in secrets.json, so it follows the same
 // rule as a role name. A provider always names its own endpoint: inheriting the
 // top-level llm_* values would make the entry pointless.
+// normalizeProviderName folds a provider name to the canonical lower-case form.
+// The operator types "DeepSeek" and the name travels into route strings, the
+// panel's select values and the credential key in secrets.json, so one spelling
+// has to win: the strict decoder keeps rejecting everything else.
+func normalizeProviderName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 func (c *config) validateProviders() error {
 	if len(c.LLMProviders) == 0 {
 		c.LLMProviders = nil
@@ -380,7 +388,7 @@ func (c *config) validateProviders() error {
 	seen := make(map[string]bool, len(c.LLMProviders))
 	for i := range c.LLMProviders {
 		p := &c.LLMProviders[i]
-		p.Name = strings.TrimSpace(p.Name)
+		p.Name = normalizeProviderName(p.Name)
 		if !bridge.ValidAgentName(p.Name) {
 			return errors.New("llm_providers[].name must be 1..32 characters of a-z, 0-9, '-' or '_'")
 		}
@@ -420,8 +428,11 @@ func (c *config) validateProviders() error {
 	return nil
 }
 
-// providerByName returns the configured endpoint with this name.
+// providerByName returns the configured endpoint with this name. The lookup is
+// case-insensitive: a role may name a provider the way the operator typed it,
+// while the stored list is canonical.
 func (c *config) providerByName(name string) (llmProviderConfig, bool) {
+	name = normalizeProviderName(name)
 	for _, p := range c.LLMProviders {
 		if p.Name == name {
 			return p, true
@@ -535,6 +546,10 @@ func (c *config) validateAgents() error {
 			a.API, a.BaseURL, a.Model = target.API, target.BaseURL, target.Model
 			a.ReasoningEffort, a.MaxOutputTokens = target.ReasoningEffort, target.MaxOutputTokens
 			a.HostedTools = target.HostedTools
+		} else {
+			// One spelling in the file: the role may name the provider the way
+			// the operator typed it, the config keeps the canonical name.
+			a.Provider = target.Provider
 		}
 		if utf8.RuneCountInString(a.SystemPrompt) > bridge.MaxAgentPromptRunes {
 			return errors.New("agents[].system_prompt is too long")

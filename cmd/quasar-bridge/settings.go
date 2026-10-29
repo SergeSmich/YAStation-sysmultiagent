@@ -245,7 +245,10 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 func applyProviderKeys(current providerSecrets, providers []llmProviderConfig, patch []llmProviderPatch) (providerSecrets, bool, error) {
 	next := providerSecrets{Providers: make(map[string]string, len(current.Providers)+len(patch))}
 	for name, key := range current.Providers {
-		next.Providers[name] = key
+		// Keys are stored under the canonical name: a file edited by hand may
+		// still spell it "DeepSeek", and that entry must survive the pruning
+		// below instead of being dropped as an orphan.
+		next.Providers[normalizeProviderName(name)] = key
 	}
 	known := make(map[string]bool, len(providers))
 	for _, p := range providers {
@@ -257,7 +260,10 @@ func applyProviderKeys(current providerSecrets, providers []llmProviderConfig, p
 		}
 	}
 	for _, item := range patch {
-		name := strings.TrimSpace(item.Name)
+		// The name is the credential key, and a provider name is canonical
+		// lower case: the panel may still send "DeepSeek", and that must reach
+		// the same entry instead of a second one under a different spelling.
+		name := normalizeProviderName(item.Name)
 		if item.ClearKey {
 			delete(next.Providers, name)
 			continue

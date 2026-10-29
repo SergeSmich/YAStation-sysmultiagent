@@ -22,6 +22,11 @@ let metricsRange = 3600;
 let agentsState = [];
 let providersState = [];
 let providerKeysState = {};
+// savedProviders maps a provider name to the payload the file holds right now.
+// The probe endpoints read the file, so an unsaved row — or a row with unsaved
+// edits — cannot be tested and the page must say why instead of forwarding a
+// name the bridge does not know or silently testing the old values.
+let savedProviders = new Map();
 let providerModels = {};
 let wakeDictionary = [];
 let wakeDictionaryNote = '';
@@ -582,7 +587,18 @@ function renderProviders(force) {
     const name = settingsControl('input', 'name', provider.name, 'например, deepseek');
     name.type = 'text';
     name.autocomplete = 'off';
-    row.appendChild(settingsField('Название', name));
+    // The stored form is lower case, and the name doubles as the credential key:
+    // fold what the operator types instead of rejecting "DeepSeek" later.
+    name.addEventListener('input', () => {
+      const folded = name.value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+      if (folded === name.value) return;
+      const caret = name.selectionStart;
+      name.value = folded;
+      name.setSelectionRange(caret, caret);
+    });
+    const nameField = settingsField('Название', name);
+    nameField.appendChild(el('span', 'muted small', 'латиница, цифры, «-», «_», до 32 символов'));
+    row.appendChild(nameField);
 
     const api = settingsControl('select', 'api', provider.api || 'chat_completions');
     for (const value of PROVIDER_APIS) api.appendChild(option(value, value));
@@ -858,6 +874,9 @@ function syncAgentSelects() {
 function renderSettings(payload, force) {
   agentsState = Array.isArray(payload.agents) ? payload.agents : [];
   providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
+  savedProviders = new Map(providersState.map((provider) => [
+    String(provider.name || ''), JSON.stringify(providerPayload(provider))
+  ]));
   providerKeysState = payload.provider_keys && typeof payload.provider_keys === 'object'
     ? payload.provider_keys
     : {};
@@ -1011,9 +1030,22 @@ async function providerAction(event) {
     status.textContent = 'ключ будет удалён при сохранении';
     return;
   }
-  const name = String(provider.name || '').trim();
+  const name = String(provider.name || '').trim().toLowerCase();
   if (!name) {
     status.textContent = 'укажите название подключения и сохраните его';
+    status.classList.add('error');
+    return;
+  }
+  // Both endpoints resolve the row from the file, so an unsaved row would come
+  // back as "provider is not configured". Say it in the operator's words first.
+  const stored = savedProviders.get(name);
+  if (stored === undefined) {
+    status.textContent = 'сначала нажмите «Сохранить»: проверка идёт по сохранённому подключению';
+    status.classList.add('error');
+    return;
+  }
+  if (stored !== JSON.stringify(providerPayload(provider))) {
+    status.textContent = 'в подключении есть несохранённые правки — сначала нажмите «Сохранить»';
     status.classList.add('error');
     return;
   }
@@ -1052,12 +1084,24 @@ async function submitSettings(event) {
   // Reported here, in the operator's words, instead of the strict decoder's
   // "llm_providers[].name must be 1..32 characters…" from the server.
   for (const provider of providersState) {
-    if (!String(provider.name || '').trim() ||
-        !String(provider.base_url || '').trim() ||
-        !String(provider.model || '').trim()) {
+    const name = String(provider.name || '').trim().toLowerCase();
+    if (!name || !String(provider.base_url || '').trim() || !String(provider.model || '').trim()) {
       status.textContent = 'у подключения нужны название, адрес API и модель';
       status.classList.add('error');
       return;
+    }
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+      status.textContent = 'название подключения: латиница, цифры, «-», «_», до 32 символов — например deepseek';
+      status.classList.add('error');
+      return;
+    }
+    // One canonical spelling: the name is the credential key in secrets.json and
+    // the value a role points at, so fold it here and carry the roles along.
+    if (name !== provider.name) {
+      for (const agent of agentsState) {
+        if (agent.provider === provider.name) agent.provider = name;
+      }
+      provider.name = name;
     }
   }
   status.textContent = 'сохраняю…';

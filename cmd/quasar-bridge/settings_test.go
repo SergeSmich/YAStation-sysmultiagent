@@ -625,3 +625,43 @@ func TestPanelSettingsProviderRoundTrip(t *testing.T) {
 		t.Fatalf("key lost on an untouched save: %q", got)
 	}
 }
+
+// TestSettingsAcceptsCapitalisedProviderName: the operator types "DeepSeek" in
+// the panel, and the page folds it, but an older page or a hand-written request
+// must not be rejected by the strict decoder for a capital letter.
+func TestSettingsAcceptsCapitalisedProviderName(t *testing.T) {
+	panel, _, dir := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+	configPath := filepath.Join(dir, "config.json")
+
+	request := panelMutation(t, "/api/panel/settings", map[string]any{
+		"llm_providers": []any{map[string]any{
+			"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1",
+			"model": "deepseek-chat", "api_key": "sk-capitalised",
+		}},
+		"agents": []any{map[string]any{
+			"name": "briefing", "provider": "DeepSeek", "system_prompt": "role",
+		}},
+	}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST = %d %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{`"name":"deepseek"`, `"provider":"deepseek"`, `"provider_keys":{"deepseek":true}`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("answer lacks %s: %s", want, body)
+		}
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "DeepSeek") || strings.Contains(string(raw), "sk-capitalised") {
+		t.Fatalf("config.json kept a stray spelling or the key: %s", raw)
+	}
+	if got := storedKeys(t, configPath)["deepseek"]; got != "sk-capitalised" {
+		t.Fatalf("stored key = %q", got)
+	}
+}

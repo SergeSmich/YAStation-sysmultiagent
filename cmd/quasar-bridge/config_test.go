@@ -114,6 +114,46 @@ func configFile(t *testing.T, body string) string {
 	return p
 }
 
+// TestProviderNamesAreCaseInsensitive: the panel folds what the operator types,
+// but a hand-edited file may still say "DeepSeek" twice in two spellings. One
+// canonical name has to reach config.json, secrets.json and the role that points
+// at the provider, so both sides are normalised and the lookup ignores case.
+func TestProviderNamesAreCaseInsensitive(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{
+		"mode":"observe",
+		"llm_providers":[{"name":"  DeepSeek ","api":"chat_completions",
+			"base_url":"https://api.deepseek.com/v1","model":"deepseek-chat"}],
+		"agents":[{"name":"briefing","provider":"DEEPSEEK","system_prompt":"role"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LLMProviders[0].Name; got != "deepseek" {
+		t.Fatalf("provider name = %q, want deepseek", got)
+	}
+	if got := cfg.Agents[0].Provider; got != "deepseek" {
+		t.Fatalf("role provider = %q, want deepseek", got)
+	}
+	target, err := cfg.resolveLLM(cfg.Agents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Provider != "deepseek" || target.Model != "deepseek-chat" ||
+		target.BaseURL != "https://api.deepseek.com/v1" {
+		t.Fatalf("resolved target = %+v", target)
+	}
+	// Two spellings of one endpoint are one provider, not two credential keys.
+	if _, err := readConfig(configFile(t, `{
+		"mode":"observe",
+		"llm_providers":[
+			{"name":"deepseek","base_url":"https://api.deepseek.com/v1","model":"a"},
+			{"name":"DeepSeek","base_url":"https://api.deepseek.com/v1","model":"b"}
+		]
+	}`)); err == nil {
+		t.Fatal("two spellings of one provider name accepted")
+	}
+}
+
 func TestReadConfigAcceptsListenAfterReply(t *testing.T) {
 	for _, tc := range []struct {
 		body string
