@@ -184,6 +184,9 @@ func main() {
 	proxy.UpstreamPingInterval = time.Duration(cfg.UpstreamPing.IntervalMS) * time.Millisecond
 	proxy.UpstreamPingTimeout = time.Duration(cfg.UpstreamPing.TimeoutMS) * time.Millisecond
 	logs := new(journal.Writer)
+	// Credentials live next to the configuration, never inside it: a role reads
+	// its provider's key from here at build time.
+	secrets := newSecretStore(*path)
 	lc := &llm.Client{
 		BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY"),
 		API: cfg.LLMAPI, ReasoningEffort: cfg.LLMReasoningEffort,
@@ -233,7 +236,7 @@ func main() {
 		os.Exit(1)
 	}
 	applyAgents := func(next config) error {
-		built, err := buildAgents(next, tools)
+		built, err := buildAgents(next, tools, secrets)
 		if err != nil {
 			return err
 		}
@@ -245,7 +248,7 @@ func main() {
 	}
 	// A role list is logged even when empty: operators need to see that the
 	// section was read and that no role is answering.
-	slog.Info("agents_ready", "agents", engine.AgentNames())
+	slog.Info("agents_ready", "agents", engine.AgentNames(), "providers", providerNames(cfg))
 	wake := new(wakeState)
 	applyWake := func(next config) error {
 		wake.set(next.WakeWords)
@@ -442,6 +445,7 @@ func main() {
 	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	var panelHTTP *http.Server
+	var wakeHTTP *http.Server
 	var panelCert, panelKey string
 	var metrics *panelMetrics
 	if cfg.Panel.Enabled {
@@ -473,13 +477,18 @@ func main() {
 			Journal:    logs.Config,
 			Live:       liveVoice,
 			Metrics:    metrics,
-			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig},
+			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig, Secrets: secrets},
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
 			os.Exit(1)
 		}
 		panelHTTP = &http.Server{Addr: cfg.Panel.Listen, Handler: panel, ReadHeaderTimeout: 10 * time.Second}
+		// The wake-word training page is served on its own listener with the
+		// same certificate and session; the daemon itself is loopback-only.
+		if wakePage := panel.WakePageHandler(); wakePage != nil {
+			wakeHTTP = &http.Server{Addr: cfg.Panel.WakeProxyListen, Handler: wakePage, ReadHeaderTimeout: 10 * time.Second}
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -517,8 +526,21 @@ func main() {
 		if panelHTTP != nil {
 			_ = panelHTTP.Shutdown(shutdownCtx)
 		}
+		if wakeHTTP != nil {
+			_ = wakeHTTP.Shutdown(shutdownCtx)
+		}
 		_ = server.Shutdown(shutdownCtx)
 	}()
+	if wakeHTTP != nil {
+		go func() {
+			slog.Info("wake page listening", "address", wakeHTTP.Addr, "upstream", wakeBaseURL(), "tls", true)
+			if err := wakeHTTP.ListenAndServeTLS(panelCert, panelKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// The training page is auxiliary: the panel keeps working, and
+				// the page offers the SSH tunnel instead.
+				slog.Error("wake page listener failed", "error", err)
+			}
+		}()
+	}
 	if panelHTTP != nil {
 		go func() {
 			slog.Info("panel listening", "address", cfg.Panel.Listen, "tls", true)
@@ -551,7 +573,7 @@ func main() {
 // never drift apart.
 func healthSnapshot(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, wake *wakeState, clientCount, serverCount *atomic.Int64) map[string]any {
 	state := engine.RoutingStatus()
-	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "agents": engine.AgentNames(), "wake_words": wake.status(), "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
+	return map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "agents": engine.AgentNames(), "llm_providers": len(cfg.LLMProviders), "wake_words": wake.status(), "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "upstream_stalls_total": proxy.UpstreamStallsTotal(), "upstream_ping_failures_total": proxy.UpstreamPingFailuresTotal(), "upstream_last_frame_ms": proxy.UpstreamLastFrameMS(), "local_voice": voice.Load(), "local_voice_revision": voice.Revision()}
 }
 
 func healthzHandler(cfg config, engine *bridge.Engine, logs *journal.Writer, hc *home.Controller, mcpConfigured int, musicQueue *assistant.MusicQueue, proxy *bridge.Proxy, voice *voiceState, wake *wakeState, clientCount, serverCount *atomic.Int64) http.HandlerFunc {

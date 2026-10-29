@@ -39,6 +39,7 @@ type upstreamPingConfig struct {
 // so a role that only changes its prompt needs just a name.
 type agentConfig struct {
 	Name            string   `json:"name"`
+	Provider        string   `json:"provider"`
 	Model           string   `json:"model"`
 	BaseURL         string   `json:"base_url"`
 	API             string   `json:"api"`
@@ -49,6 +50,20 @@ type agentConfig struct {
 	SystemPrompt    string   `json:"system_prompt"`
 	Voice           string   `json:"voice"`
 	AssistantTools  bool     `json:"assistant_tools"`
+}
+
+// llmProviderConfig declares one model endpoint a role may use: a cloud API or
+// a local server. The credential is deliberately absent: it lives in
+// secrets.json under the provider name, so a copied or published config never
+// carries a key, and the panel can show whether one is set without reading it.
+type llmProviderConfig struct {
+	Name            string   `json:"name"`
+	API             string   `json:"api"`
+	BaseURL         string   `json:"base_url"`
+	Model           string   `json:"model"`
+	ReasoningEffort string   `json:"reasoning_effort"`
+	MaxOutputTokens int      `json:"max_output_tokens"`
+	HostedTools     []string `json:"hosted_tools"`
 }
 
 // wakeWordConfig is one start word: what the bridge does when the wake-word
@@ -125,6 +140,7 @@ type config struct {
 	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
 	Panel              panelConfig          `json:"panel"`
 	Agents             []agentConfig        `json:"agents"`
+	LLMProviders       []llmProviderConfig  `json:"llm_providers"`
 	WakeWords          wakeWordsConfig      `json:"wake_words"`
 }
 
@@ -271,6 +287,10 @@ func readConfig(path string) (config, error) {
 	if err := cfg.LocalVoice.Validate(); err != nil {
 		return cfg, err
 	}
+	// Providers are resolved by the roles below, so they are checked first.
+	if err := cfg.validateProviders(); err != nil {
+		return cfg, err
+	}
 	if err := cfg.validateAgents(); err != nil {
 		return cfg, err
 	}
@@ -308,8 +328,165 @@ func readConfig(path string) (config, error) {
 	return cfg, nil
 }
 
-// validateAgents checks every role and folds its voice into local_voice.routes,
-// so the panel and a SIGHUP reload see the same effective voice configuration.
+// llmReasoningEfforts are the effort levels the Responses API accepts.
+var llmReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// validateReasoningEffort rejects an effort the Responses API does not know and
+// an effort on a Chat Completions endpoint, which has no such field.
+func validateReasoningEffort(effort, api, field string) error {
+	if effort == "" {
+		return nil
+	}
+	if api != "responses" {
+		return fmt.Errorf("%s requires api responses", field)
+	}
+	if !slices.Contains(llmReasoningEfforts, effort) {
+		return fmt.Errorf("invalid %s", field)
+	}
+	return nil
+}
+
+// validateHostedTools checks the hosted-tool list and normalizes an empty one to
+// nil, so a configuration that was not edited round-trips unchanged.
+func validateHostedTools(tools []string, api, field string) ([]string, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	if api != "responses" {
+		return nil, fmt.Errorf("%s requires api responses", field)
+	}
+	seen := make(map[string]bool, len(tools))
+	for _, name := range tools {
+		if name != "web_search" && name != "code_interpreter" {
+			return nil, fmt.Errorf("%s supports web_search and code_interpreter", field)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate %s entry", field)
+		}
+		seen[name] = true
+	}
+	return tools, nil
+}
+
+// validateProviders normalizes the named model endpoints a role may point at.
+// The name doubles as the credential key in secrets.json, so it follows the same
+// rule as a role name. A provider always names its own endpoint: inheriting the
+// top-level llm_* values would make the entry pointless.
+func (c *config) validateProviders() error {
+	if len(c.LLMProviders) == 0 {
+		c.LLMProviders = nil
+		return nil
+	}
+	seen := make(map[string]bool, len(c.LLMProviders))
+	for i := range c.LLMProviders {
+		p := &c.LLMProviders[i]
+		p.Name = strings.TrimSpace(p.Name)
+		if !bridge.ValidAgentName(p.Name) {
+			return errors.New("llm_providers[].name must be 1..32 characters of a-z, 0-9, '-' or '_'")
+		}
+		if seen[p.Name] {
+			return errors.New("llm_providers[].name must be unique")
+		}
+		seen[p.Name] = true
+		if p.API == "" {
+			p.API = "chat_completions"
+		}
+		if p.API != "chat_completions" && p.API != "responses" {
+			return errors.New("llm_providers[].api must be chat_completions or responses")
+		}
+		if p.BaseURL == "" || !validEndpoint(p.BaseURL, "http", "https") {
+			return errors.New("invalid llm_providers[].base_url")
+		}
+		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+		p.Model = strings.TrimSpace(p.Model)
+		if p.Model == "" {
+			return errors.New("llm_providers[].model is required")
+		}
+		if p.MaxOutputTokens < 0 {
+			return errors.New("llm_providers[].max_output_tokens must not be negative")
+		}
+		if p.MaxOutputTokens == 0 {
+			p.MaxOutputTokens = c.LLMMaxOutputTokens
+		}
+		if err := validateReasoningEffort(p.ReasoningEffort, p.API, "llm_providers[].reasoning_effort"); err != nil {
+			return err
+		}
+		tools, err := validateHostedTools(p.HostedTools, p.API, "llm_providers[].hosted_tools")
+		if err != nil {
+			return err
+		}
+		p.HostedTools = tools
+	}
+	return nil
+}
+
+// providerByName returns the configured endpoint with this name.
+func (c *config) providerByName(name string) (llmProviderConfig, bool) {
+	for _, p := range c.LLMProviders {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return llmProviderConfig{}, false
+}
+
+// llmTarget is the endpoint one role talks to after inheritance: a named
+// provider, the role's own overrides, or the top-level llm_* values for a role
+// that names no provider. It is derived on every read, never stored in the
+// config, so editing a provider reaches every role that uses it.
+type llmTarget struct {
+	Provider        string
+	API             string
+	BaseURL         string
+	Model           string
+	ReasoningEffort string
+	MaxOutputTokens int
+	HostedTools     []string
+	APIKeyEnv       string
+}
+
+// resolveLLM applies the inheritance order: top-level llm_* → the named
+// provider → the role's own explicit fields. An empty role field inherits, so
+// only the values the operator typed stand out.
+func (c *config) resolveLLM(a agentConfig) (llmTarget, error) {
+	target := llmTarget{
+		API: c.LLMAPI, BaseURL: c.LLMBaseURL, Model: c.LLMModel,
+		ReasoningEffort: c.LLMReasoningEffort, MaxOutputTokens: c.LLMMaxOutputTokens,
+		HostedTools: c.LLMHostedTools, APIKeyEnv: a.APIKeyEnv,
+	}
+	if a.Provider != "" {
+		p, ok := c.providerByName(a.Provider)
+		if !ok {
+			return target, fmt.Errorf("agents[].provider %q is not configured", a.Provider)
+		}
+		target.Provider = p.Name
+		target.API, target.BaseURL, target.Model = p.API, p.BaseURL, p.Model
+		target.ReasoningEffort, target.MaxOutputTokens, target.HostedTools = p.ReasoningEffort, p.MaxOutputTokens, p.HostedTools
+	}
+	if a.API != "" {
+		target.API = a.API
+	}
+	if a.BaseURL != "" {
+		target.BaseURL = a.BaseURL
+	}
+	if a.Model != "" {
+		target.Model = a.Model
+	}
+	if a.ReasoningEffort != "" {
+		target.ReasoningEffort = a.ReasoningEffort
+	}
+	if a.MaxOutputTokens > 0 {
+		target.MaxOutputTokens = a.MaxOutputTokens
+	}
+	if len(a.HostedTools) > 0 {
+		target.HostedTools = a.HostedTools
+	}
+	return target, nil
+}
+
+// validateAgents checks every role against its resolved endpoint and folds its
+// voice into local_voice.routes, so the panel and a SIGHUP reload see the same
+// effective voice configuration.
 func (c *config) validateAgents() error {
 	if len(c.Agents) == 0 {
 		c.Agents = nil
@@ -325,53 +502,39 @@ func (c *config) validateAgents() error {
 			return errors.New("agents[].name must be unique")
 		}
 		seen[a.Name] = true
-		if a.API == "" {
-			a.API = c.LLMAPI
-		}
-		if a.API != "chat_completions" && a.API != "responses" {
-			return errors.New("agents[].api must be chat_completions or responses")
-		}
-		if a.BaseURL == "" {
-			a.BaseURL = c.LLMBaseURL
-		} else if !validEndpoint(a.BaseURL, "http", "https") {
-			return errors.New("invalid agents[].base_url")
-		}
-		if a.Model == "" {
-			a.Model = c.LLMModel
-		}
-		if a.Model == "" {
-			return errors.New("agents[].model is required")
-		}
 		if a.MaxOutputTokens < 0 {
 			return errors.New("agents[].max_output_tokens must not be negative")
 		}
-		if a.MaxOutputTokens == 0 {
-			a.MaxOutputTokens = c.LLMMaxOutputTokens
+		target, err := c.resolveLLM(*a)
+		if err != nil {
+			return err
 		}
-		if a.ReasoningEffort != "" {
-			if a.API != "responses" {
-				return errors.New("agents[].reasoning_effort requires api responses")
-			}
-			if !slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, a.ReasoningEffort) {
-				return errors.New("invalid agents[].reasoning_effort")
-			}
+		if target.API != "chat_completions" && target.API != "responses" {
+			return errors.New("agents[].api must be chat_completions or responses")
 		}
-		if len(a.HostedTools) == 0 {
-			a.HostedTools = nil
-		} else {
-			if a.API != "responses" {
-				return errors.New("agents[].hosted_tools requires api responses")
-			}
-			tools := make(map[string]bool, len(a.HostedTools))
-			for _, name := range a.HostedTools {
-				if name != "web_search" && name != "code_interpreter" {
-					return errors.New("agents[].hosted_tools supports web_search and code_interpreter")
-				}
-				if tools[name] {
-					return errors.New("duplicate agents[].hosted_tools entry")
-				}
-				tools[name] = true
-			}
+		if target.BaseURL != "" && !validEndpoint(target.BaseURL, "http", "https") {
+			return errors.New("invalid agents[].base_url")
+		}
+		if target.Model == "" {
+			return errors.New("agents[].model is required")
+		}
+		if target.MaxOutputTokens <= 0 {
+			return errors.New("agents[].max_output_tokens must be positive")
+		}
+		if err := validateReasoningEffort(target.ReasoningEffort, target.API, "agents[].reasoning_effort"); err != nil {
+			return err
+		}
+		if target.HostedTools, err = validateHostedTools(target.HostedTools, target.API, "agents[].hosted_tools"); err != nil {
+			return err
+		}
+		// A role that names a provider keeps inheriting from it: baking the
+		// provider's URL and model into the role would freeze them, and a later
+		// edit of the provider would no longer reach the role. A legacy role
+		// keeps its explicit values, as the panel has always written them.
+		if a.Provider == "" {
+			a.API, a.BaseURL, a.Model = target.API, target.BaseURL, target.Model
+			a.ReasoningEffort, a.MaxOutputTokens = target.ReasoningEffort, target.MaxOutputTokens
+			a.HostedTools = target.HostedTools
 		}
 		if utf8.RuneCountInString(a.SystemPrompt) > bridge.MaxAgentPromptRunes {
 			return errors.New("agents[].system_prompt is too long")

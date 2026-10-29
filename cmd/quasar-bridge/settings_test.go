@@ -328,3 +328,300 @@ func TestWakeStateStatusDescribesTheTable(t *testing.T) {
 		t.Fatalf("table status: %v", status)
 	}
 }
+
+// settingsTestDepsWithSecrets wires the write path over a temporary directory so
+// the credential file sits next to config.json, exactly as it does on the
+// station.
+func settingsTestDepsWithSecrets(t *testing.T, path string) (settingsDeps, *[]config) {
+	t.Helper()
+	voice := new(voiceState)
+	applied := new([]config)
+	deps := settingsDeps{
+		Voice:   voice,
+		Live:    func() *bridge.Native { return nil },
+		Apply:   func(cfg config) error { *applied = append(*applied, cfg); return nil },
+		Secrets: newSecretStore(path),
+	}
+	return deps, applied
+}
+
+// providerPatch builds one provider row the way the page sends it: the stored
+// endpoint fields, an optional write-only key and no clear flag.
+func providerPatch(name string, key *string) llmProviderPatch {
+	return llmProviderPatch{
+		llmProviderConfig: llmProviderConfig{
+			Name:    name,
+			BaseURL: "https://api.deepseek.com/v1",
+			Model:   "deepseek-chat",
+		},
+		APIKey: key,
+	}
+}
+
+// storedKeys reports the names that currently have a credential on disk.
+func storedKeys(t *testing.T, path string) map[string]string {
+	t.Helper()
+	store, err := newSecretStore(path).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.Providers
+}
+
+// TestSettingsPatchStoresProviderKeyOutsideConfig: the endpoint lands in
+// config.json, the credential in secrets.json, and the answer carries only
+// "this provider has a key".
+func TestSettingsPatchStoresProviderKeyOutsideConfig(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m"}`)
+	deps, applied := settingsTestDepsWithSecrets(t, path)
+	key := "sk-provider-key-0123456789"
+
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", &key)},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+
+	// The defaults a restart would fill are written too, so the file says what
+	// the process uses.
+	cfg, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.LLMProviders) != 1 || cfg.LLMProviders[0].API != "chat_completions" || cfg.LLMProviders[0].MaxOutputTokens <= 0 {
+		t.Fatalf("provider not normalized: %+v", cfg.LLMProviders)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), key) {
+		t.Fatalf("the key reached config.json: %s", raw)
+	}
+	if got := storedKeys(t, path)["deepseek"]; got != key {
+		t.Fatalf("stored key = %q", got)
+	}
+	answer, ok := payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload type %T", payload)
+	}
+	keys, ok := answer["provider_keys"].(map[string]bool)
+	if !ok || !keys["deepseek"] {
+		t.Fatalf("provider_keys = %v", answer["provider_keys"])
+	}
+	if len(*applied) != 1 || len((*applied)[0].LLMProviders) != 1 {
+		t.Fatalf("configuration not applied: %+v", *applied)
+	}
+}
+
+// TestSettingsPatchKeepsStoredKeyWhenFieldIsEmpty: the page never receives the
+// key back, so a row sent without api_key must keep it, and the write is reported
+// as unchanged.
+func TestSettingsPatchKeepsStoredKeyWhenFieldIsEmpty(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m"}`)
+	deps, _ := settingsTestDepsWithSecrets(t, path)
+	key := "sk-keep-me"
+	if status, payload := applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", &key)},
+	}); status != http.StatusOK {
+		t.Fatalf("seed = %d %v", status, payload)
+	}
+
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", nil)},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	if got := storedKeys(t, path)["deepseek"]; got != key {
+		t.Fatalf("key dropped by an untouched row: %q", got)
+	}
+	answer := payload.(map[string]any)
+	if answer["unchanged"] != true {
+		t.Fatalf("write not reported as unchanged: %v", answer)
+	}
+	if keys := answer["provider_keys"].(map[string]bool); !keys["deepseek"] {
+		t.Fatalf("provider_keys = %v", answer["provider_keys"])
+	}
+
+	// An empty string is the same "do not change" signal as an absent field.
+	empty := ""
+	status, payload = applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", &empty)},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("empty key status=%d payload=%v", status, payload)
+	}
+	if got := storedKeys(t, path)["deepseek"]; got != key {
+		t.Fatalf("empty field erased the key: %q", got)
+	}
+}
+
+// TestSettingsPatchClearsAndDropsKeys: clear_key removes one credential and a
+// removed provider takes its key with it, so a later provider reusing the name
+// never inherits a stale secret.
+func TestSettingsPatchClearsAndDropsKeys(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m"}`)
+	deps, _ := settingsTestDepsWithSecrets(t, path)
+	key := "sk-forget-me"
+	seed := func() {
+		if status, payload := applySettingsPatch(path, deps, settingsPatch{
+			LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", &key)},
+		}); status != http.StatusOK {
+			t.Fatalf("seed = %d %v", status, payload)
+		}
+	}
+
+	seed()
+	cleared := providerPatch("deepseek", nil)
+	cleared.ClearKey = true
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{cleared},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear = %d %v", status, payload)
+	}
+	if keys := payload.(map[string]any)["provider_keys"].(map[string]bool); keys["deepseek"] {
+		t.Fatalf("provider_keys still set: %v", keys)
+	}
+	if got := storedKeys(t, path)["deepseek"]; got != "" {
+		t.Fatalf("key survived clear: %q", got)
+	}
+
+	// A rename is a new name: the old credential is dropped because no provider
+	// carries the old name any more.
+	seed()
+	status, payload = applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("ds", nil)},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("rename = %d %v", status, payload)
+	}
+	if got := storedKeys(t, path)["deepseek"]; got != "" {
+		t.Fatalf("key of a removed provider survived: %q", got)
+	}
+	if got := storedKeys(t, path)["ds"]; got != "" {
+		t.Fatalf("renamed provider inherited a key: %q", got)
+	}
+}
+
+// TestSettingsPatchRejectsUnknownProviderForRole: the three sections are
+// validated together, so a role naming a provider that is not in the list is
+// refused before either file changes.
+func TestSettingsPatchRejectsUnknownProviderForRole(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m"}`)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps, _ := settingsTestDepsWithSecrets(t, path)
+
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		Agents: &[]agentConfig{{Name: "briefing", Provider: "ghost", SystemPrompt: "роль"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	if message := payload.(map[string]string)["error"]; !strings.Contains(message, "ghost") {
+		t.Fatalf("error does not name the provider: %q", message)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("refused patch changed the file:\n%s", after)
+	}
+}
+
+// TestSettingsPatchRejectsUnusableAPIKey: a key that cannot be sent as a bearer
+// token is refused with the rest of the validation, and nothing is written.
+func TestSettingsPatchRejectsUnusableAPIKey(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m"}`)
+	deps, _ := settingsTestDepsWithSecrets(t, path)
+
+	bad := "sk-with\nnewline"
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		LLMProviders: &[]llmProviderPatch{providerPatch("deepseek", &bad)},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	if message := payload.(map[string]string)["error"]; !strings.Contains(message, "control characters") {
+		t.Fatalf("error = %q", message)
+	}
+	if keys := storedKeys(t, path); len(keys) != 0 {
+		t.Fatalf("bad key was stored: %v", keys)
+	}
+	if raw, err := os.ReadFile(path); err != nil || strings.Contains(string(raw), "deepseek") {
+		t.Fatalf("provider written on a bad key: %s %v", raw, err)
+	}
+}
+
+// TestPanelSettingsProviderRoundTrip covers the JSON contract the page relies on:
+// the key is write-only, comes back as a boolean and never appears in the answer.
+func TestPanelSettingsProviderRoundTrip(t *testing.T) {
+	panel, _, dir := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+	key := "sk-http-round-trip"
+	configPath := filepath.Join(dir, "config.json")
+
+	request := panelMutation(t, "/api/panel/settings", map[string]any{
+		"llm_providers": []any{map[string]any{
+			"name": "deepseek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "api_key": key,
+		}},
+	}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), key) {
+		t.Fatal("the key came back in the write answer")
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/panel/settings", nil)
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET = %d %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{`"name":"deepseek"`, `"provider_keys":{"deepseek":true}`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET lacks %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, key) {
+		t.Fatalf("the key came back in the settings answer: %s", body)
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), key) {
+		t.Fatalf("the key reached config.json: %s", raw)
+	}
+	if got := storedKeys(t, configPath)["deepseek"]; got != key {
+		t.Fatalf("stored key = %q", got)
+	}
+
+	// The page sends the stored row back without a key, as it does after a
+	// reload, and that must not wipe the credential.
+	request = panelMutation(t, "/api/panel/settings", map[string]any{
+		"llm_providers": []any{map[string]any{
+			"name": "deepseek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
+		}},
+	}, cookie, csrf)
+	recorder = httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("second POST = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if got := storedKeys(t, configPath)["deepseek"]; got != key {
+		t.Fatalf("key lost on an untouched save: %q", got)
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -32,5 +33,30 @@ func TestHealthzReportsUpstreamCounters(t *testing.T) {
 	voicePayload, ok := payload["local_voice"].(map[string]any)
 	if !ok || voicePayload["voice"] != "omazh" || voicePayload["volume"] != 1.2 || payload["local_voice_revision"] != float64(1) {
 		t.Fatalf("local voice fields: %v", payload)
+	}
+}
+
+// TestHealthzCountsProviders: /healthz publishes how many endpoints are
+// configured, never their names or credentials.
+func TestHealthzCountsProviders(t *testing.T) {
+	cfg := config{Mode: "observe", LLMProviders: []llmProviderConfig{
+		{Name: "deepseek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
+		{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", Model: "openrouter/auto"},
+	}}
+	handler := healthzHandler(cfg, new(bridge.Engine), new(journal.Writer), nil, 0, nil, new(bridge.Proxy), new(voiceState), new(wakeState), new(atomic.Int64), new(atomic.Int64))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/healthz", nil))
+	if response.Code != 200 {
+		t.Fatalf("status=%d", response.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["llm_providers"] != float64(2) {
+		t.Fatalf("llm_providers = %v", payload["llm_providers"])
+	}
+	if strings.Contains(response.Body.String(), "deepseek") {
+		t.Fatalf("a provider name reached /healthz: %s", response.Body.String())
 	}
 }

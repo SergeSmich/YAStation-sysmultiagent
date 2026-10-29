@@ -7,6 +7,9 @@ const LOGS_URL = '/api/panel/logs?lines=200';
 const VOICE_URL = '/api/panel/voice';
 const VOICE_TEST_URL = '/api/panel/voice/test';
 const SETTINGS_URL = '/api/panel/settings';
+const WAKE_DICTIONARY_URL = '/api/panel/wake/dictionary';
+const LLM_TEST_URL = '/api/panel/llm/test';
+const LLM_MODELS_URL = '/api/panel/llm/models';
 const PASSWORD_URL = '/api/panel/password';
 const METRICS_URL = '/api/panel/metrics?range=';
 const REFRESH_STATE_MS = 5000;
@@ -17,6 +20,12 @@ let csrfToken = '';
 let voiceFormDirty = false;
 let metricsRange = 3600;
 let agentsState = [];
+let providersState = [];
+let providerKeysState = {};
+let providerModels = {};
+let wakeDictionary = [];
+let wakeDictionaryNote = '';
+let wakePage = '';
 let wordsState = [];
 let settingsActions = ['listen', 'ask', 'command'];
 let settingsVoices = [];
@@ -494,6 +503,191 @@ function settingsControl(tag, field, value, placeholder) {
   return control;
 }
 
+// PROVIDER_APIS are the two wire formats the bridge speaks. The value goes into
+// llm_providers[].api, so it is shown verbatim instead of a translated label:
+// the operator copies it from the provider's documentation.
+const PROVIDER_APIS = ['chat_completions', 'responses'];
+
+// providerPayload builds the object the write path expects. It is an explicit
+// whitelist for two reasons: the transient fields the page keeps on the object
+// (typed key, forget flag, fetched model list) must never reach config.json, and
+// the decoder there rejects unknown members.
+function providerPayload(provider) {
+  const payload = {
+    name: provider.name || '',
+    api: provider.api || 'chat_completions',
+    base_url: provider.base_url || '',
+    model: provider.model || ''
+  };
+  if (provider.reasoning_effort) payload.reasoning_effort = provider.reasoning_effort;
+  if (provider.max_output_tokens) payload.max_output_tokens = Number(provider.max_output_tokens) || 0;
+  if (Array.isArray(provider.hosted_tools) && provider.hosted_tools.length) {
+    payload.hosted_tools = provider.hosted_tools;
+  }
+  // An empty field keeps the stored key: the page never receives it back, so it
+  // cannot send it again.
+  if (provider._key) payload.api_key = provider._key;
+  if (provider._clearKey) payload.clear_key = true;
+  return payload;
+}
+
+function fillModels(datalist, ids) {
+  if (!datalist) return;
+  datalist.replaceChildren();
+  for (const id of ids || []) {
+    const item = el('option');
+    item.value = id;
+    datalist.appendChild(item);
+  }
+}
+
+function updateKeyBadge(row, provider) {
+  const badge = row.querySelector('.key-state');
+  if (!badge) return;
+  const saved = Boolean(providerKeysState[provider.name]) && !provider._clearKey;
+  const typed = Boolean(provider._key);
+  if (provider._clearKey) {
+    badge.textContent = 'ключ будет удалён';
+  } else if (typed) {
+    badge.textContent = 'новый ключ — сохранится';
+  } else if (saved) {
+    badge.textContent = 'ключ сохранён';
+  } else {
+    badge.textContent = 'ключа нет';
+  }
+  badge.classList.toggle('set', saved || typed);
+}
+
+function providerButton(label, action) {
+  const button = el('button', 'ghost', label);
+  button.type = 'button';
+  button.dataset.providerAction = action;
+  return button;
+}
+
+function renderProviders(force) {
+  const list = document.getElementById('llm-providers-list');
+  if (!force && list.contains(document.activeElement)) return;
+  list.replaceChildren();
+  if (!providersState.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет подключений. Добавьте первую нейросеть.'));
+    return;
+  }
+  providersState.forEach((provider, index) => {
+    const row = el('div', 'settings-row form');
+    row.dataset.kind = 'provider';
+    row.dataset.index = String(index);
+    row.dataset.syncedName = provider.name || '';
+
+    const name = settingsControl('input', 'name', provider.name, 'например, deepseek');
+    name.type = 'text';
+    name.autocomplete = 'off';
+    row.appendChild(settingsField('Название', name));
+
+    const api = settingsControl('select', 'api', provider.api || 'chat_completions');
+    for (const value of PROVIDER_APIS) api.appendChild(option(value, value));
+    api.value = provider.api || 'chat_completions';
+    row.appendChild(settingsField('Формат API', api));
+
+    const base = settingsControl('input', 'base_url', provider.base_url, 'https://api.deepseek.com/v1');
+    base.type = 'text';
+    base.autocomplete = 'off';
+    row.appendChild(settingsField('Адрес API', base, 'wide'));
+
+    const model = settingsControl('input', 'model', provider.model, 'например, deepseek-chat');
+    model.type = 'text';
+    model.autocomplete = 'off';
+    const models = el('datalist');
+    models.id = 'llm-models-' + index;
+    models.className = 'model-select';
+    fillModels(models, provider._models || providerModels[provider.name] || []);
+    model.setAttribute('list', models.id);
+    const modelField = settingsField('Модель', model);
+    modelField.appendChild(models);
+    row.appendChild(modelField);
+
+    const key = settingsControl('input', 'api_key', provider._key, '');
+    key.type = 'password';
+    key.autocomplete = 'new-password';
+    key.placeholder = provider._clearKey ? 'ключ будет удалён' : 'пусто — не менять';
+    const keyField = settingsField('API-ключ', key);
+    keyField.appendChild(el('span', 'key-state'));
+    row.appendChild(keyField);
+
+    const actions = el('div', 'row-actions');
+    actions.appendChild(providerButton('Проверить', 'test'));
+    actions.appendChild(providerButton('Модели', 'models'));
+    actions.appendChild(providerButton('Забыть ключ', 'forget'));
+    const remove = el('button', 'ghost', 'Удалить');
+    remove.type = 'button';
+    remove.dataset.remove = 'provider';
+    actions.appendChild(remove);
+    row.appendChild(actions);
+
+    list.appendChild(row);
+    updateKeyBadge(row, provider);
+  });
+}
+
+function renderWakeDictionary() {
+  let datalist = document.getElementById('wake-dictionary-list');
+  if (!datalist) {
+    datalist = el('datalist');
+    datalist.id = 'wake-dictionary-list';
+    datalist.className = 'wake-dictionary';
+    document.body.appendChild(datalist);
+  }
+  datalist.replaceChildren();
+  for (const item of wakeDictionary) {
+    const choice = el('option');
+    choice.value = item.word;
+    if (item.name && item.name !== item.word) choice.label = item.name;
+    datalist.appendChild(choice);
+  }
+  const parts = [];
+  if (wakeDictionary.length) {
+    parts.push('выучено: ' + wakeDictionary.map((item) => item.name || item.word).join(', '));
+  } else {
+    parts.push('обученных слов не найдено');
+  }
+  if (wakeDictionaryNote) parts.push(wakeDictionaryNote);
+  const known = new Set();
+  for (const item of wakeDictionary) {
+    known.add(String(item.word || '').toLowerCase());
+    known.add(String(item.name || '').toLowerCase());
+  }
+  const unknown = [];
+  for (const word of wordsState) {
+    const value = String(word.word || '').trim();
+    if (value && !known.has(value.toLowerCase())) unknown.push(value);
+  }
+  if (unknown.length) parts.push('не обучено, не сработает: ' + unknown.join(', '));
+  document.getElementById('wake-dictionary-hint').textContent = parts.join(' · ');
+
+  const train = document.getElementById('wake-train');
+  const trainHint = document.getElementById('wake-train-hint');
+  if (wakePage) {
+    train.href = wakePage;
+    train.hidden = false;
+    trainHint.textContent = 'откроется в новой вкладке под этой же сессией';
+  } else {
+    train.hidden = true;
+    trainHint.textContent = 'страница обучения выключена: ssh -L 8780:127.0.0.1:8780 root@192.168.1.210, затем http://127.0.0.1:8780/';
+  }
+}
+
+async function loadWakeDictionary() {
+  try {
+    const payload = await getJSON(WAKE_DICTIONARY_URL);
+    wakeDictionary = Array.isArray(payload.words) ? payload.words : [];
+    wakeDictionaryNote = payload.error || '';
+  } catch (error) {
+    wakeDictionary = [];
+    wakeDictionaryNote = error.message;
+  }
+  renderWakeDictionary();
+}
+
 function renderWakeWords(force) {
   const list = document.getElementById('wake-words-list');
   if (!force && list.contains(document.activeElement)) return;
@@ -510,6 +704,9 @@ function renderWakeWords(force) {
     const wordInput = settingsControl('input', 'word', word.word, 'например, брифинг');
     wordInput.type = 'text';
     wordInput.autocomplete = 'off';
+    // The list holds the words the daemon is actually trained on: a typed name
+    // that is not in it can never fire, and the hint above says so.
+    wordInput.setAttribute('list', 'wake-dictionary-list');
     row.appendChild(settingsField('Слово или фраза', wordInput));
 
     const action = settingsControl('select', 'action', word.action || 'listen');
@@ -565,6 +762,15 @@ function renderAgents(force) {
     prompt.rows = 5;
     row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
 
+    const provider = settingsControl('select', 'provider', agent.provider);
+    provider.className = 'agent-provider';
+    provider.appendChild(option('', 'по умолчанию'));
+    for (const item of providersState) {
+      if (item.name) provider.appendChild(option(item.name, item.name));
+    }
+    provider.value = agent.provider || '';
+    row.appendChild(settingsField('Нейросеть', provider));
+
     const voice = settingsControl('select', 'voice', agent.voice);
     voice.appendChild(option('', 'голос Ассистента'));
     for (const voiceName of settingsVoices) voice.appendChild(option(voiceName, voiceName));
@@ -581,8 +787,42 @@ function renderAgents(force) {
     remove.dataset.remove = 'agent';
     row.appendChild(remove);
     list.appendChild(row);
+    updateAgentRow(row, agent);
   });
   syncAgentSelects();
+  syncProviderSelects();
+}
+
+// updateAgentRow shows which fields a linked role actually uses. A role with a
+// provider inherits its model, address and format from that provider, so the
+// free-text model is disabled instead of silently ignored.
+function updateAgentRow(row, agent) {
+  const model = row.querySelector('[data-field="model"]');
+  if (!model) return;
+  const linked = Boolean(agent.provider);
+  model.disabled = linked;
+  model.placeholder = linked ? 'из подключения' : 'модель по умолчанию';
+}
+
+// syncProviderSelects keeps the role list in step with the provider list: a role
+// may name a provider that was just renamed or deleted, and the write path would
+// reject such a role.
+function syncProviderSelects() {
+  const list = document.getElementById('agents-list');
+  const names = providersState.map((provider) => provider.name).filter(Boolean);
+  for (const select of list.querySelectorAll('.agent-provider')) {
+    const row = select.closest('[data-kind="agent"]');
+    const index = Number(row.dataset.index);
+    const agent = agentsState[index];
+    if (!agent) continue;
+    if (agent.provider && !names.includes(agent.provider)) {
+      agent.provider = '';
+      updateAgentRow(row, agent);
+    }
+    select.replaceChildren(option('', 'по умолчанию'));
+    for (const name of names) select.appendChild(option(name, name));
+    select.value = agent.provider || '';
+  }
 }
 
 function updateWordRow(row, word) {
@@ -617,17 +857,24 @@ function syncAgentSelects() {
 
 function renderSettings(payload, force) {
   agentsState = Array.isArray(payload.agents) ? payload.agents : [];
+  providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
+  providerKeysState = payload.provider_keys && typeof payload.provider_keys === 'object'
+    ? payload.provider_keys
+    : {};
   const wakeWords = payload.wake_words || {};
   wordsState = Array.isArray(wakeWords.words) ? wakeWords.words : [];
   settingsActions = Array.isArray(payload.actions) ? payload.actions : ['listen', 'ask', 'command'];
   settingsVoices = Array.isArray(payload.voices) ? payload.voices : [];
+  wakePage = typeof payload.wake_page === 'string' ? payload.wake_page : '';
 
   const form = document.getElementById('settings-form');
   if (force || !form.contains(document.activeElement)) {
     document.getElementById('settings-dry-run').checked = Boolean(wakeWords.dry_run);
   }
+  renderProviders(force);
   renderWakeWords(force);
   renderAgents(force);
+  renderWakeDictionary();
 }
 
 async function loadSettings() {
@@ -663,10 +910,49 @@ function editSettingsField(event) {
       }
       updateWordRow(row, word);
     }
+  } else if (row.dataset.kind === 'provider') {
+    const provider = providersState[index];
+    if (!provider) return;
+    if (control.dataset.field === 'api_key') {
+      provider._key = control.value;
+      if (control.value) provider._clearKey = false;
+      updateKeyBadge(row, provider);
+      return;
+    }
+    provider[control.dataset.field] = control.value;
+    if (control.dataset.field === 'name' && event.type === 'change') {
+      // A rename is a new provider name everywhere: the roles linked to it and
+      // the stored key both follow, otherwise the old name would be rejected as
+      // an unknown provider on save.
+      const previousName = row.dataset.syncedName || '';
+      if (previousName && previousName !== provider.name) {
+        for (const agent of agentsState) {
+          if (agent.provider === previousName) agent.provider = provider.name;
+        }
+        if (previousName in providerKeysState) {
+          // A stored key belongs to the old name and cannot travel with it: the
+          // server drops it when that provider disappears from the list. Say so
+          // now instead of showing "ключ сохранён" until the next save.
+          delete providerKeysState[previousName];
+          document.getElementById('settings-status').textContent =
+            'имя изменено: ключ нужно ввести заново';
+        }
+        if (providerModels[previousName]) {
+          providerModels[provider.name] = providerModels[previousName];
+          delete providerModels[previousName];
+        }
+      }
+      row.dataset.syncedName = provider.name || '';
+      syncProviderSelects();
+      updateKeyBadge(row, provider);
+    }
   } else if (row.dataset.kind === 'agent') {
     const agent = agentsState[index];
     if (!agent) return;
     agent[control.dataset.field] = control.value;
+    if (control.dataset.field === 'provider') {
+      updateAgentRow(row, agent);
+    }
     if (control.dataset.field === 'name' && event.type === 'change') {
       const previousName = row.dataset.syncedName || '';
       if (previousName && previousName !== agent.name) {
@@ -689,6 +975,15 @@ function removeSettingsItem(event) {
   if (row.dataset.kind === 'word') {
     wordsState.splice(index, 1);
     renderWakeWords(true);
+  } else if (row.dataset.kind === 'provider') {
+    const removed = providersState[index];
+    providersState.splice(index, 1);
+    if (removed) {
+      delete providerKeysState[removed.name];
+      delete providerModels[removed.name];
+    }
+    syncProviderSelects();
+    renderProviders(true);
   } else if (row.dataset.kind === 'agent') {
     agentsState.splice(index, 1);
     syncAgentSelects();
@@ -696,13 +991,81 @@ function removeSettingsItem(event) {
   }
 }
 
+// providerAction runs the two live checks against a saved provider. Both endpoints
+// resolve the provider from the file, so a row that was never saved is reported
+// as such instead of pretending to test it.
+async function providerAction(event) {
+  const button = event.target.closest('[data-provider-action]');
+  if (!button) return;
+  const row = button.closest('[data-kind="provider"]');
+  if (!row) return;
+  const provider = providersState[Number(row.dataset.index)];
+  if (!provider) return;
+  const status = document.getElementById('settings-status');
+  status.classList.remove('error');
+  const action = button.dataset.providerAction;
+  if (action === 'forget') {
+    provider._clearKey = true;
+    provider._key = '';
+    updateKeyBadge(row, provider);
+    status.textContent = 'ключ будет удалён при сохранении';
+    return;
+  }
+  const name = String(provider.name || '').trim();
+  if (!name) {
+    status.textContent = 'укажите название подключения и сохраните его';
+    status.classList.add('error');
+    return;
+  }
+  if (action === 'models') {
+    status.textContent = 'запрашиваю список моделей…';
+    try {
+      const payload = await postJSON(LLM_MODELS_URL, { provider: name });
+      const ids = Array.isArray(payload && payload.models) ? payload.models : [];
+      provider._models = ids;
+      providerModels[name] = ids;
+      fillModels(row.querySelector('.model-select'), ids);
+      status.textContent = ids.length
+        ? 'моделей: ' + ids.length + ' — выберите в поле «Модель»'
+        : 'провайдер не вернул список моделей, введите вручную';
+    } catch (error) {
+      status.textContent = error.message + ' (подключение должно быть сохранено)';
+      status.classList.add('error');
+    }
+    return;
+  }
+  status.textContent = 'проверяю подключение…';
+  try {
+    const payload = await postJSON(LLM_TEST_URL, { provider: name });
+    status.textContent = 'ответ за ' + (payload && payload.latency_ms ? payload.latency_ms : 0) +
+      ' мс: ' + ((payload && payload.sample) || 'пусто');
+  } catch (error) {
+    status.textContent = error.message + ' (подключение должно быть сохранено)';
+    status.classList.add('error');
+  }
+}
+
 async function submitSettings(event) {
   event.preventDefault();
   const status = document.getElementById('settings-status');
   status.classList.remove('error');
+  // Reported here, in the operator's words, instead of the strict decoder's
+  // "llm_providers[].name must be 1..32 characters…" from the server.
+  for (const provider of providersState) {
+    if (!String(provider.name || '').trim() ||
+        !String(provider.base_url || '').trim() ||
+        !String(provider.model || '').trim()) {
+      status.textContent = 'у подключения нужны название, адрес API и модель';
+      status.classList.add('error');
+      return;
+    }
+  }
   status.textContent = 'сохраняю…';
   try {
     const payload = await postJSON(SETTINGS_URL, {
+      // All three sections go back whole: the write path replaces a present
+      // section, and a provider list that is edited as a list cannot be patched.
+      llm_providers: providersState.map(providerPayload),
       agents: agentsState,
       wake_words: {
         dry_run: document.getElementById('settings-dry-run').checked,
@@ -711,6 +1074,7 @@ async function submitSettings(event) {
     });
     status.textContent = payload && payload.unchanged ? 'без изменений' : 'применено';
     renderSettings(payload || {}, true);
+    loadWakeDictionary();
   } catch (error) {
     status.textContent = error.message;
     status.classList.add('error');
@@ -822,6 +1186,11 @@ document.addEventListener('DOMContentLoaded', () => {
   settingsForm.addEventListener('input', editSettingsField);
   settingsForm.addEventListener('change', editSettingsField);
   settingsForm.addEventListener('click', removeSettingsItem);
+  settingsForm.addEventListener('click', providerAction);
+  document.getElementById('add-llm-provider').addEventListener('click', () => {
+    providersState.push({ name: '', api: 'chat_completions', base_url: '', model: '' });
+    renderProviders(true);
+  });
   document.getElementById('add-wake-word').addEventListener('click', () => {
     wordsState.push({ word: '', action: 'listen', text: '', agent: '' });
     renderWakeWords(true);
@@ -837,6 +1206,7 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshLogsSafe();
       refreshMetricsSafe();
       refreshSettingsSafe();
+      loadWakeDictionary();
       startTimers();
     })
     .catch((error) => {

@@ -72,16 +72,25 @@
     </section>
 
     <section>
-      <h2>Старт-слова и роли</h2>
-      <p class="muted">Слово, фраза и промпт задаются здесь и применяются без перезапуска моста.</p>
+      <h2>Нейросети, роли и старт-слова</h2>
+      <p class="muted">Подключения, промпты и слова применяются без перезапуска моста.</p>
       <form id="settings-form" class="panel settings-form">
-        <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry_run)</label>
-        <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
+        <h3>Нейросети</h3>
+        <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ.</p>
+        <div id="llm-providers-list" class="settings-list"></div>
+        <div class="actions">
+          <button type="button" id="add-llm-provider">+ нейросеть</button>
+        </div>
 
         <h3>Старт-слова</h3>
+        <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry_run)</label>
+        <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
         <div id="wake-words-list" class="settings-list"></div>
+        <p id="wake-dictionary-hint" class="muted small wake-dictionary"></p>
         <div class="actions">
           <button type="button" id="add-wake-word">+ слово</button>
+          <a id="wake-train" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Обучение старт-слов</a>
+          <span id="wake-train-hint" class="muted small"></span>
         </div>
 
         <h3>Роли</h3>

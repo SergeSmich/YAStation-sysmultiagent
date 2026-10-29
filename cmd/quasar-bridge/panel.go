@@ -55,16 +55,24 @@ type panelConfig struct {
 	LogPath     string   `json:"log_path"`
 	MetricsFile string   `json:"metrics_file"`
 	Hosts       []string `json:"hosts"`
+	// WakeProxy exposes the wake-word daemon's own training page on a second
+	// TLS listener with the same certificate and session. The daemon listens on
+	// loopback only, and its page uses its own paths and inline styles, so a
+	// separate listener is safer than rewriting paths on the main one.
+	WakeProxy       bool   `json:"wake_proxy"`
+	WakeProxyListen string `json:"wake_proxy_listen"`
 }
 
 func defaultPanelConfig() panelConfig {
 	return panelConfig{
-		Listen:      "0.0.0.0:8444",
-		TLSDir:      "tls",
-		AuthFile:    "panel_auth.json",
-		AuditFile:   "panel_audit.jsonl",
-		LogPath:     "bridge.log",
-		MetricsFile: "metrics.json",
+		Listen:          "0.0.0.0:8444",
+		TLSDir:          "tls",
+		AuthFile:        "panel_auth.json",
+		AuditFile:       "panel_audit.jsonl",
+		LogPath:         "bridge.log",
+		MetricsFile:     "metrics.json",
+		WakeProxy:       true,
+		WakeProxyListen: "0.0.0.0:8445",
 	}
 }
 
@@ -95,6 +103,11 @@ func (c panelConfig) Validate() error {
 	for _, host := range c.Hosts {
 		if strings.TrimSpace(host) == "" {
 			return errors.New("panel.hosts must name hosts")
+		}
+	}
+	if c.WakeProxy {
+		if _, _, err := net.SplitHostPort(c.WakeProxyListen); err != nil {
+			return errors.New("panel.wake_proxy_listen must be host:port")
 		}
 	}
 	return nil
@@ -135,6 +148,13 @@ type panelServer struct {
 	logPath    string
 	login      *template.Template
 	mux        *http.ServeMux
+	// panelPort is the port of the main listener, used to send a session-less
+	// visitor of the training page back to the panel login.
+	panelPort string
+	// wakePage is the proxied training page, nil when the extra listener is
+	// disabled or its address is invalid.
+	wakePage     http.Handler
+	wakePagePort string
 }
 
 func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
@@ -161,12 +181,21 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		settings:   deps.Settings,
 		logPath:    cfg.LogPath,
 		login:      login,
+		panelPort:  portOfListen(cfg.Listen),
 	}
 	// A panel built without a metrics collector still serves the endpoint: the
 	// series is simply empty, and the charts draw "нет данных" instead of the
 	// page failing to load.
 	if p.metrics == nil {
 		p.metrics = newPanelMetrics("")
+	}
+	if cfg.WakeProxy {
+		if proxy, err := newWakePageProxy(wakeBaseURL()); err != nil {
+			slog.Warn("wake_proxy_disabled", "error", err)
+		} else {
+			p.wakePage = p.wakePageHandler(proxy)
+			p.wakePagePort = portOfListen(cfg.WakeProxyListen)
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.index)
@@ -179,11 +208,14 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("GET /api/panel/state", p.requireSession(p.apiState))
 	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
 	mux.HandleFunc("GET /api/panel/settings", p.requireSession(p.apiSettings))
+	mux.HandleFunc("GET /api/panel/wake/dictionary", p.requireSession(p.apiWakeDictionary))
 	mux.HandleFunc("GET /api/panel/turns", p.requireSession(p.apiTurns))
 	mux.HandleFunc("GET /api/panel/logs", p.requireSession(p.apiLogs))
 	mux.HandleFunc("GET /api/panel/metrics", p.requireSession(p.apiMetrics))
 	mux.HandleFunc("POST /api/panel/voice", p.requireMutation(p.apiVoiceUpdate))
 	mux.HandleFunc("POST /api/panel/settings", p.requireMutation(p.apiSettingsUpdate))
+	mux.HandleFunc("POST /api/panel/llm/test", p.requireMutation(p.apiLLMTest))
+	mux.HandleFunc("POST /api/panel/llm/models", p.requireMutation(p.apiLLMModels))
 	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
 	p.mux = mux
@@ -201,6 +233,19 @@ func (p *panelServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	p.mux.ServeHTTP(w, r)
+}
+
+// WakePageHandler is the proxied wake-word training page. The extra listener is
+// started only when this is not nil.
+func (p *panelServer) WakePageHandler() http.Handler { return p.wakePage }
+
+// portOfListen extracts the port from a host:port address, so a page served on
+// another port can link back to this listener.
+func portOfListen(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return port
+	}
+	return ""
 }
 
 func (p *panelServer) index(w http.ResponseWriter, r *http.Request) {

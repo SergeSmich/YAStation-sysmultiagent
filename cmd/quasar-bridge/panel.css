@@ -104,6 +104,26 @@ section { margin-bottom: 22px; }
 .settings-row .field.wide { flex: 2 1 300px; }
 .settings-row > button { align-self: flex-end; }
 .settings-row [hidden] { display: none; }
+.settings-row .row-actions { display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap; flex: 1 0 100%; }
+.settings-row .row-actions button { padding: 5px 10px; font-size: 13px; }
+.key-state { font-size: 12px; color: var(--muted); }
+.key-state.set { color: var(--ok); }
+
+/* A link that reads as a button: the training page is a navigation, so it must
+   stay an anchor and keep its own tab, but the row should look uniform. */
+.button-link {
+  display: inline-block;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.button-link:hover { border-color: #3d4a5a; }
+.button-link[hidden] { display: none; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
