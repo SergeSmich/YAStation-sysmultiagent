@@ -28,6 +28,28 @@ func TestPanelUIWiresTheSettingsSections(t *testing.T) {
 		"wake-train",
 		"wake-train-hint",
 		"settings-status",
+		// Routing: the section, the rule table, the preset box, the classifier
+		// prompt and the phrase tester all fail silently if an id drifts.
+		"section-routing",
+		"routing-preset",
+		"routing-preset-apply",
+		"routing-default",
+		"routing-on-error",
+		"routing-timeout",
+		"routing-refusal",
+		"routing-rules",
+		"add-routing-rule",
+		"routing-reset",
+		"routing-prompt",
+		"routing-test",
+		"routing-test-text",
+		"routing-test-result",
+		// The update block only reports; it must not hide the numbers.
+		"update-build",
+		"update-latest",
+		"update-check",
+		"update-status",
+		"update-command",
 	} {
 		if !strings.Contains(string(page), `id="`+id+`"`) {
 			t.Fatalf("panel.html lacks #%s", id)
@@ -37,6 +59,19 @@ func TestPanelUIWiresTheSettingsSections(t *testing.T) {
 	// would lose the session when it navigates the panel away.
 	if !strings.Contains(string(page), `target="_blank"`) {
 		t.Fatal("panel.html: the training-page link does not open a new tab")
+	}
+	// Four «Сохранить», four sections. Each button names the section it writes,
+	// because the page sends only that section: one bad row in the providers must
+	// not block saving the roles, and saving the roles must not rewrite the
+	// providers that are still being edited.
+	for _, scope := range []string{"providers", "words", "roles", "routing"} {
+		marker := `data-scope="` + scope + `"`
+		if !strings.Contains(string(page), marker) {
+			t.Fatalf("panel.html: no «Сохранить» button for section %q (%s)", scope, marker)
+		}
+	}
+	if got := strings.Count(string(page), `data-scope="`); got != 4 {
+		t.Fatalf("panel.html: %d scoped save buttons, want exactly 4", got)
 	}
 }
 
@@ -51,6 +86,7 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 	for _, marker := range []string{
 		"'/api/panel/llm/test'",
 		"'/api/panel/llm/models'",
+		"'/api/panel/llm/detect'",
 		"'/api/panel/wake/dictionary'",
 		"wake-dictionary-list",
 		"model-select",
@@ -58,6 +94,15 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		"provider_keys",
 		"providerPayload",
 		"wake_page",
+		"'/api/panel/routing/test'",
+		"'/api/panel/update'",
+		"routing_presets",
+		"routingPayload",
+		"dataset.ruleField",
+		// Scoped saves: the submit handler reads the section from the button and
+		// the payload builder keys off it.
+		"event.submitter",
+		"settingsScopeLabels",
 	} {
 		if !strings.Contains(string(script), marker) {
 			t.Fatalf("panel.js lacks %s", marker)
@@ -77,7 +122,7 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{".button-link", ".row-actions", ".key-state"} {
+	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".routing-rule", ".routing-classifier", ".update-command"} {
 		if !strings.Contains(string(style), marker) {
 			t.Fatalf("panel.css lacks %s", marker)
 		}

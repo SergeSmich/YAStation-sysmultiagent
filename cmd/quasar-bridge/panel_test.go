@@ -884,3 +884,39 @@ func TestPanelSameOrigin(t *testing.T) {
 		})
 	}
 }
+
+// TestPanelServesRootCertificate: the login page has to be able to hand the
+// operator the CA file while the browser still calls the site untrusted. The
+// response is a plain download: no session check, no HTML.
+func TestPanelServesRootCertificate(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, panelCAName)
+	// A real PEM body is not needed to prove the wiring: the handler copies the
+	// file it is pointed at, and the TLS layer is what parses certificates.
+	body := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+	if err := os.WriteFile(caPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	panel := &panelServer{caPath: caPath}
+	recorder := httptest.NewRecorder()
+	panel.rootCertificate(recorder, httptest.NewRequest(http.MethodGet, "/ca.crt", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/x-x509-ca-cert" {
+		t.Fatalf("content type = %q", got)
+	}
+	if got := recorder.Header().Get("Content-Disposition"); !strings.Contains(got, "midi-ca.crt") {
+		t.Fatalf("content disposition = %q", got)
+	}
+	if recorder.Body.String() != body {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+
+	// Without a CA on disk the route must say so instead of serving an empty file.
+	empty := httptest.NewRecorder()
+	(&panelServer{caPath: filepath.Join(dir, "missing.crt")}).rootCertificate(empty, httptest.NewRequest(http.MethodGet, "/ca.crt", nil))
+	if empty.Code != http.StatusNotFound {
+		t.Fatalf("missing CA status = %d, want 404", empty.Code)
+	}
+}

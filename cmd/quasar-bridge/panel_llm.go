@@ -4,10 +4,8 @@ import (
 	"context"
 	stdjson "encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -147,40 +145,7 @@ func (p *panelServer) apiLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), panelLLMProbeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(provider.BaseURL, "/")+"/models", nil)
-	if err != nil {
-		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": "invalid provider endpoint"})
-		return
-	}
-	req.Header.Set("Accept", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := (&http.Client{Timeout: panelLLMProbeTimeout}).Do(req)
-	if err != nil {
-		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": "provider is unreachable"})
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name, "status": resp.StatusCode})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": "provider returned HTTP " + strconv.Itoa(resp.StatusCode)})
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, panelLLMModelsBytes+1))
-	if err != nil {
-		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": "cannot read provider response"})
-		return
-	}
-	if len(data) > panelLLMModelsBytes {
-		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": "provider response is too large"})
-		return
-	}
-	models, err := parseModelList(data)
+	models, err := fetchLLMModels(ctx, provider.BaseURL, key)
 	if err != nil {
 		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
 		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

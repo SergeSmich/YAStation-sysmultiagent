@@ -9,9 +9,12 @@
   --warn: #e0b341;
   --err: #e2665c;
   --accent: #5aa2e8;
+  --mint: #8be0c3;
 }
 
 * { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
 
 body {
   margin: 0;
@@ -22,34 +25,70 @@ body {
 
 code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
 
-.bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 12px 18px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+/* Menu on the left, settings on the right: the panel is one long page of
+   cards, and the menu is the table of contents that keeps it navigable. */
+.layout { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: 100vh; }
+
+.sidebar {
   position: sticky;
   top: 0;
-  z-index: 2;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 14px 16px;
+  background: #131820;
+  border-right: 1px solid var(--line);
 }
 
-.bar h1 { margin: 0; font-size: 17px; font-weight: 600; }
-.bar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.bar form { margin: 0; }
+.brand { font-size: 15px; font-weight: 600; padding: 0 8px; }
 
-main { padding: 16px 18px 40px; max-width: 1200px; margin: 0 auto; }
+.nav { display: grid; gap: 2px; }
 
-h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.nav-item {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+}
+.nav-item:hover { color: var(--text); background: var(--panel-2); }
+.nav-item.is-active { color: var(--text); background: #1c2634; border-color: #2b3a4d; }
 
-section { margin-bottom: 22px; }
+.nav-note {
+  margin: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.nav-secondary { border-top: 1px solid var(--line); padding-top: 12px; }
+
+.sidebar-foot { margin-top: auto; display: grid; gap: 8px; padding: 0 8px; }
+.foot-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.foot-actions form { margin: 0; }
+
+main { padding: 22px 26px 48px; max-width: 1100px; }
+
+.page-head { margin-bottom: 18px; }
+.page-head h1 { margin: 0 0 4px; font-size: 24px; font-weight: 600; }
+.page-head p { margin: 0 0 6px; }
+#settings-status { display: block; min-height: 18px; }
+#settings-status.error { color: var(--err); }
+
+h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; color: var(--text); }
+
+section { margin-bottom: 22px; scroll-margin-top: 12px; }
 
 .muted { color: var(--muted); font-weight: 400; }
 .small { font-size: 12px; }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 14px; }
 
 .card {
   background: var(--panel);
@@ -95,19 +134,104 @@ section { margin-bottom: 22px; }
 .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
 .form .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-basis: 100%; }
 
-.settings-form { display: block; }
-.settings-form h3 { margin: 16px 0 8px; font-size: 13px; font-weight: 600; }
-.settings-form > .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.settings-form { display: block; margin: 0; }
+
+/* One card per subject on the page, each with its own save button: the operator
+   edits providers, words and roles independently and expects the button next to
+   the section he just changed. */
+.settings-card {
+  margin: 0 0 16px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.settings-card h2 { margin: 0 0 6px; font-size: 18px; }
+h3 { margin: 20px 0 6px; font-size: 15px; font-weight: 600; }
+.settings-card > p { margin: 0 0 10px; }
+.card-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
 .settings-list { display: grid; gap: 10px; }
-.settings-row { align-items: stretch; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: #131922; }
-.settings-row .field { flex: 1 1 180px; }
-.settings-row .field.wide { flex: 2 1 300px; }
-.settings-row > button { align-self: flex-end; }
+.settings-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #131922;
+}
+.settings-row .field { min-width: 0; }
+.settings-row .field.wide,
+.settings-row .row-actions { grid-column: 1 / -1; }
 .settings-row [hidden] { display: none; }
-.settings-row .row-actions { display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap; flex: 1 0 100%; }
+.settings-row .row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .settings-row .row-actions button { padding: 5px 10px; font-size: 13px; }
+.settings-row > .field { align-self: end; }
+.settings-row > .field.narrow { max-width: 240px; }
 .key-state { font-size: 12px; color: var(--muted); }
 .key-state.set { color: var(--ok); }
+
+/* A rule is read in two steps: name, route and priority on one line, the five
+   match conditions folded underneath. Unfolded, six rules push the save button
+   off the screen and the priority order stops being visible. */
+.settings-row.routing-rule { grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr) auto auto; }
+.settings-row.routing-rule .row-actions { grid-column: auto; }
+.settings-row.routing-rule .check { padding-bottom: 6px; }
+.settings-row.routing-rule.is-off { opacity: .55; }
+.routing-rule .routing-match {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.routing-rule .routing-match summary,
+.routing-classifier summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.routing-rule .routing-match .form { margin-top: 8px; }
+.routing-rule .routing-match .field { flex: 1 1 220px; }
+.routing-classifier { margin-top: 14px; }
+.routing-classifier textarea {
+  width: 100%;
+  margin-top: 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.routing-classifier textarea:focus { outline: none; border-color: var(--accent); }
+
+/* Versions and the one command that updates them. The station never runs the
+   command: the machine that owns the source tree does, so the block is there to
+   be copied, not pressed. */
+.update-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.update-item {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.update-item strong { font-weight: 600; word-break: break-word; }
+.update-command {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 
 /* A link that reads as a button: the training page is a navigation, so it must
    stay an anchor and keep its own tab, but the row should look uniform. */
@@ -145,7 +269,7 @@ td.meta { white-space: nowrap; color: var(--muted); font-variant-numeric: tabula
 .badge.local, .badge.dialogue { border-color: #3d5342; color: #8dc79e; }
 
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+.toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; flex-wrap: wrap; }
 .check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 
 .logs {
@@ -202,6 +326,16 @@ button {
 }
 button:hover { border-color: #3d4a5a; }
 button.ghost { background: transparent; }
+button.btn-accent {
+  background: var(--mint);
+  border-color: var(--mint);
+  color: #0e1613;
+  font-weight: 600;
+  padding: 7px 18px;
+}
+button.btn-accent:hover { filter: brightness(1.06); border-color: var(--mint); }
+button.danger { background: transparent; border-color: #5c2f2b; color: var(--err); }
+button.danger:hover { border-color: var(--err); }
 
 .login-body { display: flex; min-height: 100vh; align-items: center; justify-content: center; padding: 20px; }
 
@@ -229,3 +363,26 @@ button.ghost { background: transparent; }
 .login button { padding: 9px 12px; background: #22405e; border-color: #2f5578; }
 .login p { margin: 0; }
 .error { color: var(--err); font-size: 13px; margin: 0; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .nav { display: flex; flex-wrap: wrap; }
+  .nav-item { min-height: 44px; display: flex; align-items: center; }
+  .nav-secondary { border-top: 0; padding-top: 0; }
+  main { padding: 16px 14px 32px; }
+  .settings-row { grid-template-columns: 1fr; }
+  /* The four-column rule row would overflow a phone: stack it like the rest. */
+  .settings-row.routing-rule { grid-template-columns: 1fr; }
+  .settings-row.routing-rule .row-actions { grid-column: 1 / -1; }
+}
+
+/* Smooth scrolling is a nicety, not a requirement: honour the system setting. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}

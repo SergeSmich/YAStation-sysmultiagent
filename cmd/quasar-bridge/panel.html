@@ -3,148 +3,282 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Миди — Quasar Bridge</title>
+  <title>Миди — настройки ассистента</title>
   <link rel="stylesheet" href="/panel.css">
 </head>
 <body>
-  <header class="bar">
-    <h1>Миди <span class="muted">Quasar Bridge</span></h1>
-    <div class="bar-right">
-      <span id="stamp" class="muted">—</span>
-      <button id="refresh" type="button">Обновить</button>
-      <form method="post" action="/logout">
-        <button type="submit" class="ghost">Выйти</button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Голосовая станция</div>
+      <nav class="nav">
+        <a class="nav-item" href="#section-providers">Нейросети</a>
+        <a class="nav-item" href="#section-words">Старт-слова</a>
+        <a class="nav-item" href="#section-roles">Роли</a>
+        <a class="nav-item" href="#section-routing">Маршрутизация</a>
+      </nav>
+      <p class="nav-note">Настройки подключения, команд и голосовых ассистентов</p>
+      <nav class="nav nav-secondary">
+        <a class="nav-item" href="#section-station">Станция</a>
+        <a class="nav-item" href="#section-voice">Голос</a>
+        <a class="nav-item" href="#section-turns">Последние ходы</a>
+        <a class="nav-item" href="#section-logs">Лог</a>
+        <a class="nav-item" href="#section-access">Доступ</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="stamp" class="muted small">—</span>
+        <div class="foot-actions">
+          <button id="refresh" type="button" class="ghost">Обновить</button>
+          <form method="post" action="/logout">
+            <button type="submit" class="ghost">Выйти</button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="page-head">
+        <h1>Настройки ассистента</h1>
+        <p class="muted">Управляйте нейросетями, голосовыми командами и ролями в одном месте.</p>
+        <span id="settings-status" class="muted small" aria-live="polite"></span>
+      </header>
+
+      <form id="settings-form" class="settings-form">
+        <section id="section-providers" class="settings-card">
+          <h2>Нейросети</h2>
+          <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ.</p>
+          <div id="llm-providers-list" class="settings-list"></div>
+          <div class="card-actions">
+            <button type="button" id="add-llm-provider" class="ghost">+ нейросеть</button>
+            <button type="submit" class="btn-accent" data-scope="providers">Сохранить</button>
+          </div>
+        </section>
+
+        <section id="section-words" class="settings-card">
+          <h2>Старт-слова</h2>
+          <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry-run)</label>
+          <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
+          <div id="wake-words-list" class="settings-list"></div>
+          <p id="wake-dictionary-hint" class="muted small wake-dictionary"></p>
+          <div class="actions">
+            <a id="wake-train" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Обучение старт-слов</a>
+            <span id="wake-train-hint" class="muted small"></span>
+          </div>
+          <div class="card-actions">
+            <button type="button" id="add-wake-word" class="ghost">+ слово</button>
+            <button type="submit" class="btn-accent" data-scope="words">Сохранить</button>
+          </div>
+        </section>
+
+        <section id="section-roles" class="settings-card">
+          <h2>Роли</h2>
+          <div id="agents-list" class="settings-list"></div>
+          <div class="card-actions">
+            <button type="button" id="add-agent" class="ghost">+ роль</button>
+            <button type="submit" class="btn-accent" data-scope="roles">Сохранить</button>
+          </div>
+        </section>
+
+        <section id="section-routing" class="settings-card">
+          <h2>Маршрутизация</h2>
+          <p class="muted small">
+            Кто отвечает на фразу. Правила проверяются сверху вниз, побеждает первое совпадение; если не
+            совпало ни одно — решает классификатор или значение «если правило не сработало».
+          </p>
+          <div class="form">
+            <label class="field">
+              <span>Готовый режим</span>
+              <select id="routing-preset"></select>
+            </label>
+            <div class="actions">
+              <button type="button" id="routing-preset-apply" class="ghost">Применить к форме</button>
+              <span id="routing-preset-note" class="muted small"></span>
+            </div>
+          </div>
+          <div class="form">
+            <label class="field">
+              <span>Если правило не сработало</span>
+              <select id="routing-default">
+                <option value="classify">спросить классификатор</option>
+                <option value="llm">сразу нейросеть</option>
+                <option value="yandex">сразу Алиса</option>
+                <option value="home">умный дом</option>
+              </select>
+            </label>
+            <label class="field narrow">
+              <span>Таймаут классификатора, мс</span>
+              <input id="routing-timeout" type="number" min="1" max="60000" step="100">
+            </label>
+            <label class="field">
+              <span>Если классификатор не ответил</span>
+              <select id="routing-on-error">
+                <option value="yandex">Алиса</option>
+                <option value="llm">нейросеть</option>
+                <option value="home">умный дом</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="routing-refusal"> переспрашивать нейросеть, когда Алиса отказывается</label>
+
+          <div id="routing-rules" class="settings-list routing-rules"></div>
+          <div class="card-actions">
+            <button type="button" id="add-routing-rule" class="ghost">+ правило</button>
+            <button type="button" id="routing-reset" class="ghost">Восстановить стандартные</button>
+            <button type="submit" class="btn-accent" data-scope="routing">Сохранить</button>
+          </div>
+
+          <details class="routing-classifier">
+            <summary>Промпт классификатора</summary>
+            <p class="muted small">
+              Модель получает этот текст и фразу и возвращает маршрут одним JSON. Он решает судьбу только тех
+              фраз, которые не поймало ни одно правило.
+            </p>
+            <textarea id="routing-prompt" rows="9" spellcheck="false"></textarea>
+          </details>
+
+          <h3>Проверка фразы</h3>
+          <div class="form">
+            <label class="field wide">
+              <span>Фраза</span>
+              <input id="routing-test-text" type="text" autocomplete="off"
+                     placeholder="например, как называется фильм про медные трубы">
+            </label>
+            <div class="actions">
+              <button type="button" id="routing-test">Проверить</button>
+              <span id="routing-test-result" class="muted small"></span>
+            </div>
+          </div>
+        </section>
       </form>
-    </div>
-  </header>
 
-  <main>
-    <section>
-      <div id="cards" class="cards"></div>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Станция</h2>
-        <div class="toolbar">
-          <span id="station-uptime" class="muted small">—</span>
-          <div id="metrics-range" class="ranges">
-            <button type="button" class="range" data-range="900">15 мин</button>
-            <button type="button" class="range is-active" data-range="3600">1 ч</button>
-            <button type="button" class="range" data-range="21600">6 ч</button>
-            <button type="button" class="range" data-range="86400">24 ч</button>
+      <section id="section-station">
+        <div id="cards" class="cards"></div>
+        <div class="section-head">
+          <h2>Станция</h2>
+          <div class="toolbar">
+            <span id="station-uptime" class="muted small">—</span>
+            <div id="metrics-range" class="ranges">
+              <button type="button" class="range" data-range="900">15 мин</button>
+              <button type="button" class="range is-active" data-range="3600">1 ч</button>
+              <button type="button" class="range" data-range="21600">6 ч</button>
+              <button type="button" class="range" data-range="86400">24 ч</button>
+            </div>
           </div>
         </div>
-      </div>
-      <div id="station-alerts" class="alerts"></div>
-      <div id="charts" class="charts"></div>
-      <p id="station-events" class="muted small"></p>
-    </section>
+        <div id="station-alerts" class="alerts"></div>
+        <div id="charts" class="charts"></div>
+        <p id="station-events" class="muted small"></p>
 
-    <section>
-      <h2>Голос</h2>
-      <div id="voice" class="panel">—</div>
-      <form id="voice-form" class="panel form">
-        <div class="field">
-          <label for="voice-name">Голос</label>
-          <select id="voice-name"></select>
-        </div>
-        <div class="field">
-          <label for="voice-candidates">Кандидаты</label>
-          <input id="voice-candidates" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="через запятую: oksana, jane">
-        </div>
-        <div class="field narrow">
-          <label for="voice-speed">Скорость</label>
-          <input id="voice-speed" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
-        </div>
-        <div class="field narrow">
-          <label for="voice-volume">Громкость</label>
-          <input id="voice-volume" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+        <h3>Обновление</h3>
+        <p class="muted small">
+          Станция не тянет код из интернета: обновление запускается на машине, где лежит исходный код. Скрипт
+          забирает последний тег из апстрима, прогоняет сборку и тесты, выкладывает бинарь и сохраняет снимок
+          для откатки. Панель только показывает версии и команду запуска.
+        </p>
+        <div class="update-grid">
+          <div class="update-item">
+            <span class="muted small">Сборка станции</span>
+            <strong id="update-build">—</strong>
+          </div>
+          <div class="update-item">
+            <span class="muted small">Апстрим</span>
+            <strong id="update-upstream">—</strong>
+          </div>
+          <div class="update-item">
+            <span class="muted small">Последний релиз</span>
+            <strong id="update-latest">—</strong>
+          </div>
         </div>
         <div class="actions">
-          <button type="submit" id="voice-apply">Применить</button>
-          <button type="button" id="voice-test" class="ghost">Прослушать</button>
-          <label class="check"><input type="checkbox" id="voice-play"> на станции</label>
-          <span id="voice-status" class="muted"></span>
+          <button type="button" id="update-check">Проверить обновления</button>
+          <a id="update-release" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Открыть релиз</a>
+          <span id="update-status" class="muted small"></span>
         </div>
-      </form>
-    </section>
+        <p class="muted small">Команда запуска на машине с исходниками:</p>
+        <pre id="update-command" class="update-command">—</pre>
+      </section>
 
-    <section>
-      <h2>Нейросети, роли и старт-слова</h2>
-      <p class="muted">Подключения, промпты и слова применяются без перезапуска моста.</p>
-      <form id="settings-form" class="panel settings-form">
-        <h3>Нейросети</h3>
-        <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ.</p>
-        <div id="llm-providers-list" class="settings-list"></div>
+      <section id="section-voice">
+        <h2>Голос</h2>
+        <div id="voice" class="panel">—</div>
+        <form id="voice-form" class="panel form">
+          <div class="field">
+            <label for="voice-name">Голос</label>
+            <select id="voice-name"></select>
+          </div>
+          <div class="field">
+            <label for="voice-candidates">Кандидаты</label>
+            <input id="voice-candidates" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="через запятую: oksana, jane">
+          </div>
+          <div class="field narrow">
+            <label for="voice-speed">Скорость</label>
+            <input id="voice-speed" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+          </div>
+          <div class="field narrow">
+            <label for="voice-volume">Громкость</label>
+            <input id="voice-volume" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+          </div>
+          <div class="actions">
+            <button type="submit" id="voice-apply">Применить</button>
+            <button type="button" id="voice-test" class="ghost">Прослушать</button>
+            <label class="check"><input type="checkbox" id="voice-play"> на станции</label>
+            <span id="voice-status" class="muted"></span>
+          </div>
+        </form>
+      </section>
+
+      <section id="section-turns">
+        <h2>Последние ходы</h2>
+        <div id="turns" class="panel">—</div>
+      </section>
+
+      <section id="section-logs">
+        <div class="section-head">
+          <h2>Лог</h2>
+          <div class="toolbar">
+            <label class="check"><input type="checkbox" id="warn-only"> только WARN/ERROR</label>
+            <span id="log-path" class="muted"></span>
+          </div>
+        </div>
+        <pre id="logs" class="logs">—</pre>
+      </section>
+
+      <section id="section-access">
+        <h2>Доступ</h2>
+        <form id="password-form" class="panel form">
+          <div class="field">
+            <label for="pw-current">Текущий пароль</label>
+            <input id="pw-current" type="password" autocomplete="current-password">
+          </div>
+          <div class="field">
+            <label for="pw-next">Новый пароль (не короче 8 символов)</label>
+            <input id="pw-next" type="password" autocomplete="new-password" minlength="8">
+          </div>
+          <div class="field">
+            <label for="pw-confirm">Повторите новый</label>
+            <input id="pw-confirm" type="password" autocomplete="new-password" minlength="8">
+          </div>
+          <div class="actions">
+            <button type="submit">Сменить пароль</button>
+            <span id="pw-status" class="muted"></span>
+          </div>
+        </form>
+        <p class="muted small">После смены пароля остальные сессии закрываются; эта остаётся.</p>
+
+        <h3>Сертификат панели</h3>
+        <p class="muted small">
+          Браузер предлагает сохранить пароль только на сайте с доверенным сертификатом. Пока сертификат
+          самоподписан, Chrome и Edge молча отключают менеджер паролей — и пароль приходится вводить каждый раз.
+          Скачайте корневой сертификат станции и установите его в «Доверенные корневые центры»: предупреждение
+          о сертификате исчезнет, а браузер начнёт предлагать сохранение пароля.
+        </p>
         <div class="actions">
-          <button type="button" id="add-llm-provider">+ нейросеть</button>
+          <a class="button-link" href="/ca.crt" download="midi-ca.crt">Скачать корневой сертификат</a>
+          <span class="muted small">Windows: двойной клик по файлу → «Установить сертификат» → «Доверенные корневые центры».</span>
         </div>
-
-        <h3>Старт-слова</h3>
-        <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry_run)</label>
-        <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
-        <div id="wake-words-list" class="settings-list"></div>
-        <p id="wake-dictionary-hint" class="muted small wake-dictionary"></p>
-        <div class="actions">
-          <button type="button" id="add-wake-word">+ слово</button>
-          <a id="wake-train" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Обучение старт-слов</a>
-          <span id="wake-train-hint" class="muted small"></span>
-        </div>
-
-        <h3>Роли</h3>
-        <div id="agents-list" class="settings-list"></div>
-        <div class="actions">
-          <button type="button" id="add-agent">+ роль</button>
-        </div>
-
-        <div class="actions">
-          <button type="submit" id="settings-save">Сохранить</button>
-          <span id="settings-status" class="muted" aria-live="polite"></span>
-        </div>
-      </form>
-    </section>
-
-    <section>
-      <h2>Последние ходы</h2>
-      <div id="turns" class="panel">—</div>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Лог</h2>
-        <div class="toolbar">
-          <label class="check"><input type="checkbox" id="warn-only"> только WARN/ERROR</label>
-          <span id="log-path" class="muted"></span>
-        </div>
-      </div>
-      <pre id="logs" class="logs">—</pre>
-    </section>
-
-    <section>
-      <h2>Доступ</h2>
-      <form id="password-form" class="panel form">
-        <div class="field">
-          <label for="pw-current">Текущий пароль</label>
-          <input id="pw-current" type="password" autocomplete="current-password">
-        </div>
-        <div class="field">
-          <label for="pw-next">Новый пароль (не короче 8 символов)</label>
-          <input id="pw-next" type="password" autocomplete="new-password" minlength="8">
-        </div>
-        <div class="field">
-          <label for="pw-confirm">Повторите новый</label>
-          <input id="pw-confirm" type="password" autocomplete="new-password" minlength="8">
-        </div>
-        <div class="actions">
-          <button type="submit">Сменить пароль</button>
-          <span id="pw-status" class="muted"></span>
-        </div>
-      </form>
-      <p class="muted small">После смены пароля остальные сессии закрываются; эта остаётся.</p>
-    </section>
-  </main>
+      </section>
+    </main>
+  </div>
 
   <script src="/panel.js"></script>
 </body>

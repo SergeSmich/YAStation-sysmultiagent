@@ -16,18 +16,19 @@ import (
 // it: config.json -> config.json.settings-prev, secrets.json likewise.
 const settingsSnapshotSuffix = ".settings-prev"
 
-// settingsPatch is a partial update of the three sections the operator edits
-// from the panel. An absent section keeps the file untouched; a present one
-// replaces the section whole, because a word table, a role list or a provider
-// list is edited as a list, not field by field.
+// settingsPatch is a partial update of the sections the operator edits from the
+// panel. An absent section keeps the file untouched; a present one replaces the
+// section whole, because a word table, a role list, a provider list or a rule
+// table is edited as a list, not field by field.
 //
-// All three sections are validated together: a start word may name a removed
-// role and a role may name a removed provider, and that combination must be
-// reported instead of written.
+// All sections are validated together: a start word may name a removed role, a
+// role may name a removed provider, and a rule may name a removed role as its
+// route, and that combination must be reported instead of written.
 type settingsPatch struct {
-	LLMProviders *[]llmProviderPatch `json:"llm_providers"`
-	Agents       *[]agentConfig      `json:"agents"`
-	WakeWords    *wakeWordsConfig    `json:"wake_words"`
+	LLMProviders *[]llmProviderPatch   `json:"llm_providers"`
+	Agents       *[]agentConfig        `json:"agents"`
+	WakeWords    *wakeWordsConfig      `json:"wake_words"`
+	Routing      *bridge.RoutingConfig `json:"routing"`
 }
 
 // llmProviderPatch is one provider as the panel sends it back: the stored
@@ -81,13 +82,21 @@ func settingsSnapshot(cfg config, secrets *secretStore) map[string]any {
 	if wakeWords.Words == nil {
 		wakeWords.Words = []wakeWordConfig{}
 	}
+	// A file written before routing was editable has no section: the panel is
+	// shown the policy the bridge really runs, not an empty form.
+	routing := cfg.Routing
+	if strings.TrimSpace(routing.Classifier.Prompt) == "" {
+		routing = bridge.DefaultRoutingConfig()
+	}
 	return map[string]any{
-		"llm_providers": providers,
-		"provider_keys": keys,
-		"agents":        agents,
-		"wake_words":    wakeWords,
-		"actions":       []string{wakeListen, wakeAsk, wakeCommand},
-		"voices":        bridge.KnownVoices,
+		"llm_providers":   providers,
+		"provider_keys":   keys,
+		"agents":          agents,
+		"wake_words":      wakeWords,
+		"routing":         routing,
+		"routing_presets": bridge.RoutingPresets(),
+		"actions":         []string{wakeListen, wakeAsk, wakeCommand},
+		"voices":          bridge.KnownVoices,
 	}
 }
 
@@ -96,8 +105,8 @@ func settingsSnapshot(cfg config, secrets *secretStore) map[string]any {
 // write, then applies the result to the live bridge. It returns the HTTP status
 // and the body of the answer.
 func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (int, any) {
-	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil {
-		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words or all of them"}
+	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil && patch.Routing == nil {
+		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words, routing or all of them"}
 	}
 	if deps.Voice != nil {
 		deps.Voice.applyMu.Lock()
@@ -136,6 +145,9 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	if patch.WakeWords != nil {
 		next.WakeWords = *patch.WakeWords
 	}
+	if patch.Routing != nil {
+		next.Routing = *patch.Routing
+	}
 	// The same validation a restart runs, on the combination before it reaches
 	// the disk: this also fills the defaults a legacy role inherits from llm_*.
 	if err := next.validateProviders(); err != nil {
@@ -146,6 +158,11 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	}
 	if err := next.validateWakeWords(); err != nil {
 		return http.StatusBadRequest, map[string]string{"error": err.Error()}
+	}
+	// A rule routes to a role by name, so the whole policy is compiled against
+	// the role list that is about to be written, exactly as the engine will.
+	if _, err := bridge.CompileRouting(next.Routing); err != nil {
+		return http.StatusBadRequest, map[string]string{"error": "routing: " + err.Error()}
 	}
 
 	// Credentials are folded in before anything is written, so a bad key is
@@ -188,10 +205,14 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 		}
 		members["wake_words"] = words
 	}
+	if patch.Routing != nil {
+		members["routing"] = next.Routing
+	}
 	if !keysChanged &&
 		reflect.DeepEqual(before.LLMProviders, next.LLMProviders) &&
 		reflect.DeepEqual(before.Agents, next.Agents) &&
 		reflect.DeepEqual(before.WakeWords, next.WakeWords) &&
+		reflect.DeepEqual(before.Routing, next.Routing) &&
 		reflect.DeepEqual(before.LocalVoice, next.LocalVoice) {
 		return http.StatusOK, settingsPayload(next, deps, true)
 	}
@@ -234,7 +255,7 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 		}
 		return http.StatusInternalServerError, map[string]string{"error": err.Error()}
 	}
-	slog.Info("settings_applied", "providers", len(confirmed.LLMProviders), "agents", len(confirmed.Agents), "wake_words", len(confirmed.WakeWords.Words), "dry_run", confirmed.WakeWords.DryRun)
+	slog.Info("settings_applied", "providers", len(confirmed.LLMProviders), "agents", len(confirmed.Agents), "wake_words", len(confirmed.WakeWords.Words), "dry_run", confirmed.WakeWords.DryRun, "routing_rules", len(confirmed.Routing.Rules), "routing_default", confirmed.Routing.DefaultRoute)
 	return http.StatusOK, settingsPayload(confirmed, deps, false)
 }
 
@@ -382,6 +403,10 @@ func (p *panelServer) apiSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 	if patch.WakeWords != nil {
 		extra["wake_words"] = len(patch.WakeWords.Words)
 		extra["dry_run"] = patch.WakeWords.DryRun
+	}
+	if patch.Routing != nil {
+		extra["routing_rules"] = len(patch.Routing.Rules)
+		extra["routing_default"] = patch.Routing.DefaultRoute
 	}
 	p.audit.record("settings_update", r, panelAuditResult(status), extra)
 	writePanelJSON(w, status, payload)

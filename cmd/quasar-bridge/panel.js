@@ -10,7 +10,10 @@ const SETTINGS_URL = '/api/panel/settings';
 const WAKE_DICTIONARY_URL = '/api/panel/wake/dictionary';
 const LLM_TEST_URL = '/api/panel/llm/test';
 const LLM_MODELS_URL = '/api/panel/llm/models';
+const LLM_DETECT_URL = '/api/panel/llm/detect';
 const PASSWORD_URL = '/api/panel/password';
+const ROUTING_TEST_URL = '/api/panel/routing/test';
+const UPDATE_URL = '/api/panel/update';
 const METRICS_URL = '/api/panel/metrics?range=';
 const REFRESH_STATE_MS = 5000;
 const REFRESH_LOGS_MS = 15000;
@@ -34,6 +37,10 @@ let wakePage = '';
 let wordsState = [];
 let settingsActions = ['listen', 'ask', 'command'];
 let settingsVoices = [];
+// routingState is the working copy of the routing section; routingPresets holds
+// the ready-made policies the bridge defines, so the page never invents one.
+let routingState = null;
+let routingPresets = [];
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -483,7 +490,7 @@ function parseCandidates(text) {
 
 const ACTION_LABELS = {
   listen: 'открыть микрофон',
-  ask: 'тихий вопрос роли',
+  ask: 'вопрос роли',
   command: 'команда'
 };
 
@@ -546,6 +553,50 @@ function fillModels(datalist, ids) {
   }
 }
 
+// applyProviderGuess puts what the bridge recognised from the key into the row.
+// It writes the state and the visible controls instead of re-rendering: the
+// operator may be typing in another field of the same row.
+function applyProviderGuess(provider, row, payload) {
+  if (!payload || !payload.detected) return false;
+  if (!String(provider.name || '').trim() && payload.provider) provider.name = payload.provider;
+  if (payload.base_url) provider.base_url = payload.base_url;
+  if (payload.api) provider.api = payload.api;
+  const ids = Array.isArray(payload.models) ? payload.models : [];
+  if (ids.length) {
+    provider._models = ids;
+    providerModels[provider.name] = ids;
+  }
+  if (row) {
+    const set = (field, value) => {
+      const control = row.querySelector('[data-field="' + field + '"]');
+      if (control && value != null) control.value = String(value);
+    };
+    set('name', provider.name);
+    set('base_url', provider.base_url);
+    set('api', provider.api);
+    fillModels(row.querySelector('.model-select'), provider._models || []);
+    if (provider.name) {
+      row.dataset.syncedName = provider.name;
+      syncProviderSelects();
+    }
+    updateKeyBadge(row, provider);
+  }
+  return true;
+}
+
+// detectProviderKey asks the station to recognise the provider from a pasted key.
+// The key is sent once per distinct value: a typo is not retried on every blur.
+async function detectProviderKey(provider, row) {
+  const key = String(provider._key || '').trim();
+  if (key.length < 12) return null;
+  if (provider._guessedKey === key) return provider._guess || null;
+  provider._guessedKey = key;
+  const payload = await postJSON(LLM_DETECT_URL, { api_key: key });
+  provider._guess = payload;
+  applyProviderGuess(provider, row, payload);
+  return payload;
+}
+
 function updateKeyBadge(row, provider) {
   const badge = row.querySelector('.key-state');
   if (!badge) return;
@@ -603,7 +654,11 @@ function renderProviders(force) {
     const api = settingsControl('select', 'api', provider.api || 'chat_completions');
     for (const value of PROVIDER_APIS) api.appendChild(option(value, value));
     api.value = provider.api || 'chat_completions';
-    row.appendChild(settingsField('Формат API', api));
+    const apiField = settingsField('Формат API', api);
+    apiField.appendChild(el('span', 'muted small',
+      'chat_completions = POST /chat/completions (DeepSeek, OpenRouter, OpenAI, …); ' +
+      'responses = POST /responses (Responses API, только у OpenAI и совместимых)'));
+    row.appendChild(apiField);
 
     const base = settingsControl('input', 'base_url', provider.base_url, 'https://api.deepseek.com/v1');
     base.type = 'text';
@@ -625,9 +680,31 @@ function renderProviders(force) {
     const key = settingsControl('input', 'api_key', provider._key, '');
     key.type = 'password';
     key.autocomplete = 'new-password';
-    key.placeholder = provider._clearKey ? 'ключ будет удалён' : 'пусто — не менять';
+    key.placeholder = provider._clearKey ? 'ключ будет удалён' : 'Пусто — не менять';
     const keyField = settingsField('API-ключ', key);
     keyField.appendChild(el('span', 'key-state'));
+    // A pasted key is enough to fill the row: as soon as the field loses focus,
+    // the station recognises the provider and returns its address and models.
+    key.addEventListener('change', async () => {
+      if (!key.value.trim()) return;
+      const status = document.getElementById('settings-status');
+      status.classList.remove('error');
+      status.textContent = 'определяю провайдера по ключу…';
+      try {
+        const payload = await detectProviderKey(provider, row);
+        if (!payload || !payload.detected) {
+          status.textContent = (payload && payload.note) || 'провайдер не распознан по ключу — впишите адрес API вручную';
+          return;
+        }
+        status.textContent = 'провайдер: ' + (payload.provider || provider.name) +
+          (payload.verified ? '' : ' (проверка: ' + (payload.note || 'провайдер не ответил') + ')') +
+          (provider._models && provider._models.length ? ', моделей: ' + provider._models.length : '') +
+          ' — выберите модель в списке';
+      } catch (error) {
+        status.textContent = error.message;
+        status.classList.add('error');
+      }
+    });
     row.appendChild(keyField);
 
     const actions = el('div', 'row-actions');
@@ -740,15 +817,20 @@ function renderWakeWords(force) {
     }
     row.appendChild(settingsField('Роль', agent));
 
-    const text = settingsControl('textarea', 'text', word.text, 'Фраза для роли или команды');
+    const text = settingsControl('textarea', 'text', word.text, 'Фраза для роли или команды. Пусто — вопрос голосом');
     text.rows = 3;
     const textField = settingsField('Текст / фраза', text, 'wide');
+    // An empty phrase is a mode of its own: the word only opens the microphone
+    // and the role answers what the person says into it.
+    textField.appendChild(el('span', 'muted small word-text-hint', 'Пусто — роль ответит на сказанное после слова. Дальше та же роль ведёт разговор до тишины или «хватит».'));
     row.appendChild(textField);
 
-    const remove = el('button', 'ghost', 'Удалить');
+    const remove = el('button', 'ghost danger', 'Удалить слово');
     remove.type = 'button';
     remove.dataset.remove = 'word';
-    row.appendChild(remove);
+    const actions = el('div', 'row-actions');
+    actions.appendChild(remove);
+    row.appendChild(actions);
     list.appendChild(row);
     updateWordRow(row, word);
   });
@@ -774,10 +856,6 @@ function renderAgents(force) {
     name.autocomplete = 'off';
     row.appendChild(settingsField('Имя роли', name));
 
-    const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
-    prompt.rows = 5;
-    row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
-
     const provider = settingsControl('select', 'provider', agent.provider);
     provider.className = 'agent-provider';
     provider.appendChild(option('', 'по умолчанию'));
@@ -798,10 +876,16 @@ function renderAgents(force) {
     model.autocomplete = 'off';
     row.appendChild(settingsField('Модель', model));
 
-    const remove = el('button', 'ghost', 'Удалить');
+    const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
+    prompt.rows = 5;
+    row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
+
+    const remove = el('button', 'ghost danger', 'Удалить роль');
     remove.type = 'button';
     remove.dataset.remove = 'agent';
-    row.appendChild(remove);
+    const actions = el('div', 'row-actions');
+    actions.appendChild(remove);
+    row.appendChild(actions);
     list.appendChild(row);
     updateAgentRow(row, agent);
   });
@@ -852,7 +936,10 @@ function updateWordRow(row, word) {
   }
   if (text) {
     text.value = word.text || '';
-    text.closest('.field').hidden = listening;
+    const field = text.closest('.field');
+    field.hidden = listening;
+    const hint = field.querySelector('.word-text-hint');
+    if (hint) hint.hidden = !asking;
   }
 }
 
@@ -871,28 +958,469 @@ function syncAgentSelects() {
   }
 }
 
-function renderSettings(payload, force) {
-  agentsState = Array.isArray(payload.agents) ? payload.agents : [];
-  providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
-  savedProviders = new Map(providersState.map((provider) => [
-    String(provider.name || ''), JSON.stringify(providerPayload(provider))
-  ]));
-  providerKeysState = payload.provider_keys && typeof payload.provider_keys === 'object'
-    ? payload.provider_keys
-    : {};
-  const wakeWords = payload.wake_words || {};
-  wordsState = Array.isArray(wakeWords.words) ? wakeWords.words : [];
+// --- Маршрутизация ---------------------------------------------------------
+//
+// The routing section is one JSON object: rules in priority order plus the
+// classifier settings. The page keeps a working copy in routingState and sends
+// it back whole, exactly like the provider and role lists, so what the operator
+// sees is what the bridge compiles.
+
+const ROUTE_LABELS = { llm: 'нейросеть', yandex: 'Алиса', home: 'умный дом' };
+
+const SOURCE_LABELS = {
+  rule: 'правило',
+  classifier: 'классификатор',
+  default: 'если правило не сработало',
+  classifier_error: 'классификатор не ответил',
+  playback: 'управление воспроизведением',
+  dialogue: 'продолжение диалога',
+  dialogue_retry: 'просьба о нейросети',
+  dialogue_reset: 'сброс диалога',
+  dialogue_agent: 'роль в диалоге',
+  pinned: 'закреплённая роль'
+};
+
+function routeLabel(route) {
+  const text = String(route || '');
+  if (text.indexOf('agent:') === 0) return 'роль ' + (text.slice('agent:'.length) || '?');
+  return ROUTE_LABELS[text] || text || '—';
+}
+
+// routeValues builds the list from the role state, because a route may name a
+// role the operator just added. The current value is kept even if its role is
+// gone: silently rewriting a rule would change the policy on the next save.
+function routeValues(current, withClassify) {
+  const values = ['llm', 'yandex', 'home'];
+  if (withClassify) values.push('classify');
+  for (const agent of agentsState) {
+    if (agent && agent.name) values.push('agent:' + agent.name);
+  }
+  if (current && !values.includes(current)) values.push(current);
+  return values;
+}
+
+function normalizeRouting(routing) {
+  const source = routing && typeof routing === 'object' ? routing : {};
+  const classifier = source.classifier && typeof source.classifier === 'object' ? source.classifier : {};
+  const refusal = source.refusal && typeof source.refusal === 'object' ? source.refusal : {};
+  return {
+    rules: Array.isArray(source.rules) ? source.rules.map(normalizeRoutingRule) : [],
+    default_route: String(source.default_route || 'classify'),
+    classifier: {
+      timeout_ms: Number(classifier.timeout_ms) || 8000,
+      on_error: String(classifier.on_error || 'yandex'),
+      prompt: typeof classifier.prompt === 'string' ? classifier.prompt : ''
+    },
+    // The prefix and phrase lists are not on the form: the checkbox turns the
+    // matcher on, and the lists travel with the state so they survive a save.
+    refusal: {
+      enabled: Boolean(refusal.enabled),
+      prefixes: Array.isArray(refusal.prefixes) ? refusal.prefixes.slice() : [],
+      contains_any: Array.isArray(refusal.contains_any) ? refusal.contains_any.slice() : []
+    }
+  };
+}
+
+function normalizeRoutingRule(rule) {
+  const match = rule && rule.match && typeof rule.match === 'object' ? rule.match : {};
+  const list = (value) => (Array.isArray(value) ? value.slice() : []);
+  return {
+    name: String((rule && rule.name) || ''),
+    route: String((rule && rule.route) || 'llm'),
+    disabled: Boolean(rule && rule.disabled),
+    match: {
+      contains_any: list(match.contains_any),
+      contains_all_groups: Array.isArray(match.contains_all_groups)
+        ? match.contains_all_groups.map((group) => list(group))
+        : [],
+      contains_none: list(match.contains_none),
+      starts_with_any: list(match.starts_with_any),
+      regex: typeof match.regex === 'string' ? match.regex : ''
+    }
+  };
+}
+
+function termsToText(terms) {
+  return Array.isArray(terms) ? terms.join(', ') : '';
+}
+
+// textToTerms drops empty pieces: a trailing comma would otherwise become an
+// empty term, which the bridge rejects as "contains_any has an empty term".
+function textToTerms(text) {
+  return String(text || '').split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+}
+
+// groupsToText keeps the two levels readable: groups are separated by «;»,
+// alternatives inside one group by «,».
+function groupsToText(groups) {
+  if (!Array.isArray(groups)) return '';
+  return groups
+    .map((group) => (Array.isArray(group) ? group.join(', ') : ''))
+    .filter((piece) => piece.length > 0)
+    .join('; ');
+}
+
+function textToGroups(text) {
+  return String(text || '').split(';').map(textToTerms).filter((group) => group.length > 0);
+}
+
+// selectValue shows a value that the fixed option list does not know (an agent
+// route, a role that was deleted elsewhere). Blanking the select would change
+// the policy the next time «Сохранить» is pressed.
+function selectValue(select, value, label) {
+  const text = String(value || '');
+  if (!text) {
+    select.value = '';
+    return;
+  }
+  if (!Array.from(select.options).some((item) => item.value === text)) {
+    select.appendChild(option(text, label || text));
+  }
+  select.value = text;
+}
+
+function ruleControl(tag, field, value, placeholder) {
+  const control = el(tag);
+  control.dataset.ruleField = field;
+  control.value = value == null ? '' : String(value);
+  if (placeholder) control.placeholder = placeholder;
+  return control;
+}
+
+function ruleButton(label, attribute, value, extraClass) {
+  const button = el('button', 'ghost' + (extraClass ? ' ' + extraClass : ''), label);
+  button.type = 'button';
+  button.dataset[attribute] = value;
+  return button;
+}
+
+function routingRuleRow(rule, index) {
+  const row = el('div', 'settings-row form routing-rule');
+  row.dataset.kind = 'rule';
+  row.dataset.index = String(index);
+  row.classList.toggle('is-off', rule.disabled);
+
+  const name = ruleControl('input', 'name', rule.name, 'например, questions_to_llm');
+  name.type = 'text';
+  name.autocomplete = 'off';
+  row.appendChild(settingsField('Имя правила', name));
+
+  const route = ruleControl('select', 'route', rule.route);
+  for (const value of routeValues(rule.route, false)) route.appendChild(option(value, routeLabel(value)));
+  route.value = rule.route;
+  row.appendChild(settingsField('Кому отвечать', route));
+
+  const toggleRow = el('label', 'check');
+  const toggle = el('input');
+  toggle.type = 'checkbox';
+  toggle.dataset.ruleField = 'disabled';
+  toggle.checked = !rule.disabled;
+  toggleRow.appendChild(toggle);
+  toggleRow.appendChild(document.createTextNode(' включено'));
+  row.appendChild(toggleRow);
+
+  const actions = el('div', 'row-actions');
+  actions.appendChild(ruleButton('↑', 'ruleMove', 'up'));
+  actions.appendChild(ruleButton('↓', 'ruleMove', 'down'));
+  actions.appendChild(ruleButton('Удалить', 'ruleRemove', 'rule', 'danger'));
+  row.appendChild(actions);
+
+  // The conditions stay folded: a rule is usually read by its name, and the
+  // five match fields are verbose enough to bury the priority order.
+  const details = el('details', 'routing-match');
+  details.appendChild(el('summary', null, 'Условия'));
+  const grid = el('div', 'form');
+  const condition = (label, tag, field, value, placeholder, extra) => {
+    const control = ruleControl(tag, field, value, placeholder);
+    if (tag === 'textarea') control.rows = 2;
+    control.spellcheck = false;
+    grid.appendChild(settingsField(label, control, extra));
+  };
+  condition('Содержит любые из', 'input', 'contains_any', termsToText(rule.match.contains_any), 'через запятую: погода, таймер');
+  condition('Содержит все группы', 'input', 'contains_all_groups', groupsToText(rule.match.contains_all_groups), 'группы через «;», варианты через запятую: включи, поставь; свет, лампу');
+  condition('Не содержит', 'input', 'contains_none', termsToText(rule.match.contains_none), 'через запятую: песню, музыку');
+  condition('Начинается с', 'input', 'starts_with_any', termsToText(rule.match.starts_with_any), 'через запятую: спроси, объясни');
+  condition('Регулярное выражение', 'textarea', 'regex', rule.match.regex, '^объясни\\s+.+');
+  details.appendChild(grid);
+  details.appendChild(el('p', 'muted small', 'Достаточно одного положительного условия: «содержит», «все группы», «начинается с» или выражение. Пустые условия не считаются.'));
+  row.appendChild(details);
+  return row;
+}
+
+function renderRoutingRules() {
+  const list = document.getElementById('routing-rules');
+  if (!routingState) return;
+  list.replaceChildren();
+  if (!routingState.rules.length) {
+    list.appendChild(el('p', 'muted small', 'Правил нет: фразу решает классификатор или значение «если правило не сработало».'));
+    return;
+  }
+  routingState.rules.forEach((rule, index) => list.appendChild(routingRuleRow(rule, index)));
+}
+
+function renderRoutingPresets() {
+  const select = document.getElementById('routing-preset');
+  select.replaceChildren();
+  if (!routingPresets.length) {
+    select.appendChild(option('', 'нет готовых режимов'));
+    return;
+  }
+  for (const preset of routingPresets) select.appendChild(option(preset.id, preset.label));
+}
+
+function renderRouting(force) {
+  if (!routingState) return;
+  const section = document.getElementById('section-routing');
+  if (!force && section.contains(document.activeElement)) return;
+  selectValue(document.getElementById('routing-default'), routingState.default_route, routeLabel(routingState.default_route));
+  document.getElementById('routing-timeout').value = String(routingState.classifier.timeout_ms);
+  selectValue(document.getElementById('routing-on-error'), routingState.classifier.on_error, routeLabel(routingState.classifier.on_error));
+  document.getElementById('routing-refusal').checked = Boolean(routingState.refusal.enabled);
+  document.getElementById('routing-prompt').value = routingState.classifier.prompt;
+  renderRoutingPresets();
+  renderRoutingRules();
+}
+
+// editRoutingRule writes one field of one rule. It never re-renders the list:
+// re-rendering while typing would replace the control the caret is in.
+function editRoutingRule(event) {
+  const control = event.target;
+  const field = control.dataset.ruleField;
+  if (!field) return;
+  const row = control.closest('[data-kind="rule"]');
+  if (!row || !routingState) return;
+  const rule = routingState.rules[Number(row.dataset.index)];
+  if (!rule) return;
+  const value = control.type === 'checkbox' ? control.checked : control.value;
+  if (field === 'name') rule.name = value;
+  else if (field === 'route') rule.route = value;
+  else if (field === 'disabled') {
+    rule.disabled = !value;
+    row.classList.toggle('is-off', rule.disabled);
+  } else if (field === 'contains_any') rule.match.contains_any = textToTerms(value);
+  else if (field === 'contains_all_groups') rule.match.contains_all_groups = textToGroups(value);
+  else if (field === 'contains_none') rule.match.contains_none = textToTerms(value);
+  else if (field === 'starts_with_any') rule.match.starts_with_any = textToTerms(value);
+  else if (field === 'regex') rule.match.regex = value;
+}
+
+function routingRuleAction(event) {
+  if (!routingState) return;
+  const move = event.target.closest('[data-rule-move]');
+  if (move) {
+    const row = move.closest('[data-kind="rule"]');
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    const target = index + (move.dataset.ruleMove === 'up' ? -1 : 1);
+    if (target < 0 || target >= routingState.rules.length) return;
+    const rules = routingState.rules;
+    const held = rules[index];
+    rules[index] = rules[target];
+    rules[target] = held;
+    renderRoutingRules();
+    return;
+  }
+  const remove = event.target.closest('[data-rule-remove]');
+  if (remove) {
+    const row = remove.closest('[data-kind="rule"]');
+    if (!row) return;
+    routingState.rules.splice(Number(row.dataset.index), 1);
+    renderRoutingRules();
+  }
+}
+
+function applyRoutingPreset() {
+  const select = document.getElementById('routing-preset');
+  const preset = routingPresets.find((item) => item.id === select.value);
+  const note = document.getElementById('routing-preset-note');
+  if (!preset) {
+    note.textContent = '';
+    return;
+  }
+  routingState = normalizeRouting(preset.config);
+  renderRouting(true);
+  note.textContent = preset.note + ' Проверьте форму и нажмите «Сохранить».';
+}
+
+function presetNote() {
+  const select = document.getElementById('routing-preset');
+  const preset = routingPresets.find((item) => item.id === select.value);
+  document.getElementById('routing-preset-note').textContent = preset ? preset.note : '';
+}
+
+function addRoutingRule() {
+  if (!routingState) return;
+  routingState.rules.push({ name: '', route: 'llm', disabled: false, match: { contains_any: [], contains_all_groups: [], contains_none: [], starts_with_any: [], regex: '' } });
+  renderRoutingRules();
+}
+
+function resetRouting() {
+  const preset = routingPresets.find((item) => item.id === 'smart') || routingPresets[0];
+  if (!preset) return;
+  routingState = normalizeRouting(preset.config);
+  renderRouting(true);
+  document.getElementById('routing-preset-note').textContent = 'Вернули стандартный набор правил. Нажмите «Сохранить», чтобы применить.';
+}
+
+function routingPayload() {
+  if (!routingState) return null;
+  return {
+    rules: routingState.rules.map((rule) => ({
+      name: String(rule.name || '').trim(),
+      route: rule.route,
+      disabled: Boolean(rule.disabled),
+      match: {
+        contains_any: rule.match.contains_any,
+        contains_all_groups: rule.match.contains_all_groups,
+        contains_none: rule.match.contains_none,
+        starts_with_any: rule.match.starts_with_any,
+        regex: rule.match.regex
+      }
+    })),
+    default_route: routingState.default_route,
+    classifier: {
+      timeout_ms: Number(routingState.classifier.timeout_ms) || 0,
+      on_error: routingState.classifier.on_error,
+      prompt: routingState.classifier.prompt
+    },
+    refusal: {
+      enabled: Boolean(routingState.refusal.enabled),
+      prefixes: routingState.refusal.prefixes,
+      contains_any: routingState.refusal.contains_any
+    }
+  };
+}
+
+function readRoutingForm() {
+  if (!routingState) return;
+  routingState.default_route = document.getElementById('routing-default').value;
+  routingState.classifier.timeout_ms = Number(document.getElementById('routing-timeout').value) || 0;
+  routingState.classifier.on_error = document.getElementById('routing-on-error').value;
+  routingState.classifier.prompt = document.getElementById('routing-prompt').value;
+  routingState.refusal.enabled = document.getElementById('routing-refusal').checked;
+}
+
+// testRouting asks the live policy about one phrase. The answer comes from the
+// saved policy, not from unsaved edits, and the hint says so.
+async function testRouting() {
+  const input = document.getElementById('routing-test-text');
+  const result = document.getElementById('routing-test-result');
+  const text = input.value.trim();
+  result.classList.remove('error');
+  if (!text) {
+    result.textContent = 'введите фразу';
+    result.classList.add('error');
+    return;
+  }
+  result.textContent = 'спрашиваю…';
+  try {
+    const payload = await postJSON(ROUTING_TEST_URL, { text: text });
+    const parts = ['маршрут: ' + routeLabel(payload && payload.route)];
+    if (payload && payload.rule) parts.push('правило: ' + payload.rule);
+    if (payload && payload.source) parts.push('источник: ' + (SOURCE_LABELS[payload.source] || payload.source));
+    result.textContent = parts.join(' · ') + ' (по сохранённым правилам)';
+  } catch (error) {
+    result.textContent = error.message;
+    result.classList.add('error');
+  }
+}
+
+// --- Обновление ------------------------------------------------------------
+
+function shortDate(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+async function refreshUpdate() {
+  const status = document.getElementById('update-status');
+  const release = document.getElementById('update-release');
+  const button = document.getElementById('update-check');
+  button.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'проверяю…';
+  try {
+    const payload = await getJSON(UPDATE_URL);
+    document.getElementById('update-build').textContent =
+      (payload.current_version || 'dev') + (payload.current_tag ? ' (' + payload.current_tag + ')' : '');
+    document.getElementById('update-upstream').textContent = payload.upstream || '—';
+    document.getElementById('update-command').textContent = payload.command || '—';
+    if (payload.latest_tag) {
+      const published = shortDate(payload.latest_published);
+      document.getElementById('update-latest').textContent = payload.latest_tag + (published ? ' · ' + published : '');
+      release.hidden = !payload.latest_url;
+      if (payload.latest_url) release.href = payload.latest_url;
+    } else {
+      document.getElementById('update-latest').textContent = '—';
+      release.hidden = true;
+    }
+    if (payload.error) {
+      status.textContent = 'нет ответа от GitHub: ' + payload.error;
+      status.classList.add('error');
+    } else if (payload.update_available) {
+      status.textContent = 'есть новый релиз ' + payload.latest_tag + ' — запустите команду ниже';
+    } else if (payload.current_tag && payload.latest_tag) {
+      status.textContent = 'обновлений нет';
+    } else {
+      // Without a stamped tag the build cannot be compared to a release: say so
+      // instead of claiming "нет обновлений" on a build the panel cannot place.
+      status.textContent = 'сборка без тега: сравнивать не с чем';
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// renderSettings refreshes the page from a settings snapshot. A scope limits the
+// refresh to one section: the response always carries the whole file, so a save
+// of one section must not replace the state of another one and throw away what
+// is typed there. The row lists render from their state arrays, which hold the
+// edits, so a forced redraw after a save keeps them.
+function renderSettings(payload, force, scope) {
+  const all = !scope;
+  const touchingProviders = all || scope === 'providers';
+  const touchingWords = all || scope === 'words';
+  const touchingRoles = all || scope === 'roles';
+  const touchingRouting = all || scope === 'routing';
+  if (touchingRoles) {
+    agentsState = Array.isArray(payload.agents) ? payload.agents : [];
+  }
+  if (touchingProviders) {
+    providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
+    savedProviders = new Map(providersState.map((provider) => [
+      String(provider.name || ''), JSON.stringify(providerPayload(provider))
+    ]));
+    providerKeysState = payload.provider_keys && typeof payload.provider_keys === 'object'
+      ? payload.provider_keys
+      : {};
+  }
+  const wakeWords = touchingWords ? (payload.wake_words || {}) : {};
+  if (touchingWords) {
+    wordsState = Array.isArray(wakeWords.words) ? wakeWords.words : [];
+  }
   settingsActions = Array.isArray(payload.actions) ? payload.actions : ['listen', 'ask', 'command'];
   settingsVoices = Array.isArray(payload.voices) ? payload.voices : [];
   wakePage = typeof payload.wake_page === 'string' ? payload.wake_page : '';
+  routingPresets = Array.isArray(payload.routing_presets) ? payload.routing_presets : routingPresets;
+  // The section follows the file; a first load after an upgrade gets the policy
+  // the bridge actually runs, which the server fills in when the file is old.
+  if (touchingRouting) routingState = normalizeRouting(payload.routing);
 
   const form = document.getElementById('settings-form');
-  if (force || !form.contains(document.activeElement)) {
+  if (touchingWords && (force || !form.contains(document.activeElement))) {
     document.getElementById('settings-dry-run').checked = Boolean(wakeWords.dry_run);
   }
-  renderProviders(force);
-  renderWakeWords(force);
-  renderAgents(force);
+  // The role rows build their provider options from providersState, so a
+  // provider save redraws both lists.
+  if (touchingProviders) renderProviders(force);
+  if (touchingWords) renderWakeWords(force);
+  if (touchingRoles || touchingProviders) renderAgents(force);
+  if (touchingRouting) renderRouting(force);
   renderWakeDictionary();
 }
 
@@ -1077,50 +1605,116 @@ async function providerAction(event) {
   }
 }
 
+// settingsSaving keeps a double click on «Сохранить» from sending the same
+// payload twice; the wrapper below turns the flag off on every exit path.
+let settingsSaving = false;
+
+// Each «Сохранить» saves its own section. The write path is a partial patch
+// (settingsPatch keeps pointers, an absent section is left alone), so saving the
+// roles cannot overwrite an unsaved provider row, and a broken row in one
+// section no longer blocks the others. The section title goes into the shared
+// status line in the header, because all four buttons write there.
+const settingsScopeLabels = {
+  providers: 'Нейросети',
+  words: 'Старт-слова',
+  roles: 'Роли',
+  routing: 'Маршрутизация'
+};
+
 async function submitSettings(event) {
   event.preventDefault();
-  const status = document.getElementById('settings-status');
-  status.classList.remove('error');
-  // Reported here, in the operator's words, instead of the strict decoder's
-  // "llm_providers[].name must be 1..32 characters…" from the server.
-  for (const provider of providersState) {
-    const name = String(provider.name || '').trim().toLowerCase();
-    if (!name || !String(provider.base_url || '').trim() || !String(provider.model || '').trim()) {
-      status.textContent = 'у подключения нужны название, адрес API и модель';
-      status.classList.add('error');
-      return;
-    }
-    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
-      status.textContent = 'название подключения: латиница, цифры, «-», «_», до 32 символов — например deepseek';
-      status.classList.add('error');
-      return;
-    }
-    // One canonical spelling: the name is the credential key in secrets.json and
-    // the value a role points at, so fold it here and carry the roles along.
-    if (name !== provider.name) {
-      for (const agent of agentsState) {
-        if (agent.provider === provider.name) agent.provider = name;
-      }
-      provider.name = name;
-    }
-  }
-  status.textContent = 'сохраняю…';
+  if (settingsSaving) return;
+  // event.submitter is the button that started the submit: the four «Сохранить»
+  // write different sections. It is empty only when the form was submitted from
+  // code, and then the whole configuration is written, as before.
+  const scope = event.submitter && event.submitter.dataset
+    ? String(event.submitter.dataset.scope || '')
+    : '';
+  settingsSaving = true;
   try {
-    const payload = await postJSON(SETTINGS_URL, {
-      // All three sections go back whole: the write path replaces a present
-      // section, and a provider list that is edited as a list cannot be patched.
-      llm_providers: providersState.map(providerPayload),
-      agents: agentsState,
-      wake_words: {
-        dry_run: document.getElementById('settings-dry-run').checked,
-        words: wordsState
+    await applySettings(scope);
+  } finally {
+    settingsSaving = false;
+  }
+}
+
+async function applySettings(scope) {
+  const status = document.getElementById('settings-status');
+  const label = settingsScopeLabels[scope] || '';
+  const withPrefix = (text) => (label ? label + ': ' + text : text);
+  const all = !scope;
+  status.classList.remove('error');
+  const body = {};
+  let renamed = false;
+  if (all || scope === 'providers') {
+    // A key pasted into a fresh row is enough to save: fill the row from the key
+    // first, otherwise the checks below would refuse an empty address or model.
+    for (const provider of providersState) {
+      if (!String(provider._key || '').trim()) continue;
+      // A missing model is fine: the guess only fills the list to pick from.
+      const needsGuess = !String(provider.name || '').trim() ||
+        !String(provider.base_url || '').trim() || !String(provider.model || '').trim();
+      if (!needsGuess) continue;
+      const row = document.querySelector('[data-kind="provider"][data-index="' +
+        String(providersState.indexOf(provider)) + '"]');
+      status.textContent = withPrefix('определяю провайдера по ключу…');
+      try {
+        await detectProviderKey(provider, row);
+      } catch (error) {
+        // Not fatal: the row may already be complete by hand, and the checks below
+        // report anything that is still missing.
       }
-    });
-    status.textContent = payload && payload.unchanged ? 'без изменений' : 'применено';
-    renderSettings(payload || {}, true);
-    loadWakeDictionary();
+    }
+    // Reported here, in the operator's words, instead of the strict decoder's
+    // "llm_providers[].name must be 1..32 characters…" from the server.
+    for (const provider of providersState) {
+      const name = String(provider.name || '').trim().toLowerCase();
+      if (!name || !String(provider.base_url || '').trim() || !String(provider.model || '').trim()) {
+        status.textContent = withPrefix('у подключения нужны название, адрес API и модель');
+        status.classList.add('error');
+        return;
+      }
+      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+        status.textContent = withPrefix('название подключения: латиница, цифры, «-», «_», до 32 символов — например deepseek');
+        status.classList.add('error');
+        return;
+      }
+      // One canonical spelling: the name is the credential key in secrets.json and
+      // the value a role points at, so fold it here and carry the roles along.
+      // A rename is also written with the roles: a role pointing at the old name
+      // would be rejected as an unknown provider by the server.
+      if (name !== provider.name) {
+        for (const agent of agentsState) {
+          if (agent.provider === provider.name) agent.provider = name;
+        }
+        provider.name = name;
+        renamed = true;
+      }
+    }
+    body.llm_providers = providersState.map(providerPayload);
+  }
+  if (all || scope === 'roles' || renamed) body.agents = agentsState;
+  if (all || scope === 'words') {
+    body.wake_words = {
+      dry_run: document.getElementById('settings-dry-run').checked,
+      words: wordsState
+    };
+  }
+  if (all || scope === 'routing') {
+    // The routing form is read here, not on every keystroke: the section has
+    // controls outside the rule rows (prompt, timeout, refusal) and one read keeps
+    // the payload and what the operator sees in step.
+    readRoutingForm();
+    body.routing = routingPayload();
+  }
+  status.textContent = withPrefix('сохраняю…');
+  try {
+    const payload = await postJSON(SETTINGS_URL, body);
+    status.textContent = withPrefix(payload && payload.unchanged ? 'без изменений' : 'применено');
+    renderSettings(payload || {}, true, scope);
+    if (all || scope === 'words') loadWakeDictionary();
   } catch (error) {
-    status.textContent = error.message;
+    status.textContent = withPrefix(error.message);
     status.classList.add('error');
   }
 }
@@ -1206,7 +1800,48 @@ function startTimers() {
   setInterval(() => { if (!document.hidden) refreshMetricsSafe(); }, REFRESH_METRICS_MS);
 }
 
+// initNav lights up the menu item of the section the operator is looking at.
+// The menu is a table of contents over one long page: highlighting follows
+// scrolling (IntersectionObserver), clicking is a plain anchor jump.
+function initNav() {
+  const links = new Map();
+  for (const link of document.querySelectorAll('.nav .nav-item')) {
+    const id = String(link.getAttribute('href') || '').replace(/^#/, '');
+    if (!id) continue;
+    links.set(id, link);
+  }
+  const sections = [];
+  for (const id of links.keys()) {
+    const section = document.getElementById(id);
+    if (section) sections.push(section);
+  }
+  if (!sections.length || typeof IntersectionObserver !== 'function') return;
+  const visible = new Map();
+  // A click scrolls the page smoothly, and the sections passing by would fight
+  // for the highlight: keep the clicked item lit until the scroll settles.
+  let holdUntil = 0;
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) visible.set(entry.target.id, entry.intersectionRatio);
+    if (Date.now() < holdUntil) return;
+    let best = '';
+    let bestRatio = 0;
+    for (const [id, ratio] of visible) {
+      if (ratio > bestRatio) { best = id; bestRatio = ratio; }
+    }
+    // Nothing on screen (short page, tall viewport): keep the last highlight.
+    if (!best) return;
+    for (const [id, link] of links) link.classList.toggle('is-active', id === best);
+  }, { rootMargin: '0px 0px -55% 0px', threshold: [0, 0.05, 0.2, 0.5, 0.9] });
+  for (const section of sections) observer.observe(section);
+  window.addEventListener('scrollend', () => { holdUntil = 0; }, { passive: true });
+  links.forEach((link, id) => link.addEventListener('click', () => {
+    holdUntil = Date.now() + 800;
+    for (const [peerID, peer] of links) peer.classList.toggle('is-active', peerID === id);
+  }));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  initNav();
   document.getElementById('refresh').addEventListener('click', () => {
     refreshAll();
     refreshLogsSafe();
@@ -1227,6 +1862,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('voice-test').addEventListener('click', testVoice);
   const settingsForm = document.getElementById('settings-form');
   settingsForm.addEventListener('submit', submitSettings);
+  // Enter in a field saves the section the caret is in. Left to the browser, an
+  // implicit submission clicks the first submit button of the form — the
+  // providers — so a caret in the roles would write the providers instead.
+  settingsForm.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing || event.defaultPrevented) return;
+    const control = event.target;
+    if (!control || control.tagName !== 'INPUT') return;
+    if (control.type === 'checkbox' || control.type === 'radio') return;
+    const section = control.closest('section[id]');
+    const button = section ? section.querySelector('button[data-scope]') : null;
+    if (!button) return;
+    event.preventDefault();
+    button.click();
+  });
   settingsForm.addEventListener('input', editSettingsField);
   settingsForm.addEventListener('change', editSettingsField);
   settingsForm.addEventListener('click', removeSettingsItem);
@@ -1243,6 +1892,24 @@ document.addEventListener('DOMContentLoaded', () => {
     agentsState.push({ name: '', system_prompt: '', voice: '', model: '' });
     renderAgents(true);
   });
+  // Routing lives inside the same form, but keeps its own state and controls:
+  // the generic settings handler stops at controls without data-field.
+  settingsForm.addEventListener('input', editRoutingRule);
+  settingsForm.addEventListener('change', editRoutingRule);
+  settingsForm.addEventListener('click', routingRuleAction);
+  document.getElementById('add-routing-rule').addEventListener('click', addRoutingRule);
+  document.getElementById('routing-reset').addEventListener('click', resetRouting);
+  document.getElementById('routing-preset-apply').addEventListener('click', applyRoutingPreset);
+  document.getElementById('routing-preset').addEventListener('change', presetNote);
+  document.getElementById('routing-test').addEventListener('click', testRouting);
+  document.getElementById('routing-test-text').addEventListener('keydown', (event) => {
+    // Enter inside the phrase box runs the check instead of submitting the
+    // whole settings form: the box is a probe, not a field to save.
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    testRouting();
+  });
+  document.getElementById('update-check').addEventListener('click', refreshUpdate);
   document.getElementById('password-form').addEventListener('submit', submitPassword);
   loadSession()
     .then(() => {
@@ -1251,6 +1918,9 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshMetricsSafe();
       refreshSettingsSafe();
       loadWakeDictionary();
+      // The release check is cached on the station for ten minutes, so opening
+      // the page does not spend the unauthenticated GitHub rate limit.
+      refreshUpdate();
       startTimers();
     })
     .catch((error) => {

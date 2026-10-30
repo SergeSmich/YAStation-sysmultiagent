@@ -67,6 +67,16 @@ type nativeRequest struct {
 	// carries a preset phrase, so its text is not classified again.
 	pin string
 
+	// presetText marks a text the bridge wrote itself instead of one the person
+	// said: the recognizer of that window hears silence, so its final result
+	// must not replace the phrase.
+	presetText bool
+
+	// cloudReleased marks a window the bridge already cancelled: a start word
+	// knows its phrase, so the cloud is released before the model is asked
+	// instead of holding the stream open for the whole answer.
+	cloudReleased bool
+
 	voice                           VoiceSettings
 	voiceQueue                      []string
 	voiceChainReady                 bool
@@ -97,26 +107,36 @@ type nativeRequest struct {
 	cloudFallbackSent               bool
 }
 type Native struct {
-	connectionScope   string
-	ctx               context.Context
-	cancel            context.CancelFunc
-	up, down          Sender
-	resolver          Resolver
-	mu                sync.Mutex
-	requests          map[string]*nativeRequest
-	tts               map[string]*nativeRequest
-	streams           map[uint32]*nativeRequest
-	blocked           map[uint32]*nativeRequest
-	probes            map[string]*probeEntry
-	probeStreams      map[uint32]struct{}
-	probePlay         map[uint32]struct{}
-	probeBusy         atomic.Bool
-	wg                sync.WaitGroup
-	OnRoute           func(id, route string)
-	GateText          bool
-	ShouldListen      bool
-	voice             atomic.Pointer[VoiceConfig]
-	DecisionDelay     time.Duration
+	connectionScope string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	up, down        Sender
+	resolver        Resolver
+	mu              sync.Mutex
+	requests        map[string]*nativeRequest
+	// preset is the prepared answer a start word armed for the next request the
+	// station sends itself. It is one-shot and guarded by mu.
+	preset *PresetAnswer
+	// held is the role each speaker's conversation belongs to after that role
+	// answered. Unlike preset it is not one-shot: it survives every reopened
+	// window until the person falls silent or ends the conversation.
+	held          map[string]heldRoute
+	tts           map[string]*nativeRequest
+	streams       map[uint32]*nativeRequest
+	blocked       map[uint32]*nativeRequest
+	probes        map[string]*probeEntry
+	probeStreams  map[uint32]struct{}
+	probePlay     map[uint32]struct{}
+	probeBusy     atomic.Bool
+	wg            sync.WaitGroup
+	OnRoute       func(id, route string)
+	GateText      bool
+	ShouldListen  bool
+	voice         atomic.Pointer[VoiceConfig]
+	DecisionDelay time.Duration
+	// HoldTTL bounds how long a role keeps a speaker's conversation after its
+	// answer. The zero value falls back to DefaultHoldTTL.
+	HoldTTL           time.Duration
 	ProgressAfter     time.Duration
 	ProgressInterval  time.Duration
 	SpeechTimeout     time.Duration
@@ -129,7 +149,7 @@ type Native struct {
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}, probePlay: map[uint32]struct{}{}}
+	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, probes: map[string]*probeEntry{}, probeStreams: map[uint32]struct{}{}, probePlay: map[uint32]struct{}{}, held: map[string]heldRoute{}}
 }
 
 // SetVoice replaces the speech configuration for every answer that has not
@@ -294,6 +314,21 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			n.patchDeviceContext(id, f.Kind(), &gated)
 			if err := n.up(ctx, k, gated); err != nil {
 				return err
+			}
+		}
+		// A start word arms a reaction for exactly this window: the station has
+		// just opened the microphone, so this request is the one the word
+		// belongs to. An injected TextInput never takes it.
+		if !p.isText {
+			if preset, ok := n.takePreset(); ok {
+				// A phrase becomes the question of the turn and is resolved like
+				// a spoken one, so the role's model answers it. Without a phrase
+				// the route is only pinned: the person's own words arrive with
+				// the final recognition.
+				if n.applyPreset(p, preset) {
+					n.maybeResolve(p)
+					return nil
+				}
 			}
 		}
 		// The original input stays local until routing has selected exactly one executor.
@@ -698,7 +733,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				}
 			}
 		}
-		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
+		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 && !p.presetText {
 			r := asr.GetRecognition()[0]
 			p.text = r.GetNormalized()
 			if p.text == "" {
@@ -713,7 +748,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			p.final = true
 			// The length, not the text: an empty recognition silently sends the
 			// request back to the cloud, and that is invisible without a size.
-			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)), "partials", p.asrPartials)
+			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)), "preset_text", p.presetText, "partials", p.asrPartials)
 		}
 	case "SpotterValidation":
 		sv := e.GetSpotterValidation()
@@ -783,13 +818,35 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		result := Resolution{Route: "yandex"}
 		var err error
+		// A conversation a role owns continues with that role: the station
+		// reopens the microphone after the role's answer, and classifying the
+		// next phrase from scratch would hand it to the cloud or the default
+		// model in the middle of a dialogue.
+		held := ""
+		if pin == "" && !p.isText {
+			held = n.heldRouteOf(p.ctx)
+			if held != "" && endsDialogue(text) {
+				// The person ended the conversation on purpose. The turn is
+				// routed as usual, so a reset phrase still resets the topic and
+				// "хватит" still stops playback.
+				if route, ok := n.releaseRole(p.ctx); ok {
+					slog.Info("native_role_released", "request", requestTag(p.id), "route", route, "reason", "phrase")
+				}
+				held = ""
+			}
+		}
 		if n.resolver != nil {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				var decision RouteDecision
-				if pin != "" {
+				switch {
+				case pin != "":
 					// The bridge named the executor for this injected turn.
 					decision = RouteDecision{Route: pin, Source: "pinned"}
-				} else {
+				case held != "":
+					// The phrase continues the dialogue the start word opened.
+					decision = RouteDecision{Route: held, Source: "dialogue_agent"}
+					slog.Info("native_role_continued", "request", requestTag(p.id), "route", held)
+				default:
 					decision = routed.Decide(p.ctx, text)
 				}
 				n.mu.Lock()
@@ -797,9 +854,10 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
-				// A pinned turn is a short preset answer; a filler phrase would
-				// interrupt it instead of covering a slow classification.
-				if decision.Source != "pinned" && decision.Route != "yandex" && n.ProgressAfter > 0 {
+				// A pinned turn is a start-word turn: the word itself already
+				// acknowledged the person, so a filler phrase would talk over
+				// the role's answer instead of covering a slow classifier.
+				if decision.Source != "pinned" && decision.Source != "dialogue_agent" && decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
@@ -836,6 +894,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.mu.Unlock()
 			return
 		}
+		released := p.cloudReleased
 		if n.OnRoute != nil {
 			n.OnRoute(p.id, result.Route)
 		}
@@ -875,10 +934,17 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		n.mu.Unlock()
 		slog.Info("native_route", "request", requestTag(p.id), "route", result.Route)
-		if p.gated && !p.streaming {
+		if p.gated && !p.streaming && !released {
 			if err := n.sendCancel(p.ctx, p.id); err != nil {
 				return
 			}
+		}
+		if !p.isText && result.Route != "" {
+			// The role that produced this answer keeps the reopened windows
+			// until the person falls silent or ends the conversation. The hold
+			// is armed before the answer goes out, so the next window can never
+			// race it.
+			n.holdRole(p.ctx, result.Route)
 		}
 		if err := n.reply(p, result.Answer); err != nil {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))
@@ -903,6 +969,12 @@ func (n *Native) skipUnheard(p *nativeRequest) {
 	partials := p.asrPartials
 	n.mu.Unlock()
 	slog.Info("native_empty_asr", "request", requestTag(p.id), "action", "ignored", "partials", partials)
+	// Nobody spoke into the reopened window: the conversation a role was
+	// holding is over, so the next phrase is classified from scratch instead of
+	// going to a role the person already walked away from.
+	if route, ok := n.releaseRole(p.ctx); ok {
+		slog.Info("native_role_released", "request", requestTag(p.id), "route", route, "reason", "silence")
+	}
 	if p.gated && !p.streaming {
 		if err := n.sendCancel(p.ctx, p.id); err != nil {
 			slog.Warn("native_cancel_failed", "request", requestTag(p.id))

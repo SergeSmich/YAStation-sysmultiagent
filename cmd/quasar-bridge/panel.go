@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -120,6 +121,7 @@ func (c panelConfig) Validate() error {
 type panelDeps struct {
 	ConfigPath string
 	AuthPath   string
+	CAPath     string
 	Auth       *panelAuthStore
 	Snapshot   func() map[string]any
 	Voice      *voiceState
@@ -127,6 +129,10 @@ type panelDeps struct {
 	Live       func() *bridge.Native
 	Metrics    *panelMetrics
 	Settings   settingsDeps
+	// Decide runs one phrase through the live routing policy. The panel's test
+	// box uses it, so the operator sees the same decision the next utterance
+	// would get instead of a description of the rules.
+	Decide func(context.Context, string) bridge.RouteDecision
 }
 
 // panelServer is the second listener. It reads the same live state as /healthz
@@ -136,6 +142,7 @@ type panelServer struct {
 	auth       *panelAuthStore
 	audit      *panelAudit
 	authPath   string
+	caPath     string
 	configPath string
 	sessions   *panelSessions
 	limiter    *panelLimiter
@@ -145,6 +152,8 @@ type panelServer struct {
 	journal    func() journal.Config
 	metrics    *panelMetrics
 	settings   settingsDeps
+	decide     func(context.Context, string) bridge.RouteDecision
+	updates    *updateChecker
 	logPath    string
 	login      *template.Template
 	mux        *http.ServeMux
@@ -170,6 +179,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		auth:       deps.Auth,
 		audit:      newPanelAudit(cfg.AuditFile),
 		authPath:   deps.AuthPath,
+		caPath:     deps.CAPath,
 		configPath: deps.ConfigPath,
 		sessions:   newPanelSessions(),
 		limiter:    newPanelLimiter(),
@@ -179,6 +189,8 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		journal:    deps.Journal,
 		metrics:    deps.Metrics,
 		settings:   deps.Settings,
+		decide:     deps.Decide,
+		updates:    newUpdateChecker(),
 		logPath:    cfg.LogPath,
 		login:      login,
 		panelPort:  portOfListen(cfg.Listen),
@@ -204,6 +216,9 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /logout", p.logout)
 	mux.HandleFunc("GET /panel.css", p.asset("panel.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /panel.js", p.asset("panel.js", "text/javascript; charset=utf-8"))
+	// Deliberately outside requireSession: the operator downloads the root
+	// certificate from a page the browser still calls untrusted, before logging in.
+	mux.HandleFunc("GET /ca.crt", p.rootCertificate)
 	mux.HandleFunc("GET /api/panel/session", p.requireSession(p.apiSession))
 	mux.HandleFunc("GET /api/panel/state", p.requireSession(p.apiState))
 	mux.HandleFunc("GET /api/panel/voice", p.requireSession(p.apiVoice))
@@ -216,8 +231,11 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /api/panel/settings", p.requireMutation(p.apiSettingsUpdate))
 	mux.HandleFunc("POST /api/panel/llm/test", p.requireMutation(p.apiLLMTest))
 	mux.HandleFunc("POST /api/panel/llm/models", p.requireMutation(p.apiLLMModels))
+	mux.HandleFunc("POST /api/panel/llm/detect", p.requireMutation(p.apiLLMDetect))
 	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
+	mux.HandleFunc("POST /api/panel/routing/test", p.requireMutation(p.apiRoutingTest))
+	mux.HandleFunc("GET /api/panel/update", p.requireSession(p.apiUpdate))
 	p.mux = mux
 	return p, nil
 }
@@ -274,6 +292,27 @@ func (p *panelServer) asset(name, contentType string) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		_, _ = w.Write(data)
 	}
+}
+
+// panelCAName is the root certificate the panel's own certificate chains to. It
+// sits next to panel.crt/panel.key in the TLS directory; the bridge only serves
+// it and never creates one — a locally trusted CA is the operator's decision.
+const panelCAName = "panel-ca.crt"
+
+// rootCertificate hands that CA to the browser as a download. Chromium keeps the
+// password manager off while a site's certificate is untrusted, so installing
+// this file into the OS trust store is what makes "сохранить пароль" appear at
+// all; the page itself already posts the form natively.
+func (p *panelServer) rootCertificate(w http.ResponseWriter, _ *http.Request) {
+	data, err := os.ReadFile(p.caPath)
+	if p.caPath == "" || err != nil {
+		http.Error(w, "root certificate is not configured", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", `attachment; filename="midi-ca.crt"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }
 
 func (p *panelServer) showLogin(w http.ResponseWriter, r *http.Request) {

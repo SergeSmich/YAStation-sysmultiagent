@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -264,6 +265,11 @@ func main() {
 			return err
 		}
 		applyWake(next)
+		// The routing section is compiled and swapped the same way a restart
+		// compiles it, so a saved rule starts working without new frames.
+		if err := engine.SetRouting(next.Routing); err != nil {
+			return err
+		}
 		return nil
 	}
 	if *query != "" || *check || *route != "" {
@@ -333,6 +339,10 @@ func main() {
 			n.SetVoice(voice.Load())
 			n.FirstFrameTimeout = time.Duration(cfg.FirstFrameMS) * time.Millisecond
 			n.DeviceContext = cfg.DeviceContext.wire()
+			// A role keeps the conversation for as long as the remembered topic
+			// lives, so the two bounds never disagree; a disabled dialogue
+			// falls back to the package default.
+			n.HoldTTL = time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second
 			n.OnCloudStall = proxy.RecordUpstreamStall
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
@@ -425,6 +435,8 @@ func main() {
 	}
 	mux.HandleFunc("POST /ask", askHandler(injector))
 	mux.HandleFunc("POST /api/wake", wakeHandler(wake.load, injector))
+	// The daemon has no callback: the bridge watches its hit list instead.
+	poller := newWakePoller(wakeBaseURL(), wakePollInterval(), wake.load, injector)
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(cfg.AllowedIPs) > 0 {
@@ -471,6 +483,7 @@ func main() {
 		panel, err := newPanelServer(panelCfg, panelDeps{
 			ConfigPath: *path,
 			AuthPath:   files.Auth,
+			CAPath:     filepath.Join(files.TLS, panelCAName),
 			Auth:       auth,
 			Snapshot:   snapshot,
 			Voice:      voice,
@@ -478,6 +491,7 @@ func main() {
 			Live:       liveVoice,
 			Metrics:    metrics,
 			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig, Secrets: secrets},
+			Decide:     engine.Decide,
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
@@ -492,6 +506,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go poller.run(ctx)
 	if metrics != nil {
 		go metrics.start(ctx)
 	}

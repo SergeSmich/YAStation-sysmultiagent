@@ -71,10 +71,11 @@ type llmProviderConfig struct {
 // reports the hit, the reaction lives here so the panel and SIGHUP can change it
 // without rebuilding the daemon.
 //
-// "listen" opens the microphone as the stock assistant does, "ask" injects the
-// preset text without a microphone and pins it to the role's route, "command"
-// injects the preset text and lets routing pick the executor (home, music,
-// cloud), so a start word can turn a light on deterministically.
+// "listen" opens the microphone as the stock assistant does, "ask" opens it
+// and pins the role: a word with text asks the role's model that question, a
+// word without text lets the person say their own. "command" injects the preset
+// text and lets routing pick the executor (home, music, cloud), so a start word
+// can turn a light on deterministically.
 type wakeWordConfig struct {
 	Word   string `json:"word"`
 	Action string `json:"action"`
@@ -605,8 +606,10 @@ func (c *config) validateWakeWords() error {
 				return fmt.Errorf("wake_words: word %q: action listen takes no text or agent", w.Word)
 			}
 		case wakeAsk:
-			if w.Text == "" {
-				return fmt.Errorf("wake_words: word %q: action ask needs text", w.Word)
+			// A word without a phrase still has work to do: it opens the
+			// microphone and pins the role that answers the spoken phrase.
+			if w.Text == "" && w.Agent == "" {
+				return fmt.Errorf("wake_words: word %q: action ask needs text or agent", w.Word)
 			}
 			if w.Agent != "" {
 				if !bridge.ValidAgentName(w.Agent) {

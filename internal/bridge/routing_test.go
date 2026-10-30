@@ -250,3 +250,100 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultRulesSendQuestionsToTheModel is the regression that started all of
+// this: the operator asked an ordinary question and the stock Alice answered it.
+// The defaults now keep the voice services with Yandex and hand every phrase
+// shaped like a question to the model, and the order of the table is part of the
+// contract — services and devices must win before the shape check runs.
+func TestDefaultRulesSendQuestionsToTheModel(t *testing.T) {
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "", nil })}
+	if err := e.SetRouting(DefaultRoutingConfig()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ text, route, rule string }{
+		// Stock-Alice services stay where they were.
+		{"Какая сегодня погода?", "yandex", "yandex_services"},
+		{"Поставь таймер на 5 минут", "yandex", "yandex_services"},
+		{"Поставь будильник на семь утра", "yandex", "yandex_services"},
+		{"Включи музыку", "yandex", "yandex_services"},
+		{"Алиса, который час?", "yandex", "yandex_services"},
+		// Home devices keep their rule and never fall through to the question shape.
+		{"Выключи свет в спальне", "home", "home_devices"},
+		{"Какая температура в спальне?", "home", "home_devices"},
+		// Everything phrased as a question goes to the model.
+		{"Как называется фильм про космос?", "llm", "questions_to_llm"},
+		{"Почему небо голубое?", "llm", "questions_to_llm"},
+		{"Алиса, расскажи о планетах", "llm", "questions_to_llm"},
+		{"Сколько будет два плюс два?", "llm", "questions_to_llm"},
+		{"Кто написал «Войну и мир»?", "llm", "questions_to_llm"},
+		{"Подскажи, как варить рис", "llm", "questions_to_llm"},
+	} {
+		got := e.Decide(t.Context(), tc.text)
+		if got.Route != tc.route || got.Rule != tc.rule {
+			t.Errorf("%q: got route=%q rule=%q, want route=%q rule=%q (%+v)",
+				tc.text, got.Route, got.Rule, tc.route, tc.rule, got)
+		}
+	}
+	// A statement is not a question: the shape rule must not swallow it, so the
+	// classifier stays in charge of the ambiguous middle ground.
+	for _, text := range []string{"Мне нравится эта песня", "Хорошая сегодня погода"} {
+		if d := e.Decide(t.Context(), text); d.Rule == "questions_to_llm" {
+			t.Errorf("statement matched the question rule: %q: %+v", text, d)
+		}
+	}
+	cfg := DefaultRoutingConfig()
+	if last := cfg.Rules[len(cfg.Rules)-1].Name; last != "questions_to_llm" {
+		t.Fatalf("questions_to_llm must stay last, found %q last", last)
+	}
+}
+
+// TestRoutingPresetsCompile guards the three ready-made policies the panel
+// offers. The page copies a preset into the form and the form is saved as a whole
+// config, so a preset that does not compile would only surface as a rejected save
+// in the browser — here it fails in `go test`.
+func TestRoutingPresetsCompile(t *testing.T) {
+	presets := RoutingPresets()
+	if len(presets) == 0 {
+		t.Fatal("no presets")
+	}
+	seen := map[string]bool{}
+	for _, preset := range presets {
+		if preset.ID == "" || preset.Label == "" || preset.Note == "" {
+			t.Errorf("preset %q is missing id, label or note", preset.ID)
+		}
+		if seen[preset.ID] {
+			t.Errorf("duplicate preset id %q", preset.ID)
+		}
+		seen[preset.ID] = true
+		if _, err := CompileRouting(preset.Config); err != nil {
+			t.Errorf("preset %q does not compile: %v", preset.ID, err)
+		}
+	}
+	if preset, ok := presets[0], seen["smart"]; !ok || preset.ID != "smart" {
+		t.Fatalf("the first preset must be smart, got %q", presets[0].ID)
+	}
+	// «Умный выбор» is the shipped default: the panel labels it as the standard
+	// rules, so it must not drift from DefaultRoutingConfig().
+	if !reflect.DeepEqual(presets[0].Config, DefaultRoutingConfig()) {
+		t.Fatal("smart preset differs from the default config")
+	}
+	for _, tc := range []struct{ id, defaultRoute string }{
+		{"all_llm", "llm"},
+		{"rules_only", "yandex"},
+	} {
+		var found *RoutingPreset
+		for i := range presets {
+			if presets[i].ID == tc.id {
+				found = &presets[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("preset %q is missing", tc.id)
+		}
+		if found.Config.DefaultRoute != tc.defaultRoute {
+			t.Errorf("preset %q default_route = %q, want %q", tc.id, found.Config.DefaultRoute, tc.defaultRoute)
+		}
+	}
+}

@@ -89,6 +89,55 @@ func TestSettingsPatchWritesBothSections(t *testing.T) {
 	}
 }
 
+// TestSettingsPatchSingleSectionKeepsTheRest: each «Сохранить» in the panel sends
+// one section, and the write path must leave every other section of the file
+// alone — including the voice routes derived from the roles.
+func TestSettingsPatchSingleSectionKeepsTheRest(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m","agents":[{"name":"briefing","voice":"jane"}],"wake_words":{"words":[{"word":"брифинг","action":"ask","text":"сводка","agent":"briefing"}]}}`)
+	deps, _, _ := settingsTestDeps(t)
+	status, payload := applySettingsPatch(path, deps, settingsPatch{
+		WakeWords: &wakeWordsConfig{Words: []wakeWordConfig{{
+			Word: "егорка", Action: wakeAsk, Text: "Слушаю.", Agent: "briefing",
+		}}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	cfg, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "briefing" || cfg.Agents[0].Voice != "jane" {
+		t.Fatalf("a wake_words patch moved the roles: %+v", cfg.Agents)
+	}
+	if cfg.LLMModel != "m" {
+		t.Fatalf("a wake_words patch moved llm_model: %q", cfg.LLMModel)
+	}
+	if len(cfg.WakeWords.Words) != 1 || cfg.WakeWords.Words[0].Word != "егорка" {
+		t.Fatalf("wake words not written: %+v", cfg.WakeWords)
+	}
+	if got := cfg.LocalVoice.Routes["agent:briefing"]; got != "jane" {
+		t.Fatalf("role voice route lost: %+v", cfg.LocalVoice)
+	}
+}
+
+// TestPanelSettingsRejectsEmptyPatch: four buttons write four different sections,
+// so an empty body means the payload builder dropped everything. The server says
+// so instead of quietly touching the file.
+func TestPanelSettingsRejectsEmptyPatch(t *testing.T) {
+	panel, _, _ := panelTestServer(t)
+	cookie, csrf := panelLogin(t, panel)
+	request := panelMutation(t, "/api/panel/settings", map[string]any{}, cookie, csrf)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("empty patch = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "nothing to change") {
+		t.Fatalf("empty patch answered %s", recorder.Body.String())
+	}
+}
+
 // TestSettingsPatchRejectsUnknownAgentKeepsFile pins the ordering: validation
 // runs before the file is touched, so a word naming a removed role cannot leave
 // a half-applied configuration behind.

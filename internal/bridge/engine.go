@@ -141,7 +141,25 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 }
 
-const defaultAnswerPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Начинай каждый ответ словом «Нейросеть:» — так пользователь отличает тебя от штатной Алисы. Обороты «спроси нейросеть», «спроси свою модель», «спроси у нейросети» — это обращение к тебе самому: не ищи для них инструмент, пропусти вводную и отвечай на суть; если после вводной вопроса нет, коротко попроси его задать. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."
+const defaultAnswerPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Отвечай сразу по существу, без вступительных пометок и без названия модели. Обороты «спроси нейросеть», «спроси свою модель», «спроси у нейросети» — это обращение к тебе самому: не ищи для них инструмент, пропусти вводную и отвечай на суть; если после вводной вопроса нет, коротко попроси его задать. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."
+
+// answerLabel is the spoken prefix earlier builds asked the model to prepend.
+// The operator asked for plain answers, but a role prompt or a configuration
+// written by hand may still carry the instruction, so the label is cut from
+// whatever the model actually returns.
+const answerLabel = "Нейросеть:"
+
+func stripAnswerLabel(answer string) string {
+	trimmed := strings.TrimSpace(answer)
+	original := trimmed
+	for len(trimmed) >= len(answerLabel) && strings.EqualFold(trimmed[:len(answerLabel)], answerLabel) {
+		trimmed = strings.TrimSpace(trimmed[len(answerLabel):])
+	}
+	if trimmed == "" {
+		return original
+	}
+	return trimmed
+}
 
 // roleTail keeps a role prompt compatible with a spoken answer: the author of a
 // role describes the task, not the output format.
@@ -177,9 +195,6 @@ func (e *Engine) answer(ctx context.Context, route, text string, answerer Comple
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	// Local patch (not upstream): the spoken label lets the user tell this answer
-	// apart from the stock Alice voice, and the leading phrase is treated as an
-	// address to this model instead of a missing tool call.
 	messages := []llm.Message{{Role: "system", Content: answerPrompt(prompt)}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
@@ -197,6 +212,7 @@ func (e *Engine) answer(ctx context.Context, route, text string, answerer Comple
 		return r, context.Canceled
 	}
 	if err == nil {
+		answer = stripAnswerLabel(answer)
 		if !e.dialogue().Commit(ctx, ticket, text, answer, private) {
 			return r, context.Canceled
 		}
