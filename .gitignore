@@ -5,6 +5,9 @@
 /private/
 /config*.json
 !/config*.example.json
+# The panel writes provider keys here; the file must never be committed.
+/secrets.json
+/secrets*.json
 /runtime.env
 *.env
 !*.env.example
