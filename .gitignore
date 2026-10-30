@@ -32,6 +32,5 @@ __pycache__/
 *.pyc
 
 /dist/
-*.yap
 *.jsonl
 *.jsonl.*

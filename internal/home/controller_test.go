@@ -94,6 +94,54 @@ func TestLightingRequestInventoryIncludesSwitchesWithoutAllSensors(t *testing.T)
 	}
 }
 
+func TestHomeConfirmsLightBrightnessResult(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    map[string]any
+		state   string
+		wantErr bool
+	}{
+		{"brightness_zero_off", map[string]any{"brightness": 0}, "off", false},
+		{"brightness_zero_still_on", map[string]any{"brightness": 0}, "on", true},
+		{"brightness_fraction_truncates_to_zero_off", map[string]any{"brightness": 0.5}, "off", false},
+		{"brightness_negative_clamps_to_zero_off", map[string]any{"brightness": -1}, "off", false},
+		{"brightness_mid_on", map[string]any{"brightness": 127}, "on", false},
+		{"brightness_max_on", map[string]any{"brightness": 255}, "on", false},
+		{"brightness_positive_still_off", map[string]any{"brightness": 127}, "off", true},
+		{"percent_zero_off", map[string]any{"brightness_pct": 0}, "off", false},
+		{"percent_zero_still_on", map[string]any{"brightness_pct": 0}, "on", true},
+		{"percent_positive_on", map[string]any{"brightness_pct": 50}, "on", false},
+		{"percent_rounds_to_zero_off", map[string]any{"brightness_pct": 0.1}, "off", false},
+		{"no_brightness_on", nil, "on", false},
+		{"no_brightness_still_off", nil, "off", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := &homeFixture{state: "off"}
+			tools := toolFunc(func(ctx context.Context, name string, args map[string]any) (jsontext.Value, error) {
+				raw, err := fixture.Call(ctx, name, args)
+				if name == "ha_call_service" {
+					fixture.state = tc.state
+				}
+				return raw, err
+			})
+			c := Controller{Tools: tools, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+				b, err := json.Marshal(Plan{Actions: []Action{{Domain: "light", Service: "turn_on", EntityID: "light.office", Data: tc.data}}})
+				return string(b), err
+			})}
+			answer, err := c.Handle(t.Context(), "Установи яркость света в кабинете")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("answer=%q error=%v", answer, err)
+			}
+			if fixture.actions != 1 {
+				t.Fatalf("service calls=%d want=1", fixture.actions)
+			}
+			if !tc.wantErr && answer == "" {
+				t.Fatal("no reply after confirmed action")
+			}
+		})
+	}
+}
+
 func TestHomeValidatesEntireBatchBeforeFirstAction(t *testing.T) {
 	fixture := &homeFixture{state: "off"}
 	c := Controller{Tools: fixture, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
