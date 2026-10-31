@@ -15,10 +15,11 @@ import (
 )
 
 type Proxy struct {
-	Journal    *journal.Writer
-	Upstream   string
-	Observer   func(direction string, kind websocket.MessageType, data []byte)
-	NewSession func(context.Context, Sender, Sender) Session
+	Journal       *journal.Writer
+	Subscriptions *SubscriptionMonitor
+	Upstream      string
+	Observer      func(direction string, kind websocket.MessageType, data []byte)
+	NewSession    func(context.Context, Sender, Sender) Session
 
 	UpstreamPingInterval time.Duration
 	UpstreamPingTimeout  time.Duration
@@ -115,6 +116,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if native, ok := session.(interface{ NativeSession() *Native }); ok && trace != nil {
 			native.NativeSession().OnRoute = trace.route
 		}
+	}
+	if p.Subscriptions != nil {
+		session = p.Subscriptions.NewSession(up.Write, downSend, session)
+	}
+	if session != nil {
 		defer session.Close()
 	}
 	copyMessages := func(dst, src *websocket.Conn, direction string) {

@@ -17,7 +17,7 @@ func TestHealthzReportsUpstreamCounters(t *testing.T) {
 	proxy.RecordUpstreamFrame()
 	voice := new(voiceState)
 	voice.Store(bridge.VoiceConfig{Voice: "omazh", Volume: 1.2})
-	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, proxy, voice, new(wakeState), new(atomic.Int64), new(atomic.Int64))
+	handler := healthzHandler(config{Mode: "observe"}, new(bridge.Engine), new(journal.Writer), nil, 0, nil, nil, new(bridge.SubscriptionMonitor), proxy, voice, new(wakeState), new(atomic.Int64), new(atomic.Int64))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/healthz", nil))
 	if response.Code != 200 {
@@ -43,7 +43,7 @@ func TestHealthzCountsProviders(t *testing.T) {
 		{Name: "deepseek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
 		{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", Model: "openrouter/auto"},
 	}}
-	handler := healthzHandler(cfg, new(bridge.Engine), new(journal.Writer), nil, 0, nil, new(bridge.Proxy), new(voiceState), new(wakeState), new(atomic.Int64), new(atomic.Int64))
+	handler := healthzHandler(cfg, new(bridge.Engine), new(journal.Writer), nil, 0, nil, nil, new(bridge.SubscriptionMonitor), new(bridge.Proxy), new(voiceState), new(wakeState), new(atomic.Int64), new(atomic.Int64))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/healthz", nil))
 	if response.Code != 200 {

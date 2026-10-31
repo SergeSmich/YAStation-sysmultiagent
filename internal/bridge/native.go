@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asrcommon "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
 	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
@@ -25,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
 )
@@ -238,6 +240,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		pctx = reply.WithPolicy(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
@@ -710,6 +713,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			return nil
 		}
 	}
+	emptyFinal := false
 	switch f.Kind() {
 	case "AliceResponse":
 		if !p.cloud {
@@ -750,12 +754,16 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			// request back to the cloud, and that is invisible without a size.
 			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "text_bytes", len(strings.TrimSpace(p.text)), "preset_text", p.presetText, "partials", p.asrPartials)
 		}
+		emptyFinal = !p.started && asr.GetEndOfUtt() && asr.GetResponseCode() == asrcommon.EAsrResponseCode_OK && strings.TrimSpace(p.text) == ""
 	case "SpotterValidation":
-		sv := e.GetSpotterValidation()
-		slog.Info("native_spotter_validation", "request", requestTag(p.id), "result", sv.GetResult().String(), "canceled_cause", sv.GetCanceledCauseOfMultiactivation())
 
 	}
 	n.mu.Unlock()
+	if emptyFinal {
+		if listener, ok := n.resolver.(interface{ EmptyInput(context.Context) }); ok {
+			listener.EmptyInput(p.ctx)
+		}
+	}
 	n.maybeResolve(p)
 	if err := n.down(ctx, k, data); err != nil {
 		return err
@@ -882,6 +890,8 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.discardSound(p)
 			if result.Route == "home" {
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
+			} else if result.Route == "airplay" {
+				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "music" {
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
@@ -1139,7 +1149,7 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
 	silentPlayback := n.hasSilentPlayback(p) || p.replySilent
-	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback
+	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
 		answer.VoiceResponse.OutputSpeech.Text = new("")

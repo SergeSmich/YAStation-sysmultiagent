@@ -6,6 +6,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -15,7 +16,7 @@ PAYLOAD = ("start.sh", "control.sh", "install.sh", "setup.sh", "uninstall.sh",
            "S96quasar-bridge", "firmware.sh", "config.device.example.json")
 
 
-def build(arch="arm64", output=None, binary=None, tag=None):
+def build(arch="arm64", output=None, binary=None, tag=None, upx=False):
     if tag is not None and not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
         raise ValueError("release tag must be vMAJOR.MINOR.PATCH")
     version = tag[1:] if tag else "dev"
@@ -25,14 +26,24 @@ def build(arch="arm64", output=None, binary=None, tag=None):
         if not binary:
             env = dict(os.environ, CGO_ENABLED="0", GOOS="linux",
                        GOARCH="arm" if arch == "armv7" else "arm64", GOARM="7")
-            subprocess.run(["go", "build", "-trimpath", "-ldflags=-s -w", "-o",
+            subprocess.run(["go", "build", "-trimpath", f"-ldflags=-s -w -X quasarbridge/internal/update.Version={version}", "-o",
                             str(executable), "./cmd/quasar-bridge"], cwd=ROOT, env=env, check=True)
         header = executable.read_bytes()[:20]
         elf_class, machine = {"arm64": (2, b"\xb7\x00"), "armv7": (1, b"\x28\x00")}[arch]
         if header[:5] != b"\x7fELF" + bytes([elf_class]) or header[18:20] != machine:
             raise ValueError(f"package requires a Linux {arch} ELF binary")
+        if upx:
+            if binary:
+                packed = Path(tmp) / "quasar-bridge"
+                shutil.copy2(executable, packed)
+                executable = packed
+            # Exhaustive compression search, keeping the fast NRV decompressor.
+            subprocess.run(["upx", "--ultra-brute", "--no-lzma", str(executable)], check=True)
+            subprocess.run(["upx", "-t", str(executable)], check=True)
         files = [(name, (ROOT / "packaging/speaker" / name).read_bytes()) for name in PAYLOAD]
-        files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES")]
+        files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md")]
+        files += [(str(path.relative_to(ROOT)), path.read_bytes())
+                  for path in sorted((ROOT / "docs/licenses").glob("*.txt"))]
         files += [("bin/quasar-bridge", executable.read_bytes()),
                   ("ARCH", (arch + "\n").encode()), ("VERSION", (version + "\n").encode())]
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,5 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--output")
     parser.add_argument("--binary", help="prebuilt static Linux executable for the selected architecture")
     parser.add_argument("--tag", help="stable release tag; otherwise build a dev archive")
+    parser.add_argument("--upx", action="store_true",
+                        help="compress with UPX --ultra-brute --no-lzma and verify before packaging")
     args = parser.parse_args()
-    build(args.arch, args.output, args.binary, args.tag)
+    build(args.arch, args.output, args.binary, args.tag, args.upx)
