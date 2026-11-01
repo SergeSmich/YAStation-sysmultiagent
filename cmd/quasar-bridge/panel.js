@@ -23,6 +23,7 @@ let csrfToken = '';
 let voiceFormDirty = false;
 let metricsRange = 3600;
 let agentsState = [];
+let savedAgentNames = [];
 let providersState = [];
 let providerKeysState = {};
 // savedProviders maps a provider name to the payload the file holds right now.
@@ -1423,6 +1424,7 @@ function renderSettings(payload, force, scope) {
   const touchingRouting = all || scope === 'routing';
   if (touchingRoles) {
     agentsState = Array.isArray(payload.agents) ? payload.agents : [];
+    savedAgentNames = agentsState.map((agent) => String((agent && agent.name) || ''));
   }
   if (touchingProviders) {
     providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
@@ -1727,7 +1729,15 @@ async function applySettings(scope) {
     }
     body.llm_providers = providersState.map(providerPayload);
   }
-  if (all || scope === 'roles' || renamed) body.agents = agentsState;
+  // A start word may point at a role that was just added and not saved yet: the
+  // server checks the words against the roles of the same request, so the roles
+  // go along, otherwise the word would be refused as pointing at an unknown role.
+  const savedRoles = new Set(savedAgentNames);
+  const wordsNeedRoles = scope === 'words' && wordsState.some((word) => {
+    const name = String((word && word.agent) || '').trim();
+    return name !== '' && !savedRoles.has(name);
+  });
+  if (all || scope === 'roles' || renamed || wordsNeedRoles) body.agents = agentsState;
   if (all || scope === 'words') {
     body.wake_words = {
       dry_run: document.getElementById('settings-dry-run').checked,
@@ -1750,6 +1760,8 @@ async function applySettings(scope) {
   } catch (error) {
     status.textContent = withPrefix(error.message);
     status.classList.add('error');
+    // The status line sits in the page header; the button that failed may be far below.
+    status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 }
 
