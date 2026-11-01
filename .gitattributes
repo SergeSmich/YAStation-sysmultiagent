@@ -1,0 +1,6 @@
+# Files embedded into the binary must hash the same on every checkout,
+# otherwise a local build differs from the deployed one.
+cmd/quasar-bridge/panel.html text eol=lf
+cmd/quasar-bridge/panel_login.html text eol=lf
+cmd/quasar-bridge/panel.css text eol=lf
+cmd/quasar-bridge/panel.js text eol=lf

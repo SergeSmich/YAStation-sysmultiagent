@@ -8,32 +8,24 @@
 </head>
 <body>
   <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">Голосовая станция</div>
-      <nav class="nav">
-        <a class="nav-item" href="#section-providers">Нейросети</a>
-        <a class="nav-item" href="#section-words">Старт-слова</a>
-        <a class="nav-item" href="#section-roles">Роли</a>
-        <a class="nav-item" href="#section-routing">Маршрутизация</a>
-      </nav>
-      <p class="nav-note">Настройки подключения, команд и голосовых ассистентов</p>
-      <nav class="nav nav-secondary">
-        <a class="nav-item" href="#section-station">Станция</a>
-        <a class="nav-item" href="#section-voice">Голос</a>
-        <a class="nav-item" href="#section-turns">Последние ходы</a>
-        <a class="nav-item" href="#section-logs">Лог</a>
-        <a class="nav-item" href="#section-access">Доступ</a>
-      </nav>
-      <div class="sidebar-foot">
+    <header class="topbar">
+      <div class="brand"><span class="brand-dot"></span>Голосовая станция</div>
+      <div class="topbar-actions">
         <span id="stamp" class="muted small">—</span>
-        <div class="foot-actions">
-          <button id="refresh" type="button" class="ghost">Обновить</button>
-          <form method="post" action="/logout">
-            <button type="submit" class="ghost">Выйти</button>
-          </form>
-        </div>
+        <button id="refresh" type="button" class="ghost">Обновить</button>
+        <button id="theme-toggle" type="button" class="ghost" aria-label="Сменить тему">◐</button>
+        <form method="post" action="/logout">
+          <button type="submit" class="ghost">Выйти</button>
+        </form>
       </div>
-    </aside>
+    </header>
+    <nav class="tabs" id="tabs" role="toolbar" aria-label="Разделы панели">
+      <button type="button" data-tab="routing" aria-pressed="true">Маршрутизация</button>
+      <button type="button" data-tab="llm" aria-pressed="false">Нейросеть</button>
+      <button type="button" data-tab="voice" aria-pressed="false">Голос</button>
+      <button type="button" data-tab="station" aria-pressed="false">Станция</button>
+      <button type="button" data-tab="journal" aria-pressed="false">Журнал</button>
+    </nav>
 
     <main>
       <header class="page-head">
@@ -43,7 +35,7 @@
       </header>
 
       <form id="settings-form" class="settings-form">
-        <section id="section-providers" class="settings-card">
+        <section id="section-providers" class="settings-card" data-group="llm">
           <h2>Нейросети</h2>
           <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ.</p>
           <div id="llm-providers-list" class="settings-list"></div>
@@ -53,7 +45,7 @@
           </div>
         </section>
 
-        <section id="section-words" class="settings-card">
+        <section id="section-words" class="settings-card" data-group="voice">
           <h2>Старт-слова</h2>
           <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry-run)</label>
           <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
@@ -69,7 +61,7 @@
           </div>
         </section>
 
-        <section id="section-roles" class="settings-card">
+        <section id="section-roles" class="settings-card" data-group="llm">
           <h2>Роли</h2>
           <div id="agents-list" class="settings-list"></div>
           <div class="card-actions">
@@ -78,7 +70,7 @@
           </div>
         </section>
 
-        <section id="section-routing" class="settings-card">
+        <section id="section-routing" class="settings-card" data-group="routing">
           <h2>Маршрутизация</h2>
           <p class="muted small">
             Кто отвечает на фразу. Правила проверяются сверху вниз, побеждает первое совпадение; если не
@@ -150,7 +142,7 @@
         </section>
       </form>
 
-      <section id="section-station">
+      <section id="section-station" data-group="station">
         <div id="cards" class="cards"></div>
         <div class="section-head">
           <h2>Станция</h2>
@@ -167,6 +159,15 @@
         <div id="station-alerts" class="alerts"></div>
         <div id="charts" class="charts"></div>
         <p id="station-events" class="muted small"></p>
+
+        <h3>Резервная копия настроек</h3>
+        <p class="muted small">
+          Скачивает config.json станции: роли, старт-слова, правила маршрутизации. Ключи нейросетей лежат
+          отдельно, в secrets.json, и в копию не попадают.
+        </p>
+        <div class="actions">
+          <a class="button-link" href="/api/panel/backup" download>Скачать настройки</a>
+        </div>
 
         <h3>Обновление</h3>
         <p class="muted small">
@@ -197,7 +198,7 @@
         <pre id="update-command" class="update-command">—</pre>
       </section>
 
-      <section id="section-voice">
+      <section id="section-voice" data-group="voice">
         <h2>Голос</h2>
         <div id="voice" class="panel">—</div>
         <form id="voice-form" class="panel form">
@@ -213,10 +214,12 @@
           <div class="field narrow">
             <label for="voice-speed">Скорость</label>
             <input id="voice-speed" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+            <input id="voice-speed-range" type="range" step="0.1" min="0.1" max="3" value="1" aria-label="Скорость, ползунок">
           </div>
           <div class="field narrow">
             <label for="voice-volume">Громкость</label>
             <input id="voice-volume" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
+            <input id="voice-volume-range" type="range" step="0.1" min="0.1" max="3" value="1" aria-label="Громкость, ползунок">
           </div>
           <div class="actions">
             <button type="submit" id="voice-apply">Применить</button>
@@ -227,12 +230,12 @@
         </form>
       </section>
 
-      <section id="section-turns">
+      <section id="section-turns" data-group="journal">
         <h2>Последние ходы</h2>
         <div id="turns" class="panel">—</div>
       </section>
 
-      <section id="section-logs">
+      <section id="section-logs" data-group="journal">
         <div class="section-head">
           <h2>Лог</h2>
           <div class="toolbar">
@@ -243,7 +246,7 @@
         <pre id="logs" class="logs">—</pre>
       </section>
 
-      <section id="section-access">
+      <section id="section-access" data-group="station">
         <h2>Доступ</h2>
         <form id="password-form" class="panel form">
           <div class="field">

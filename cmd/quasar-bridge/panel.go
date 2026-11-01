@@ -236,6 +236,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
 	mux.HandleFunc("POST /api/panel/routing/test", p.requireMutation(p.apiRoutingTest))
 	mux.HandleFunc("GET /api/panel/update", p.requireSession(p.apiUpdate))
+	mux.HandleFunc("GET /api/panel/backup", p.requireSession(p.apiBackup))
 	p.mux = mux
 	return p, nil
 }

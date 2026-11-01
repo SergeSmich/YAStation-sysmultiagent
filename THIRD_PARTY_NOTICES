@@ -1268,3 +1268,10 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+MidiPult (visual design of the panel: tokens, aurora backdrop, capsule tabs, sliders)
+https://github.com/RoBiN19666/midipult
+
+Copyright (c) 2026 MidiPult contributors. MIT License, full text in docs/licenses/MIDIPULT-LICENSE.txt.
+Only CSS ideas and the layout pattern are adapted; no code is linked.

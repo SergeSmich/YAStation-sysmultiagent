@@ -190,6 +190,40 @@ function syncVoiceForm(local, supported) {
   document.getElementById('voice-candidates').value = (local.candidates || []).join(', ');
   document.getElementById('voice-speed').value = local.speed ? String(local.speed) : '';
   document.getElementById('voice-volume').value = local.volume ? String(local.volume) : '';
+  syncVoiceSliders();
+}
+
+// The speed and volume fields have a slider twin. The number stays the source
+// of truth (an empty number means "do not change"); the slider only edits it.
+function paintSlider(range) {
+  const min = Number(range.min) || 0;
+  const max = Number(range.max) || 100;
+  const fill = ((Number(range.value) - min) / (max - min)) * 100;
+  range.style.setProperty('--fill', Math.max(0, Math.min(100, fill)) + '%');
+}
+
+function syncVoiceSliders() {
+  for (const id of ['voice-speed', 'voice-volume']) {
+    const number = document.getElementById(id);
+    const range = document.getElementById(id + '-range');
+    if (!number || !range) continue;
+    range.value = number.value === '' ? '1' : number.value;
+    paintSlider(range);
+  }
+}
+
+function initVoiceSliders() {
+  for (const id of ['voice-speed', 'voice-volume']) {
+    const number = document.getElementById(id);
+    const range = document.getElementById(id + '-range');
+    if (!number || !range) continue;
+    range.addEventListener('input', () => { number.value = range.value; paintSlider(range); });
+    number.addEventListener('input', () => {
+      if (number.value !== '') range.value = number.value;
+      paintSlider(range);
+    });
+  }
+  syncVoiceSliders();
 }
 
 function renderTurns(payload) {
@@ -1800,48 +1834,57 @@ function startTimers() {
   setInterval(() => { if (!document.hidden) refreshMetricsSafe(); }, REFRESH_METRICS_MS);
 }
 
-// initNav lights up the menu item of the section the operator is looking at.
-// The menu is a table of contents over one long page: highlighting follows
-// scrolling (IntersectionObserver), clicking is a plain anchor jump.
-function initNav() {
-  const links = new Map();
-  for (const link of document.querySelectorAll('.nav .nav-item')) {
-    const id = String(link.getAttribute('href') || '').replace(/^#/, '');
-    if (!id) continue;
-    links.set(id, link);
+// The page is split into tabs (capsules): one group of cards is visible at a
+// time. Every card keeps its own «Сохранить» (data-scope), so hiding a group
+// never changes what a save writes. The chosen tab survives a reload.
+const TAB_KEY = 'midi-panel-tab';
+const THEME_KEY = 'midi-panel-theme';
+
+function showTab(name, remember) {
+  const buttons = Array.from(document.querySelectorAll('#tabs [data-tab]'));
+  if (!buttons.some((button) => button.dataset.tab === name)) name = buttons.length ? buttons[0].dataset.tab : '';
+  for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.tab === name));
+  for (const card of document.querySelectorAll('[data-group]')) {
+    card.classList.toggle('is-hidden', card.dataset.group !== name);
   }
-  const sections = [];
-  for (const id of links.keys()) {
-    const section = document.getElementById(id);
-    if (section) sections.push(section);
+  if (remember) {
+    try { localStorage.setItem(TAB_KEY, name); } catch (error) { /* private mode: no memory */ }
   }
-  if (!sections.length || typeof IntersectionObserver !== 'function') return;
-  const visible = new Map();
-  // A click scrolls the page smoothly, and the sections passing by would fight
-  // for the highlight: keep the clicked item lit until the scroll settles.
-  let holdUntil = 0;
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) visible.set(entry.target.id, entry.intersectionRatio);
-    if (Date.now() < holdUntil) return;
-    let best = '';
-    let bestRatio = 0;
-    for (const [id, ratio] of visible) {
-      if (ratio > bestRatio) { best = id; bestRatio = ratio; }
-    }
-    // Nothing on screen (short page, tall viewport): keep the last highlight.
-    if (!best) return;
-    for (const [id, link] of links) link.classList.toggle('is-active', id === best);
-  }, { rootMargin: '0px 0px -55% 0px', threshold: [0, 0.05, 0.2, 0.5, 0.9] });
-  for (const section of sections) observer.observe(section);
-  window.addEventListener('scrollend', () => { holdUntil = 0; }, { passive: true });
-  links.forEach((link, id) => link.addEventListener('click', () => {
-    holdUntil = Date.now() + 800;
-    for (const [peerID, peer] of links) peer.classList.toggle('is-active', peerID === id);
-  }));
+}
+
+function initTabs() {
+  const buttons = Array.from(document.querySelectorAll('#tabs [data-tab]'));
+  if (!buttons.length) return;
+  let saved = '';
+  try { saved = localStorage.getItem(TAB_KEY) || ''; } catch (error) { saved = ''; }
+  showTab(saved, false);
+  for (const button of buttons) button.addEventListener('click', () => showTab(button.dataset.tab, true));
+  // 1..N jump between tabs, unless the operator is typing.
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+    const index = Number(event.key) - 1;
+    if (Number.isInteger(index) && index >= 0 && index < buttons.length) showTab(buttons[index].dataset.tab, true);
+  });
+}
+
+function initTheme() {
+  let theme = '';
+  try { theme = localStorage.getItem(THEME_KEY) || ''; } catch (error) { theme = ''; }
+  document.body.classList.toggle('light', theme === 'light');
+  const toggle = document.getElementById('theme-toggle');
+  if (!toggle) return;
+  toggle.addEventListener('click', () => {
+    const light = document.body.classList.toggle('light');
+    try { localStorage.setItem(THEME_KEY, light ? 'light' : 'dark'); } catch (error) { /* no memory */ }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  initNav();
+  initTabs();
+  initTheme();
+  initVoiceSliders();
   document.getElementById('refresh').addEventListener('click', () => {
     refreshAll();
     refreshLogsSafe();
