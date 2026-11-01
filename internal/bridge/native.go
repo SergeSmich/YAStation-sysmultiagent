@@ -69,6 +69,10 @@ type nativeRequest struct {
 	// carries a preset phrase, so its text is not classified again.
 	pin string
 
+	// audition, when set, makes the turn a verbatim reading of a phrase in a
+	// chosen voice instead of a routed request.
+	audition *audition
+
 	// presetText marks a text the bridge wrote itself instead of one the person
 	// said: the recognizer of that window hears silence, so its final result
 	// must not replace the phrase.
@@ -253,6 +257,11 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		// A pinned route is read from the caller's context, not from p.ctx: p.ctx
 		// is bound to the session and would leak the pin onto later turns.
 		p.pin, _ = PinnedRoute(ctx)
+		if p.audition = auditionOf(ctx); p.audition != nil {
+			// A phrase read aloud for the operator is not a conversation turn:
+			// the microphone must stay closed once it ends.
+			reply.SuppressListening(p.ctx)
+		}
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
 			return n.queueSound(ctx, p, request)
 		})
@@ -801,6 +810,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	text := p.text
 	heard := p.asrHeard
 	pin := p.pin
+	spoken := p.audition
 	n.mu.Unlock()
 	n.wg.Go(func() {
 		if n.DecisionDelay > 0 {
@@ -843,7 +853,10 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				held = ""
 			}
 		}
-		if n.resolver != nil {
+		if spoken != nil {
+			// Read the phrase back as is: no classifier, no model.
+			result = Resolution{Route: "audition", Answer: spoken.text}
+		} else if n.resolver != nil {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				var decision RouteDecision
 				switch {
@@ -910,6 +923,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		p.route = result.Route
 		p.voice = n.Voice().Resolve(result.Route)
+		if spoken != nil {
+			p.voice = spoken.voice
+		}
 		if result.Route == "yandex" {
 			p.cloud = true
 			var err error

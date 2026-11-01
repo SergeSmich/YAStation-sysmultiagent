@@ -1805,6 +1805,9 @@ async function testVoice() {
   try {
     const payload = await postJSON(VOICE_TEST_URL, {
       voice: document.getElementById('voice-name').value,
+      text: document.getElementById('voice-text').value.trim(),
+      speed: parseFloat(document.getElementById('voice-speed').value) || 0,
+      volume: parseFloat(document.getElementById('voice-volume').value) || 0,
       play: play,
       per_case_ms: 5000
     });

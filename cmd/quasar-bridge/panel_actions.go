@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	stdjson "encoding/json"
 	"log/slog"
@@ -165,6 +166,7 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 		Play      bool    `json:"play"`
 		PerCaseMS int64   `json:"per_case_ms"`
 		Volume    float64 `json:"volume"`
+		Speed     float64 `json:"speed"`
 	}
 	if err := stdjson.NewDecoder(r.Body).Decode(&body); err != nil {
 		p.audit.record("voice_test", r, "bad_request", nil)
@@ -188,10 +190,35 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 	if voiceCase.Voice == "" {
 		voiceCase.Voice = current.Voice
 	}
-	if body.Volume > 0 {
+	if body.Volume >= 0.1 && body.Volume <= 3 {
 		voiceCase.Volume = body.Volume
 	} else {
 		voiceCase.Volume = current.Volume
+	}
+	if body.Speed >= 0.1 && body.Speed <= 3 {
+		voiceCase.Speed = body.Speed
+	}
+	if body.Play {
+		// Heard on the station: the phrase is read as an answer of the station's
+		// own turn, because the speaker plays nothing it did not ask for.
+		if !bridge.IsKnownVoice(voiceCase.Voice) {
+			p.audit.record("voice_test", r, "bad_request", map[string]any{"voice": voiceCase.Voice})
+			writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice"})
+			return
+		}
+		started := time.Now()
+		_, err := native.Audition(context.WithoutCancel(r.Context()), voiceCase.Text, bridge.VoiceSettings{
+			Voice: voiceCase.Voice, Emotion: voiceCase.Emotion, Speed: voiceCase.Speed, Volume: voiceCase.Volume,
+		})
+		result := bridge.VoiceProbeResult{VoiceProbeCase: voiceCase, OK: err == nil, ElapsedMS: time.Since(started).Milliseconds()}
+		outcome := "ok"
+		if err != nil {
+			result.Error = err.Error()
+			outcome = "error"
+		}
+		p.audit.record("voice_test", r, outcome, map[string]any{"voice": voiceCase.Voice, "play": true})
+		writePanelJSON(w, http.StatusOK, map[string]any{"results": []bridge.VoiceProbeResult{result}, "count": 1, "play": true})
+		return
 	}
 	// Probe itself caps a case at 5 s; keep the panel inside the same window so
 	// the reported elapsed time matches what the synthesizer was allowed to use.
