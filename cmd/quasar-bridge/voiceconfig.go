@@ -27,6 +27,9 @@ type voiceState struct {
 	// applyMu serializes the read-modify-write of config.json, so two panel
 	// requests or a SIGHUP reload cannot lose one another's update.
 	applyMu sync.Mutex
+
+	sessionsMu sync.Mutex
+	sessions   []*bridge.Native
 }
 
 func (s *voiceState) Load() bridge.VoiceConfig {
@@ -52,6 +55,50 @@ func (s *voiceState) SetIfChanged(cfg bridge.VoiceConfig) (uint64, bool) {
 }
 
 func (s *voiceState) Revision() uint64 { return s.rev.Load() }
+
+// Attach and Detach register every open upstream session. The station can hold
+// several at once (a reconnect overlaps the old session), and a hot-applied
+// voice must reach all of them, not only the newest: otherwise an older session
+// keeps speaking with the settings it started with.
+func (s *voiceState) Attach(n *bridge.Native) {
+	s.sessionsMu.Lock()
+	s.sessions = append(s.sessions, n)
+	s.sessionsMu.Unlock()
+}
+
+func (s *voiceState) Detach(n *bridge.Native) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	for i, session := range s.sessions {
+		if session == n {
+			s.sessions = append(s.sessions[:i], s.sessions[i+1:]...)
+			return
+		}
+	}
+}
+
+// Latest returns the newest session that is still open, or nil.
+func (s *voiceState) Latest() *bridge.Native {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	if len(s.sessions) == 0 {
+		return nil
+	}
+	return s.sessions[len(s.sessions)-1]
+}
+
+// push hands cfg to every open session, plus the one the caller considers live.
+func (s *voiceState) push(cfg bridge.VoiceConfig, live func() *bridge.Native) {
+	s.sessionsMu.Lock()
+	open := append([]*bridge.Native(nil), s.sessions...)
+	s.sessionsMu.Unlock()
+	for _, n := range open {
+		n.SetVoice(cfg)
+	}
+	if native := live(); native != nil {
+		native.SetVoice(cfg)
+	}
+}
 
 // voicePatch is a partial update: an absent field keeps its current value, so
 // a panel can change one setting without resending the whole section.
@@ -182,9 +229,7 @@ func (s *voiceState) reloadVoice(path string, live func() *bridge.Native) (uint6
 	if !changed {
 		return revision, nil
 	}
-	if native := live(); native != nil {
-		native.SetVoice(next.LocalVoice)
-	}
+	s.push(next.LocalVoice, live)
 	slog.Info("local_voice_reloaded", "revision", revision, "voice", next.LocalVoice.Voice, "emotion", next.LocalVoice.Emotion, "speed", next.LocalVoice.Speed, "volume", next.LocalVoice.Volume)
 	return revision, nil
 }
@@ -256,9 +301,7 @@ func applyVoicePatch(path string, state *voiceState, patch voicePatch, live func
 		return http.StatusBadRequest, map[string]string{"error": "written configuration was rejected: " + err.Error()}
 	}
 	revision := state.Store(confirmed.LocalVoice)
-	if native := live(); native != nil {
-		native.SetVoice(confirmed.LocalVoice)
-	}
+	state.push(confirmed.LocalVoice, live)
 	slog.Info("local_voice_applied", "revision", revision, "voice", confirmed.LocalVoice.Voice, "emotion", confirmed.LocalVoice.Emotion, "speed", confirmed.LocalVoice.Speed, "volume", confirmed.LocalVoice.Volume, "candidates", confirmed.LocalVoice.Candidates)
 	return http.StatusOK, map[string]any{"local_voice": confirmed.LocalVoice, "revision": revision}
 }

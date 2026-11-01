@@ -223,3 +223,19 @@ func readConfigMembers(t *testing.T, path string) map[string]jsontext.Value {
 	}
 	return members
 }
+
+func TestVoiceStateSessionsOutliveOverlap(t *testing.T) {
+	state := new(voiceState)
+	a, b := bridge.NewNative(t.Context(), nil, nil, nil), bridge.NewNative(t.Context(), nil, nil, nil)
+	state.Attach(a)
+	state.Attach(b)
+	state.Detach(b)
+	if state.Latest() != a {
+		t.Fatal("older session must stay reachable after the newer one closes")
+	}
+	cfg := bridge.VoiceConfig{Voice: "omazh", Speed: 1}
+	state.push(cfg, func() *bridge.Native { return nil })
+	if a.Voice().Speed != 1 {
+		t.Fatal("push must reach every open session")
+	}
+}

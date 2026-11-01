@@ -369,13 +369,16 @@ func main() {
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
 			}
 
+			voice.Attach(n)
 			liveNativeMu.Lock()
 			liveNative = n
 			liveNativeMu.Unlock()
 			return &probeSession{Native: n, onClose: func(closed *bridge.Native) {
+				voice.Detach(closed)
 				liveNativeMu.Lock()
 				if liveNative == closed {
-					liveNative = nil
+					// An overlapping newer session may still be open.
+					liveNative = voice.Latest()
 				}
 				liveNativeMu.Unlock()
 			}}
