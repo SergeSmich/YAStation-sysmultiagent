@@ -76,7 +76,7 @@ func TestUnconfiguredHomeRoutesToYandex(t *testing.T) {
 			if d.Route != "yandex" || d.Source != "home_disabled" {
 				t.Fatalf("unavailable home selected: %+v", d)
 			}
-			if source == "rule" && d.Rule != "home_devices" {
+			if source == "rule" && d.Rule != "устройства дома" {
 				t.Fatal("matching rule identity lost", d)
 			}
 			r, err := e.ResolveDecision(t.Context(), "Выключи свет", d)

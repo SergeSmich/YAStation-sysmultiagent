@@ -1056,11 +1056,23 @@ function normalizeRouting(routing) {
   };
 }
 
+// Built-in rules used to carry English names; older configs still do.
+const legacyRuleNames = {
+  bridge_updates: 'обновление моста',
+  speaker_playback: 'управление воспроизведением',
+  music_from_site: 'музыка с сайта',
+  assistant_readonly: 'история и страницы',
+  home_devices: 'устройства дома',
+  complex_queries: 'сложные задачи',
+  yandex_services: 'сервисы Яндекса',
+  questions_to_llm: 'вопросы нейросети',
+};
+
 function normalizeRoutingRule(rule) {
   const match = rule && rule.match && typeof rule.match === 'object' ? rule.match : {};
   const list = (value) => (Array.isArray(value) ? value.slice() : []);
   return {
-    name: String((rule && rule.name) || ''),
+    name: legacyRuleNames[String((rule && rule.name) || '')] || String((rule && rule.name) || ''),
     route: String((rule && rule.route) || 'llm'),
     disabled: Boolean(rule && rule.disabled),
     match: {
@@ -1135,7 +1147,7 @@ function routingRuleRow(rule, index) {
   row.dataset.index = String(index);
   row.classList.toggle('is-off', rule.disabled);
 
-  const name = ruleControl('input', 'name', rule.name, 'например, questions_to_llm');
+  const name = ruleControl('input', 'name', rule.name, 'например, вопросы нейросети');
   name.type = 'text';
   name.autocomplete = 'off';
   row.appendChild(settingsField('Имя правила', name));

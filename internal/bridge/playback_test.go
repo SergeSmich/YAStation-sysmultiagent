@@ -34,7 +34,7 @@ func TestExplicitWebsiteMusicDoesNotDependOnModel(t *testing.T) {
 		return "", nil
 	})}
 	d := e.Decide(t.Context(), "Включи музыку с сайта abc.su/music")
-	if d.Route != "music" || d.Rule != "music_from_site" {
+	if d.Route != "music" || d.Rule != "музыка с сайта" {
 		t.Fatalf("decision=%+v", d)
 	}
 	result, err := e.ResolveDecision(t.Context(), "Включи музыку с сайта abc.su/music", d)

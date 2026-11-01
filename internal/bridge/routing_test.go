@@ -47,7 +47,7 @@ func TestMusicFromWebsiteRoutesBeforeYandexMusic(t *testing.T) {
 		"Воспроизведи аудио абв точка су слэш music",
 	} {
 		decision := e.Decide(t.Context(), text)
-		if decision.Route != "llm" || decision.Rule != "music_from_site" {
+		if decision.Route != "llm" || decision.Rule != "музыка с сайта" {
 			t.Errorf("website music routed incorrectly: %q: %+v", text, decision)
 		}
 	}
@@ -56,7 +56,7 @@ func TestMusicFromWebsiteRoutesBeforeYandexMusic(t *testing.T) {
 			t.Errorf("ordinary Yandex music routing changed: %q: %+v", text, decision)
 		}
 	}
-	if decision := e.Decide(t.Context(), "Не включай музыку с сайта abc.su/music"); decision.Rule == "music_from_site" {
+	if decision := e.Decide(t.Context(), "Не включай музыку с сайта abc.su/music"); decision.Rule == "музыка с сайта" {
 		t.Fatal("negative playback request matched music rule")
 	}
 }
@@ -84,7 +84,7 @@ func TestRoutingValidationAndCallerMutation(t *testing.T) {
 	}
 	revision := e.RoutingStatus().Revision
 	for i := range cfg.Rules {
-		if cfg.Rules[i].Name == "home_devices" {
+		if cfg.Rules[i].Name == "устройства дома" {
 			cfg.Rules[i].Match.ContainsAllGroups[0][0] = "mutated"
 		}
 	}
@@ -236,7 +236,7 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 	})}
 	for _, text := range []string{"Хватит", "Алиса, хватит!", "Стоп", "Останови музыку", "Выключи музыку", "Пауза", "Поставь на паузу", "Продолжи музыку", "Возобнови воспроизведение"} {
 		d := e.Decide(t.Context(), text)
-		if d.Route != "yandex" || d.Rule != "speaker_playback" || d.Source != "rule" {
+		if d.Route != "yandex" || d.Rule != "управление воспроизведением" || d.Source != "rule" {
 			t.Errorf("%q: %+v", text, d)
 		}
 	}
@@ -245,7 +245,7 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, text := range []string{"Объясни слово хватит", "Не останавливай музыку", "Хватит ли памяти для модели", "Поставь таймер на паузу", "Включи свет", "Поставь музыку с сайта audio.example/music"} {
-		if d, ok := p.match(text); ok && d.Rule == "speaker_playback" {
+		if d, ok := p.match(text); ok && d.Rule == "управление воспроизведением" {
 			t.Errorf("false speaker control: %q", text)
 		}
 	}
@@ -263,21 +263,21 @@ func TestDefaultRulesSendQuestionsToTheModel(t *testing.T) {
 	}
 	for _, tc := range []struct{ text, route, rule string }{
 		// Stock-Alice services stay where they were.
-		{"Какая сегодня погода?", "yandex", "yandex_services"},
-		{"Поставь таймер на 5 минут", "yandex", "yandex_services"},
-		{"Поставь будильник на семь утра", "yandex", "yandex_services"},
-		{"Включи музыку", "yandex", "yandex_services"},
-		{"Алиса, который час?", "yandex", "yandex_services"},
+		{"Какая сегодня погода?", "yandex", "сервисы Яндекса"},
+		{"Поставь таймер на 5 минут", "yandex", "сервисы Яндекса"},
+		{"Поставь будильник на семь утра", "yandex", "сервисы Яндекса"},
+		{"Включи музыку", "yandex", "сервисы Яндекса"},
+		{"Алиса, который час?", "yandex", "сервисы Яндекса"},
 		// Home devices keep their rule and never fall through to the question shape.
-		{"Выключи свет в спальне", "home", "home_devices"},
-		{"Какая температура в спальне?", "home", "home_devices"},
+		{"Выключи свет в спальне", "home", "устройства дома"},
+		{"Какая температура в спальне?", "home", "устройства дома"},
 		// Everything phrased as a question goes to the model.
-		{"Как называется фильм про космос?", "llm", "questions_to_llm"},
-		{"Почему небо голубое?", "llm", "questions_to_llm"},
-		{"Алиса, расскажи о планетах", "llm", "questions_to_llm"},
-		{"Сколько будет два плюс два?", "llm", "questions_to_llm"},
-		{"Кто написал «Войну и мир»?", "llm", "questions_to_llm"},
-		{"Подскажи, как варить рис", "llm", "questions_to_llm"},
+		{"Как называется фильм про космос?", "llm", "вопросы нейросети"},
+		{"Почему небо голубое?", "llm", "вопросы нейросети"},
+		{"Алиса, расскажи о планетах", "llm", "вопросы нейросети"},
+		{"Сколько будет два плюс два?", "llm", "вопросы нейросети"},
+		{"Кто написал «Войну и мир»?", "llm", "вопросы нейросети"},
+		{"Подскажи, как варить рис", "llm", "вопросы нейросети"},
 	} {
 		got := e.Decide(t.Context(), tc.text)
 		if got.Route != tc.route || got.Rule != tc.rule {
@@ -288,12 +288,12 @@ func TestDefaultRulesSendQuestionsToTheModel(t *testing.T) {
 	// A statement is not a question: the shape rule must not swallow it, so the
 	// classifier stays in charge of the ambiguous middle ground.
 	for _, text := range []string{"Мне нравится эта песня", "Хорошая сегодня погода"} {
-		if d := e.Decide(t.Context(), text); d.Rule == "questions_to_llm" {
+		if d := e.Decide(t.Context(), text); d.Rule == "вопросы нейросети" {
 			t.Errorf("statement matched the question rule: %q: %+v", text, d)
 		}
 	}
 	cfg := DefaultRoutingConfig()
-	if last := cfg.Rules[len(cfg.Rules)-1].Name; last != "questions_to_llm" {
+	if last := cfg.Rules[len(cfg.Rules)-1].Name; last != "вопросы нейросети" {
 		t.Fatalf("questions_to_llm must stay last, found %q last", last)
 	}
 }
@@ -358,7 +358,7 @@ func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
 	})}
 	for _, text := range []string{"Проверь обновления", "Есть ли обновления?", "Алиса, проверь обновления, пожалуйста!", "Спроси нейросеть: проверь обновления", "Проверь обновления Quasar Bridge", "Установи новую версию", "Установи обновления"} {
 		got := e.Decide(t.Context(), text)
-		if got.Route != "llm" || got.Rule != "bridge_updates" {
+		if got.Route != "llm" || got.Rule != "обновление моста" {
 			t.Errorf("%q: %+v", text, got)
 		}
 	}
