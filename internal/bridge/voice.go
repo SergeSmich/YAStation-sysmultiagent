@@ -22,7 +22,16 @@ type VoiceConfig struct {
 // Any other name is rejected with "Unsupported voice" and makes every answer
 // fall back to the stock Alice voice, so the control plane refuses such settings
 // up front instead of letting them reach the synthesizer.
-var KnownVoices = []string{"jane", "omazh", "oksana", "ermil", "zahar"}
+//
+// The second probe (2026-11-01, 53 names) added the voices below the first five.
+// levitan, zhenya, nick and erkanyavas are accepted but stay silent (timeout),
+// like tanya and silaerkan, so they are deliberately absent.
+var KnownVoices = []string{
+	"jane", "omazh", "oksana", "ermil", "zahar",
+	"shitova", "shitova.us", "valtz", "kolya", "kostya", "nastya", "sasha", "alyss",
+	"oksana.gpu", "good_oksana", "omazh.gpu", "jane.gpu", "zahar.gpu", "ermil.gpu",
+	"robot", "zombie",
+}
 
 // IsKnownVoice reports whether the dispenser is expected to accept the name.
 func IsKnownVoice(voice string) bool {
