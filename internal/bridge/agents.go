@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // AgentRoutePrefix marks a routing target that a named agent answers with its
@@ -26,22 +27,23 @@ type Agent struct {
 }
 
 // ValidAgentName keeps route strings, VoiceConfig keys and journal entries
-// parseable and greppable: the name travels through all three.
+// parseable: the name travels through all three. Latin and Cyrillic lowercase
+// letters, digits, '-' and '_' are accepted (not first), up to 32 characters.
 func ValidAgentName(name string) bool {
-	if name == "" || len(name) > 32 {
+	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > 32 {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		switch c := name[i]; {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case (c == '-' || c == '_') && i > 0:
+	for i, r := range []rune(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r >= 'а' && r <= 'я', r == 'ё':
+		case (r == '-' || r == '_') && i > 0:
 		default:
 			return false
 		}
 	}
 	return true
 }
-
 // AgentRoute builds the route string for a role.
 func AgentRoute(name string) string { return AgentRoutePrefix + name }
 

@@ -10,7 +10,7 @@ import (
 )
 
 func TestAgentNameAndRouteRoundTrip(t *testing.T) {
-	for _, name := range []string{"briefing", "house", "a", "agent-2", "agent_2", strings.Repeat("b", 32)} {
+	for _, name := range []string{"briefing", "house", "a", "agent-2", "agent_2", "егорка", "ёж-2", strings.Repeat("б", 32)} {
 		if !ValidAgentName(name) {
 			t.Fatalf("rejected valid name %q", name)
 		}
@@ -19,7 +19,7 @@ func TestAgentNameAndRouteRoundTrip(t *testing.T) {
 			t.Fatalf("round trip %q: %q %v", name, got, ok)
 		}
 	}
-	for _, name := range []string{"", "Briefing", "brief ing", "-briefing", "_briefing", "briefing!", "агент", strings.Repeat("b", 33)} {
+	for _, name := range []string{"", "Briefing", "brief ing", "-briefing", "_briefing", "briefing!", "Агент", "агент!", "агент 1", strings.Repeat("b", 33), strings.Repeat("б", 33)} {
 		if ValidAgentName(name) {
 			t.Fatalf("accepted invalid name %q", name)
 		}

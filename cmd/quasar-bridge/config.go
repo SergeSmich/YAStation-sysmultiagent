@@ -513,7 +513,7 @@ func (c *config) validateAgents() error {
 	for i := range c.Agents {
 		a := &c.Agents[i]
 		if !bridge.ValidAgentName(a.Name) {
-			return errors.New("agents[].name must be 1..32 characters of a-z, 0-9, '-' or '_'")
+			return errors.New("agents[].name must be 1..32 lowercase letters (a-z, а-я), digits, '-' or '_'")
 		}
 		if seen[a.Name] {
 			return errors.New("agents[].name must be unique")

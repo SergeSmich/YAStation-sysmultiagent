@@ -886,7 +886,7 @@ function renderAgents(force) {
     row.dataset.index = String(index);
     row.dataset.syncedName = agent.name || '';
 
-    const name = settingsControl('input', 'name', agent.name, 'латиница в нижнем регистре, цифры, - и _');
+    const name = settingsControl('input', 'name', agent.name, 'буквы (рус. и лат.) в нижнем регистре, цифры, - и _');
     name.type = 'text';
     name.autocomplete = 'off';
     row.appendChild(settingsField('Имя роли', name));
@@ -1728,6 +1728,17 @@ async function applySettings(scope) {
       }
     }
     body.llm_providers = providersState.map(providerPayload);
+  }
+  // One spelling for a role name: trimmed and lower-case, Cyrillic included. The
+  // start words that point at the old spelling follow it.
+  for (const agent of agentsState) {
+    const before = String(agent.name || '');
+    const folded = before.trim().toLowerCase();
+    if (folded === before) continue;
+    for (const word of wordsState) {
+      if (word.agent === before) word.agent = folded;
+    }
+    agent.name = folded;
   }
   // A start word may point at a role that was just added and not saved yet: the
   // server checks the words against the roles of the same request, so the roles
