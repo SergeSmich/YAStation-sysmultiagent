@@ -14,6 +14,7 @@ const LLM_DETECT_URL = '/api/panel/llm/detect';
 const PASSWORD_URL = '/api/panel/password';
 const ROUTING_TEST_URL = '/api/panel/routing/test';
 const UPDATE_URL = '/api/panel/update';
+const STATION_VOLUME_URL = '/api/panel/station/volume';
 const METRICS_URL = '/api/panel/metrics?range=';
 const REFRESH_STATE_MS = 5000;
 const REFRESH_LOGS_MS = 15000;
@@ -1423,6 +1424,74 @@ async function refreshUpdate() {
   }
 }
 
+// refreshStationVolume reads the level the speaker is at right now, so the
+// slider opens where the room actually is instead of where the file says.
+async function refreshStationVolume() {
+  const range = document.getElementById('station-volume-range');
+  const value = document.getElementById('station-volume-value');
+  const status = document.getElementById('station-volume-status');
+  if (!range) return;
+  try {
+    const payload = await getJSON(STATION_VOLUME_URL);
+    if (!payload.available) {
+      range.disabled = true;
+      value.textContent = '—';
+      status.textContent = 'недоступно: ' + (payload.error || 'нет микшера');
+      status.classList.add('error');
+      return;
+    }
+    range.disabled = false;
+    range.value = String(payload.percent);
+    value.textContent = payload.percent + '%';
+    paintSlider(range);
+    status.classList.remove('error');
+    status.textContent = payload.has_saved ? 'запоминается на станции' : '';
+  } catch (error) {
+    value.textContent = '—';
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
+// applyStationVolume moves the mixer. The number the bridge reads back is shown,
+// not the one that was sent: amixer may round to its own scale.
+async function applyStationVolume(percent) {
+  const range = document.getElementById('station-volume-range');
+  const value = document.getElementById('station-volume-value');
+  const status = document.getElementById('station-volume-status');
+  if (!range || range.disabled) return;
+  range.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'применяю…';
+  try {
+    const payload = await postJSON(STATION_VOLUME_URL, { percent });
+    range.value = String(payload.percent);
+    value.textContent = payload.percent + '%';
+    paintSlider(range);
+    status.textContent = 'уровень ' + payload.percent + '%';
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+    // The mixer may have moved or not: show what it really holds.
+    await refreshStationVolume();
+  } finally {
+    range.disabled = false;
+  }
+}
+
+function initStationVolume() {
+  const range = document.getElementById('station-volume-range');
+  if (!range) return;
+  paintSlider(range);
+  range.addEventListener('input', () => {
+    document.getElementById('station-volume-value').textContent = range.value + '%';
+    paintSlider(range);
+  });
+  // `change` fires when the thumb is released or a key is pressed, so dragging
+  // does not send a request per pixel.
+  range.addEventListener('change', () => { applyStationVolume(Number(range.value)); });
+}
+
 // renderSettings refreshes the page from a settings snapshot. A scope limits the
 // refresh to one section: the response always carries the whole file, so a save
 // of one section must not replace the state of another one and throw away what
@@ -1928,6 +1997,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initTheme();
   initVoiceSliders();
+  initStationVolume();
   document.getElementById('refresh').addEventListener('click', () => {
     refreshAll();
     refreshLogsSafe();
@@ -2004,6 +2074,7 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshMetricsSafe();
       refreshSettingsSafe();
       loadWakeDictionary();
+      refreshStationVolume();
       // The release check is cached on the station for ten minutes, so opening
       // the page does not spend the unauthenticated GitHub rate limit.
       refreshUpdate();

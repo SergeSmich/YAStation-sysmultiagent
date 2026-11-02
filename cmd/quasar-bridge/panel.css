@@ -216,6 +216,9 @@ input[type="range"]::-moz-range-progress { height: 8px; border-radius: 999px; ba
 
 input[type="checkbox"] { accent-color: var(--accent); }
 
+/* The station level is one row: the slider, the number, and the note. */
+#station-volume-range { flex: 1 1 260px; max-width: 440px; }
+
 .settings-form { display: block; margin: 0; }
 
 /* One card per subject, each with its own save button: the operator edits

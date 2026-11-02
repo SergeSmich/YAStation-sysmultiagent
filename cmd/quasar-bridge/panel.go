@@ -154,6 +154,8 @@ type panelServer struct {
 	settings   settingsDeps
 	decide     func(context.Context, string) bridge.RouteDecision
 	updates    *updateChecker
+	// stationVolume remembers the level the operator set, next to the config.
+	stationVolume stationVolumeStore
 	logPath    string
 	login      *template.Template
 	mux        *http.ServeMux
@@ -194,6 +196,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		logPath:    cfg.LogPath,
 		login:      login,
 		panelPort:  portOfListen(cfg.Listen),
+		stationVolume: newStationVolumeStore(deps.ConfigPath),
 	}
 	// A panel built without a metrics collector still serves the endpoint: the
 	// series is simply empty, and the charts draw "нет данных" instead of the
@@ -237,6 +240,8 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /api/panel/routing/test", p.requireMutation(p.apiRoutingTest))
 	mux.HandleFunc("GET /api/panel/update", p.requireSession(p.apiUpdate))
 	mux.HandleFunc("GET /api/panel/backup", p.requireSession(p.apiBackup))
+	mux.HandleFunc("GET /api/panel/station/volume", p.requireSession(p.apiStationVolume))
+	mux.HandleFunc("POST /api/panel/station/volume", p.requireMutation(p.apiStationVolumeUpdate))
 	p.mux = mux
 	return p, nil
 }

@@ -332,6 +332,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer logs.Close()
+	// Restore the operator's level only on the serving path: the diagnostic runs
+	// above finish before the bridge owns the speaker, and they must not move it.
+	applySavedStationVolume(*path)
 	proxy.Journal = logs
 	if cfg.Mode == "hybrid" {
 		if hc != nil && cfg.HomeWarmArea != "" {

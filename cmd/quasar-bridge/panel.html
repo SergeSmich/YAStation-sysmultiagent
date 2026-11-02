@@ -160,6 +160,18 @@
         <div id="charts" class="charts"></div>
         <p id="station-events" class="muted small"></p>
 
+        <h3>Громкость станции</h3>
+        <p class="muted small">
+          Общий уровень колонки: музыка и голос вместе, как кнопки на самой станции. Применяется сразу, как только
+          отпустите ползунок, и запоминается на станции — после перезапуска моста уровень вернётся.
+        </p>
+        <div class="actions">
+          <input id="station-volume-range" type="range" min="0" max="100" step="1" value="58"
+                 aria-label="Громкость станции">
+          <strong id="station-volume-value">—</strong>
+          <span id="station-volume-status" class="muted small"></span>
+        </div>
+
         <h3>Резервная копия настроек</h3>
         <p class="muted small">
           Скачивает config.json станции: роли, старт-слова, правила маршрутизации. Ключи нейросетей лежат
@@ -217,9 +229,10 @@
             <input id="voice-speed-range" type="range" step="0.1" min="0.1" max="3" value="1" aria-label="Скорость, ползунок">
           </div>
           <div class="field narrow">
-            <label for="voice-volume">Громкость</label>
+            <label for="voice-volume">Громкость речи</label>
             <input id="voice-volume" type="number" step="0.1" min="0.1" max="3" placeholder="1.0">
-            <input id="voice-volume-range" type="range" step="0.1" min="0.1" max="3" value="1" aria-label="Громкость, ползунок">
+            <input id="voice-volume-range" type="range" step="0.1" min="0.1" max="3" value="1" aria-label="Громкость речи, ползунок">
+            <span>на слух не влияет — общий уровень в «Станция»</span>
           </div>
           <div class="field wide">
             <label for="voice-text">Фраза для прослушивания</label>
