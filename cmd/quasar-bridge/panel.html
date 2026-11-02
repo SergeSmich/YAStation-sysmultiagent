@@ -226,6 +226,32 @@
             <input id="voice-text" type="text" maxlength="160" autocomplete="off"
                    placeholder="Привет, это Миди. Так звучит мой голос.">
           </div>
+          <div class="field narrow">
+            <label for="voice-emotion">Эмоция</label>
+            <select id="voice-emotion">
+              <option value="">как в настройках</option>
+              <option value="none">без эмоции</option>
+              <option value="neutral">neutral — нейтральная</option>
+              <option value="good">good — добрая</option>
+              <option value="evil">evil — злая</option>
+            </select>
+          </div>
+          <div class="field narrow">
+            <label for="voice-effect">Эффект (проба)</label>
+            <select id="voice-effect">
+              <option value="">без эффекта</option>
+              <option value="megaphone">megaphone — мегафон</option>
+              <option value="hamster">hamster — хомяк</option>
+              <option value="pitch_down">pitch_down — ниже тоном</option>
+              <option value="behind_the_wall">behind_the_wall — за стеной</option>
+              <option value="psychodelic">psychodelic — психоделика</option>
+              <option value="pulse">pulse — пульсация (не проверен)</option>
+              <option value="train_announce">train_announce — вокзал (не проверен)</option>
+            </select>
+          </div>
+          <div class="field narrow">
+            <label class="check"><input type="checkbox" id="voice-whisper"> шёпот (проба)</label>
+          </div>
           <div class="actions">
             <button type="submit" id="voice-apply">Применить</button>
             <button type="button" id="voice-test" class="ghost">Прослушать</button>

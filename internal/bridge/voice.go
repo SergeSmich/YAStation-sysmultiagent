@@ -26,15 +26,65 @@ type VoiceConfig struct {
 // The second probe (2026-11-01, 53 names) added the voices below the first five.
 // levitan, zhenya, nick and erkanyavas are accepted but stay silent (timeout),
 // like tanya and silaerkan, so they are deliberately absent.
+// shitova.us is byte-identical to shitova for every emotion (probe of 2026-11-02),
+// so it is only kept as a legacy alias, see legacyVoices.
 var KnownVoices = []string{
 	"jane", "omazh", "oksana", "ermil", "zahar",
-	"shitova", "shitova.us", "valtz", "kolya", "kostya", "nastya", "sasha", "alyss",
+	"shitova", "valtz", "kolya", "kostya", "nastya", "sasha", "alyss",
 	"oksana.gpu", "good_oksana", "omazh.gpu", "jane.gpu", "zahar.gpu", "ermil.gpu",
 	"robot", "zombie",
 }
 
+// legacyVoices are accepted in existing configs but not offered any more.
+var legacyVoices = []string{"shitova.us"}
+
+// SpeechEffects are the <speaker effect="..."> values of the Yandex markup.
+// All but pulse and train_announce were confirmed to change the synthesized
+// sample on the station (probe of 2026-11-02, stage7\probe4-markup.md).
+var SpeechEffects = []string{"megaphone", "hamster", "pitch_down", "behind_the_wall", "psychodelic", "pulse", "train_announce"}
+
+// SpeechEmotions are the emotion values every probed voice reacted to.
+var SpeechEmotions = []string{"neutral", "good", "evil"}
+
+// IsSpeechEffect reports whether name is a known effect.
+func IsSpeechEffect(name string) bool {
+	for _, effect := range SpeechEffects {
+		if effect == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSpeechEmotion reports whether name is a known emotion.
+func IsSpeechEmotion(name string) bool {
+	for _, emotion := range SpeechEmotions {
+		if emotion == name {
+			return true
+		}
+	}
+	return false
+}
+
+// StyleSpeech wraps text in the speaker markup for a whisper and/or an effect.
+// Unknown effects are ignored, so the text is never read out with raw tags.
+func StyleSpeech(text, effect string, whisper bool) string {
+	if whisper {
+		text = `<speaker is_whisper="true">` + text
+	}
+	if IsSpeechEffect(effect) {
+		text = `<speaker effect="` + effect + `">` + text + `<speaker effect="-">`
+	}
+	return text
+}
+
 // IsKnownVoice reports whether the dispenser is expected to accept the name.
 func IsKnownVoice(voice string) bool {
+	for _, name := range legacyVoices {
+		if name == voice {
+			return true
+		}
+	}
 	for _, name := range KnownVoices {
 		if name == voice {
 			return true

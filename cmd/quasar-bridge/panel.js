@@ -1820,6 +1820,9 @@ async function testVoice() {
       text: document.getElementById('voice-text').value.trim(),
       speed: parseFloat(document.getElementById('voice-speed').value) || 0,
       volume: parseFloat(document.getElementById('voice-volume').value) || 0,
+      emotion: document.getElementById('voice-emotion').value,
+      effect: document.getElementById('voice-effect').value,
+      whisper: document.getElementById('voice-whisper').checked,
       play: play,
       per_case_ms: 5000
     });

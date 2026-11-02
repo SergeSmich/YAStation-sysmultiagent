@@ -167,6 +167,9 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 		PerCaseMS int64   `json:"per_case_ms"`
 		Volume    float64 `json:"volume"`
 		Speed     float64 `json:"speed"`
+		Emotion   string  `json:"emotion"`
+		Effect    string  `json:"effect"`
+		Whisper   bool    `json:"whisper"`
 	}
 	if err := stdjson.NewDecoder(r.Body).Decode(&body); err != nil {
 		p.audit.record("voice_test", r, "bad_request", nil)
@@ -190,6 +193,12 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 	if voiceCase.Voice == "" {
 		voiceCase.Voice = current.Voice
 	}
+	if emotion := strings.TrimSpace(body.Emotion); bridge.IsSpeechEmotion(emotion) {
+		voiceCase.Emotion = emotion
+	} else if emotion == "none" {
+		voiceCase.Emotion = ""
+	}
+	voiceCase.Text = bridge.StyleSpeech(voiceCase.Text, strings.TrimSpace(body.Effect), body.Whisper)
 	if body.Volume >= 0.1 && body.Volume <= 3 {
 		voiceCase.Volume = body.Volume
 	} else {
@@ -198,14 +207,14 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 	if body.Speed >= 0.1 && body.Speed <= 3 {
 		voiceCase.Speed = body.Speed
 	}
+	if !bridge.IsKnownVoice(voiceCase.Voice) {
+		p.audit.record("voice_test", r, "bad_request", map[string]any{"voice": voiceCase.Voice})
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice"})
+		return
+	}
 	if body.Play {
 		// Heard on the station: the phrase is read as an answer of the station's
 		// own turn, because the speaker plays nothing it did not ask for.
-		if !bridge.IsKnownVoice(voiceCase.Voice) {
-			p.audit.record("voice_test", r, "bad_request", map[string]any{"voice": voiceCase.Voice})
-			writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice"})
-			return
-		}
 		started := time.Now()
 		_, err := native.Audition(context.WithoutCancel(r.Context()), voiceCase.Text, bridge.VoiceSettings{
 			Voice: voiceCase.Voice, Emotion: voiceCase.Emotion, Speed: voiceCase.Speed, Volume: voiceCase.Volume,
@@ -216,7 +225,7 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 			result.Error = err.Error()
 			outcome = "error"
 		}
-		p.audit.record("voice_test", r, outcome, map[string]any{"voice": voiceCase.Voice, "play": true})
+		p.audit.record("voice_test", r, outcome, map[string]any{"voice": voiceCase.Voice, "play": true, "emotion": voiceCase.Emotion, "effect": body.Effect, "whisper": body.Whisper})
 		writePanelJSON(w, http.StatusOK, map[string]any{"results": []bridge.VoiceProbeResult{result}, "count": 1, "play": true})
 		return
 	}

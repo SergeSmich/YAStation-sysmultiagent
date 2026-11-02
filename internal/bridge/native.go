@@ -469,6 +469,14 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			_, probeStream := n.probeStreams[streamID]
 			_, probePlay := n.probePlay[streamID]
 			p := n.streams[streamID]
+			if probeStream && !probePlay {
+				for _, entry := range n.probes {
+					if _, ok := entry.streams[streamID]; ok {
+						entry.feed(data[4:])
+						break
+					}
+				}
+			}
 			// A playing probe is the one exception: its audio goes to the speaker.
 			drop := (probeStream && !probePlay) || n.blocked[streamID] != nil || (p != nil && p.canceled)
 			if p != nil && !drop {
@@ -500,6 +508,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				delete(n.probeStreams, streamID)
 				delete(n.probePlay, streamID)
 				for _, entry := range n.probes {
+					if _, ok := entry.streams[streamID]; ok {
+						entry.markClosed()
+					}
 					delete(entry.streams, streamID)
 					if entry.completed && len(entry.streams) == 0 {
 						n.scheduleProbeCleanupLocked(entry, entry.grace)

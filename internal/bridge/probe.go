@@ -2,6 +2,9 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"hash"
 	"errors"
 	"log/slog"
 	"time"
@@ -32,6 +35,10 @@ type VoiceProbeResult struct {
 	OK        bool   `json:"ok"`
 	Error     string `json:"error"`
 	ElapsedMS int64  `json:"elapsed_ms"`
+	// AudioBytes and AudioSHA describe the synthesized sample as it arrived
+	// from the cloud (empty when the probe is played or got no audio).
+	AudioBytes int    `json:"audio_bytes,omitempty"`
+	AudioSHA   string `json:"audio_sha,omitempty"`
 }
 
 type probeEntry struct {
@@ -43,6 +50,25 @@ type probeEntry struct {
 	streams   map[uint32]struct{}
 	grace     time.Duration
 	cleanup   *time.Timer
+	audio     hash.Hash
+	audioLen  int
+	closed    chan struct{}
+	closedSet bool
+}
+
+func (e *probeEntry) feed(p []byte) {
+	if e.audio == nil {
+		e.audio = sha256.New()
+	}
+	e.audio.Write(p)
+	e.audioLen += len(p)
+}
+
+func (e *probeEntry) markClosed() {
+	if !e.closedSet {
+		e.closedSet = true
+		close(e.closed)
+	}
 }
 
 // play reports whether the sample of this probe should be heard on the station.
@@ -99,7 +125,7 @@ func (n *Native) Probe(ctx context.Context, cases []VoiceProbeCase, perCase time
 
 func (n *Native) probeCase(ctx context.Context, probe VoiceProbeCase, perCase time.Duration) VoiceProbeResult {
 	id := newID()
-	entry := &probeEntry{id: id, started: time.Now(), value: probe, done: make(chan VoiceProbeResult, 1), grace: perCase}
+	entry := &probeEntry{id: id, started: time.Now(), value: probe, done: make(chan VoiceProbeResult, 1), closed: make(chan struct{}), grace: perCase}
 	n.mu.Lock()
 	if n.ctx.Err() != nil {
 		n.mu.Unlock()
@@ -132,6 +158,19 @@ func (n *Native) probeCase(ctx context.Context, probe VoiceProbeCase, perCase ti
 	select {
 	case result := <-entry.done:
 		n.mu.Lock()
+		waitAudio := result.OK && !probe.Play && len(entry.streams) != 0
+		n.mu.Unlock()
+		if waitAudio {
+			select {
+			case <-entry.closed:
+			case <-caseCtx.Done():
+			}
+		}
+		n.mu.Lock()
+		if entry.audio != nil {
+			result.AudioBytes = entry.audioLen
+			result.AudioSHA = hex.EncodeToString(entry.audio.Sum(nil))
+		}
 		if n.probes[id] == entry {
 			delay := perCase
 			if len(entry.streams) != 0 {
