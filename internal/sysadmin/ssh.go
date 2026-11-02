@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -20,6 +21,33 @@ type Host struct {
 	User     string
 	Password string
 	KeyPath  string
+	// OS is "windows" for a host whose SSH shell is PowerShell; anything else
+	// is treated as a POSIX shell.
+	OS string
+}
+
+// IsWindows reports whether commands for the host are PowerShell.
+func (h Host) IsWindows() bool { return strings.EqualFold(h.OS, "windows") }
+
+// powershellUTF8 makes PowerShell write UTF-8 instead of the OEM code page.
+// chcp switches native programs (ipconfig, ping) to UTF-8 as well.
+const powershellUTF8 = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; chcp 65001 > $null; $ProgressPreference='SilentlyContinue'; "
+
+// cleanText makes command output safe for a JSON request: invalid UTF-8
+// (a legacy code page, or a cut in the middle of a rune) is replaced.
+func cleanText(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
+// truncateRunes cuts s to at most n bytes without splitting a rune.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 type ExecResult struct {
@@ -147,7 +175,11 @@ func (e *Executor) Exec(ctx context.Context, hostName, command string, timeout t
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	done := make(chan error, 1)
-	go func() { done <- session.Run(command) }()
+	runCmd := command
+	if h.IsWindows() {
+		runCmd = powershellUTF8 + command
+	}
+	go func() { done <- session.Run(runCmd) }()
 	select {
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGKILL)
@@ -156,11 +188,11 @@ func (e *Executor) Exec(ctx context.Context, hostName, command string, timeout t
 		_ = session.Signal(ssh.SIGKILL)
 		return ExecResult{}, fmt.Errorf("timeout")
 	case err := <-done:
-		out := stdout.String()
-		errs := stderr.String()
+		out := cleanText(stdout.String())
+		errs := cleanText(stderr.String())
 		if len(out)+len(errs) > 16384 {
 			total := out + errs
-			total = total[:16384] + "…усечено"
+			total = truncateRunes(total, 16384) + "…усечено"
 			out = total
 			errs = ""
 		}
@@ -202,13 +234,25 @@ func (e *Executor) ReadFile(ctx context.Context, host, pathStr string, maxBytes 
 	if maxBytes <= 0 {
 		maxBytes = 65536
 	}
-	if !strings.HasPrefix(pathStr, "/") {
-		return "", fmt.Errorf("path must be absolute")
-	}
 	if strings.Contains(pathStr, "\x00") || strings.Contains(pathStr, "\n") || strings.Contains(pathStr, "\r") {
 		return "", fmt.Errorf("invalid path")
 	}
-	cmd := fmt.Sprintf("head -c %d -- %s", maxBytes, shellQuote(pathStr))
+	var cmd string
+	if h, ok := e.hosts()[host]; ok && h.IsWindows() {
+		if !isWindowsAbsPath(pathStr) {
+			return "", fmt.Errorf("path must be absolute (C:/dir/file)")
+		}
+		// Read at most maxBytes: a huge file (pagefile, VHDX) must not be loaded whole.
+		cmd = fmt.Sprintf("$f=[IO.File]::Open(%s,'Open','Read','ReadWrite'); try { $b=New-Object byte[] %d; $t=0; "+
+			"while ($t -lt %d) { $r=$f.Read($b,$t,%d-$t); if ($r -le 0) { break }; $t+=$r }; "+
+			"[Text.Encoding]::UTF8.GetString($b,0,$t) } finally { $f.Close() }",
+			psQuote(pathStr), maxBytes, maxBytes, maxBytes)
+	} else {
+		if !strings.HasPrefix(pathStr, "/") {
+			return "", fmt.Errorf("path must be absolute")
+		}
+		cmd = fmt.Sprintf("head -c %d -- %s", maxBytes, shellQuote(pathStr))
+	}
 	res, err := e.Exec(ctx, host, cmd, 30*time.Second)
 	if err != nil {
 		return "", err
@@ -217,6 +261,35 @@ func (e *Executor) ReadFile(ctx context.Context, host, pathStr string, maxBytes 
 		return "", fmt.Errorf("%s", res.Stderr)
 	}
 	return res.Stdout, nil
+}
+
+// isWindowsAbsPath accepts only local drive paths: C:\dir or C:/dir. UNC and
+// device paths are refused (an SMB request would leak the PC's credentials),
+// as are characters that are not valid in a Windows path.
+func isWindowsAbsPath(p string) bool {
+	if len(p) < 3 || p[1] != ':' || (p[2] != '\\' && p[2] != '/') {
+		return false
+	}
+	if c := p[0]; !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+		return false
+	}
+	return !strings.ContainsAny(p[2:], "\"<>|*?:")
+}
+
+// psQuote makes a PowerShell single-quoted literal. PowerShell also treats the
+// typographic single quotes as quotes, so each of them is doubled as well.
+func psQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		switch r {
+		case '\'', '\u2018', '\u2019', '\u201A', '\u201B':
+			b.WriteRune(r)
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 func shellQuote(s string) string {

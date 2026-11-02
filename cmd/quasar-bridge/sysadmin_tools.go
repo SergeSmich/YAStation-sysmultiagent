@@ -91,10 +91,13 @@ var sensitiveMarkers = []string{
 	"/etc/shadow", "/etc/gshadow", "id_rsa", "id_ed25519", "id_ecdsa", ".pem", ".key", ".p12", ".pfx",
 	"secrets.json", "sysadmin_secrets", "/.ssh/", "known_hosts", ".kdbx", "/.aws/", "/.gnupg/",
 	"secrets.yaml", ".storage/auth", "config.json", "token", "passwd", "wpa_supplicant", "/.env",
+	// Windows
+	"ntuser.dat", "/config/sam", "/config/system", "ntds.dit", "/credentials/", "/microsoft/protect", "login data",
+	".git-credentials", ".npmrc", ".kube/config", ".ovpn", "unattend.xml", "~1",
 }
 
 func isSensitive(text string) bool {
-	low := strings.ToLower(text)
+	low := strings.ReplaceAll(strings.ToLower(text), `\`, "/")
 	for _, m := range sensitiveMarkers {
 		if strings.Contains(low, m) {
 			return true

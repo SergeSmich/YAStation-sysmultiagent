@@ -28,6 +28,8 @@ type sysadminHostCfg struct {
 	User    string `json:"user"`
 	KeyPath string `json:"key_path"`
 	MAC     string `json:"mac"`
+	// OS is "windows" (PowerShell over SSH) or "" / "linux" (POSIX shell).
+	OS string `json:"os,omitempty"`
 }
 
 type sysadminRuleCfg struct {
@@ -66,6 +68,7 @@ type hostView struct {
 	User        string `json:"user"`
 	KeyPath     string `json:"key_path"`
 	MAC         string `json:"mac"`
+	OS          string `json:"os,omitempty"`
 	HasPassword bool   `json:"has_password"`
 }
 
@@ -200,7 +203,7 @@ func (h *sysadminHub) execHosts() map[string]sysadmin.Host {
 	}
 	for _, hc := range h.cfg.Hosts {
 		out[hc.Name] = sysadmin.Host{Name: hc.Name, Addr: hc.Addr, Port: hc.Port, User: hc.User,
-			Password: h.secrets.Hosts[hc.Name], KeyPath: hc.KeyPath}
+			Password: h.secrets.Hosts[hc.Name], KeyPath: hc.KeyPath, OS: hc.OS}
 	}
 	return out
 }
@@ -214,7 +217,7 @@ func (h *sysadminHub) Hosts() []hostView {
 	out := make([]hostView, 0, len(h.cfg.Hosts))
 	for _, hc := range h.cfg.Hosts {
 		out = append(out, hostView{Name: hc.Name, Addr: hc.Addr, Port: hc.Port, User: hc.User,
-			KeyPath: hc.KeyPath, MAC: hc.MAC, HasPassword: h.secrets.Hosts[hc.Name] != ""})
+			KeyPath: hc.KeyPath, MAC: hc.MAC, OS: hc.OS, HasPassword: h.secrets.Hosts[hc.Name] != ""})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -265,6 +268,10 @@ func validateHost(hc *sysadminHostCfg) error {
 	if strings.TrimSpace(hc.User) == "" || strings.ContainsAny(hc.User, " \t\r\n") {
 		return errors.New("пользователь пуст или содержит пробелы")
 	}
+	hc.OS = strings.ToLower(strings.TrimSpace(hc.OS))
+	if hc.OS != "" && hc.OS != "linux" && hc.OS != "windows" {
+		return errors.New("ОС хоста: linux или windows")
+	}
 	if hc.MAC != "" {
 		if _, err := sysadmin.BuildMagicPacket(hc.MAC); err != nil {
 			return errors.New("MAC-адрес некорректен")
@@ -292,6 +299,10 @@ func (h *sysadminHub) SaveHost(hc sysadminHostCfg) error {
 	replaced := false
 	for i := range h.cfg.Hosts {
 		if h.cfg.Hosts[i].Name == hc.Name {
+			// The panel form does not send the OS; keep what is configured.
+			if hc.OS == "" {
+				hc.OS = h.cfg.Hosts[i].OS
+			}
 			h.cfg.Hosts[i] = hc
 			replaced = true
 		}

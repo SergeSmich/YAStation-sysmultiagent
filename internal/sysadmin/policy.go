@@ -300,6 +300,13 @@ func isForbidden(s string) bool {
 			return true
 		}
 	}
+	// Windows (PowerShell): disks, boot and power.
+	for _, c := range []string{"stop-computer", "restart-computer", "format-volume", "clear-disk", "initialize-disk",
+		"remove-partition", "diskpart", "bcdedit", "format c:", "cipher /w"} {
+		if strings.Contains(s, c) {
+			return true
+		}
+	}
 	if strings.Contains(s, "init 0") || strings.Contains(s, "init 6") {
 		return true
 	}

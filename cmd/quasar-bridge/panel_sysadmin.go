@@ -96,6 +96,7 @@ func (p *panelServer) apiSysadminHost(w http.ResponseWriter, r *http.Request) {
 		User          string `json:"user"`
 		KeyPath       string `json:"key_path"`
 		MAC           string `json:"mac"`
+		OS            string `json:"os"`
 		Password      string `json:"password"`
 		ClearPassword bool   `json:"clear_password"`
 	}
@@ -112,6 +113,7 @@ func (p *panelServer) apiSysadminHost(w http.ResponseWriter, r *http.Request) {
 		User:    body.User,
 		KeyPath: body.KeyPath,
 		MAC:     body.MAC,
+		OS:      body.OS,
 	}
 	if err := p.sysHub.SaveHost(hc); err != nil {
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
