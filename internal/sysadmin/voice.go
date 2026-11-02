@@ -53,7 +53,7 @@ func ParseVoiceDecision(text string) (Scope, bool) {
 		prefix("сессии", "сессию")
 	strongOnce := phrase("только сейчас", "один раз", "только этот раз") || prefix("разово")
 	weakOnce := exact("да", "ок", "окей", "ага", "угу", "сейчас", "хорошо") ||
-		prefix("разреша", "давай", "подтвержда", "выполня", "согласен")
+		prefix("разреша", "разреши", "разрешу", "давай", "подтвержда", "подтверди", "подтвердить", "выполня", "согласен")
 	deny := exact("нет", "неа") || prefix("отмен", "отклон", "запрет", "запрещ")
 
 	grants := 0
@@ -79,13 +79,93 @@ func ParseVoiceDecision(text string) (Scope, bool) {
 	return "", false
 }
 
+// VoiceTarget says which of several waiting requests a spoken answer is about.
+// The zero value means "not named": with one request it is that request, with
+// several the caller asks the speaker to be specific.
+type VoiceTarget struct {
+	All   bool // «все», «оба»
+	Index int  // 1-based from the oldest; -1 — the newest; 0 — not named
+	Bad   bool // contradictory («все» вместе с «первую», две цифры сразу)
+}
+
+// ParseVoiceTarget finds «все / оба» or an ordinal («первую», «вторую»,
+// «последнюю») in a spoken answer. It does not decide anything: the scope comes
+// from ParseVoiceDecision.
+func ParseVoiceTarget(text string) VoiceTarget {
+	// «всё» («да, всё», «ладно, всё») is a figure of speech, not «все заявки»:
+	// the ё is kept for this check.
+	words := strings.Fields(normalizeVoiceKeepYo(text))
+	var t VoiceTarget
+	named := 0
+	for i, w := range words {
+		idx := 0
+		switch {
+		case w == "все" || w == "всех" || w == "оба" || w == "обе" || w == "обоих":
+			t.All = true
+			named++
+			continue
+		case ordinalWords[w] != 0:
+			idx = ordinalWords[w]
+		default:
+			continue
+		}
+		// «последний раз», «первый раз» are not a request number.
+		if i+1 < len(words) && words[i+1] == "раз" {
+			continue
+		}
+		named++
+		if t.Index != 0 && t.Index != idx {
+			t.Bad = true
+		}
+		t.Index = idx
+	}
+	if t.All && t.Index != 0 || named > 1 && t.Index == 0 {
+		t.Bad = true
+	}
+	return t
+}
+
+var ordinalWords = map[string]int{
+	"первую": 1, "первый": 1, "первая": 1, "первое": 1,
+	"вторую": 2, "второй": 2, "вторая": 2, "второе": 2,
+	"третью": 3, "третий": 3, "третья": 3, "третье": 3,
+	"четвертую": 4, "четвертый": 4, "четвертая": 4, "четвертое": 4,
+	"четвёртую": 4, "четвёртый": 4, "четвёртая": 4, "четвёртое": 4,
+	"пятую": 5, "пятый": 5, "пятая": 5, "пятое": 5,
+	"последнюю": -1, "последний": -1, "последняя": -1, "последнее": -1,
+	"новую": -1, "свежую": -1,
+}
+
+// HasVoiceVerb reports whether the phrase names the decision itself
+// («разрешить», «отклонить»), not just «да/ок». A bulk decision requires it.
+func HasVoiceVerb(text string) bool {
+	for _, w := range strings.Fields(normalizeVoice(text)) {
+		for _, p := range []string{"разреш", "подтверд", "подтвержд", "одобр", "отклон", "отмен", "запрет", "запрещ"} {
+			if strings.HasPrefix(w, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func normalizeVoice(s string) string {
+	return normalizeVoiceWith(s, true)
+}
+
+func normalizeVoiceKeepYo(s string) string {
+	return normalizeVoiceWith(s, false)
+}
+
+func normalizeVoiceWith(s string, foldYo bool) string {
 	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, "ё", "е")
+	if foldYo {
+		s = strings.ReplaceAll(s, "ё", "е")
+	}
 	var b strings.Builder
 	for _, r := range s {
 		switch {
-		case r >= 'а' && r <= 'я', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r >= 'а' && r <= 'я', r == 'ё', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
 		default:
 			b.WriteByte(' ')

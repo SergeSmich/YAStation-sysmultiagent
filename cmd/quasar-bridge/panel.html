@@ -214,11 +214,11 @@
       <section id="section-sysadmin" data-group="sysadmin">
         <h2>Сисадмин</h2>
         <p id="sysadmin-error" class="muted small error" hidden></p>
-        <h3>Ожидают подтверждения</h3>
-        <p class="muted small">Опасные действия агента ждут вашего «Разрешить». Без ответа запрос истекает через пару минут.</p>
-        <div id="sysadmin-queue" class="settings-list"></div>
-        <h4>Недавние</h4>
-        <div id="sysadmin-recent" class="settings-list"></div>
+        <details id="sysadmin-queue-box" class="sysadmin-fold">
+          <summary id="sysadmin-queue-title">Ожидают подтверждения</summary>
+          <p class="muted small">Опасные действия агента ждут вашего «Разрешить». Без ответа запрос истекает через пару минут.</p>
+          <div id="sysadmin-queue" class="settings-list sysadmin-scroll"></div>
+        </details>
 
         <h3>Хосты</h3>
         <p class="muted small">Пароль хранится отдельно, в sysadmin_secrets.json (0600), и в панель не возвращается.</p>
@@ -273,6 +273,11 @@
         </div>
         <h4>Факты</h4>
         <div id="sysadmin-facts" class="settings-list"></div>
+
+        <details id="sysadmin-recent-box" class="sysadmin-fold">
+          <summary id="sysadmin-recent-title">Недавние</summary>
+          <div id="sysadmin-recent" class="settings-list sysadmin-scroll"></div>
+        </details>
       </section>
 
       <section id="section-voice" data-group="voice">

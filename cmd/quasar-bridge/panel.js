@@ -2171,9 +2171,41 @@ function renderSysadminQueue(state) {
   const pending = Array.isArray(state.queue) ? state.queue : [];
   queue.replaceChildren();
   if (!pending.length) queue.appendChild(el('p', 'muted small', 'Ничего не ждёт.'));
+  if (pending.length > 1) {
+    const bulk = el('div', 'actions');
+    for (const [scope, label, cls] of [['once', 'Разрешить все (' + pending.length + ')', ''], ['deny', 'Отклонить все', 'ghost']]) {
+      const button = el('button', cls, label);
+      button.type = 'button';
+      button.addEventListener('click', async () => {
+        if (scope === 'once' && !window.confirm('Разрешить все ' + pending.length + ' заявок один раз?')) return;
+        button.disabled = true;
+        const failures = [];
+        for (const item of pending) {
+          try {
+            await postJSON(SYSADMIN_URL + 'approve', { id: item.id, scope });
+          } catch (error) {
+            failures.push(error.message);
+          }
+        }
+        if (failures.length) sysadminSay('sysadmin-error', failures.join('; '), true);
+        refreshSysadmin(false);
+      });
+      bulk.appendChild(button);
+    }
+    queue.appendChild(bulk);
+  }
   for (const item of pending) queue.appendChild(sysadminItemCard(item, true));
+  // The fold opens by itself when a new request arrives and stays as the
+  // operator left it otherwise.
+  const queueBox = document.getElementById('sysadmin-queue-box');
+  const queueTitle = document.getElementById('sysadmin-queue-title');
+  if (queueTitle) queueTitle.textContent = 'Ожидают подтверждения' + (pending.length ? ' (' + pending.length + ')' : '');
+  if (queueBox && pending.length > (renderSysadminQueue.lastPending || 0)) queueBox.open = true;
+  renderSysadminQueue.lastPending = pending.length;
   recent.replaceChildren();
   const done = Array.isArray(state.recent) ? state.recent : [];
+  const recentTitle = document.getElementById('sysadmin-recent-title');
+  if (recentTitle) recentTitle.textContent = 'Недавние' + (done.length ? ' (' + done.length + ')' : '');
   if (!done.length) recent.appendChild(el('p', 'muted small', 'Пока пусто.'));
   for (const item of done) recent.appendChild(sysadminItemCard(item, false));
   const err = document.getElementById('sysadmin-error');

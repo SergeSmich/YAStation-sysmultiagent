@@ -103,6 +103,12 @@ type sysadminHub struct {
 
 	sessMu  sync.Mutex
 	session map[string]struct{}
+
+	// The list of requests the voice gate last read out, oldest first: «вторую»
+	// and «все» refer to what the speaker heard, not to a queue that moved.
+	voiceMu       sync.Mutex
+	voiceListed   []string
+	voiceListedAt time.Time
 }
 
 // NewSysadminHub creates the long-lived sysadmin state rooted at dir.

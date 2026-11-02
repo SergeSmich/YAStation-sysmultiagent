@@ -239,6 +239,9 @@ h3 { margin: 20px 0 6px; font-size: 15px; font-weight: 700; }
 .card-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
 
 .settings-list { display: grid; gap: 10px; }
+.sysadmin-fold { margin: 10px 0; }
+.sysadmin-fold > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.sysadmin-scroll { max-height: 420px; overflow-y: auto; }
 .settings-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

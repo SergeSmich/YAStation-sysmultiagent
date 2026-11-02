@@ -156,6 +156,50 @@ func TestOnFinishFires(t *testing.T) {
 	}
 }
 
+func TestParseVoiceTarget(t *testing.T) {
+	cases := []struct {
+		in   string
+		want VoiceTarget
+	}{
+		{"да", VoiceTarget{}},
+		{"разрешить все", VoiceTarget{All: true}},
+		{"Отклони всё", VoiceTarget{}},
+		{"да, всё", VoiceTarget{}},
+		{"хорошо, последний раз", VoiceTarget{}},
+		{"в пятницу", VoiceTarget{}},
+		{"четвёртую", VoiceTarget{Index: 4}},
+		{"да, оба", VoiceTarget{All: true}},
+		{"всегда", VoiceTarget{}},
+		{"разрешить первую", VoiceTarget{Index: 1}},
+		{"вторую отклони", VoiceTarget{Index: 2}},
+		{"последнюю", VoiceTarget{Index: -1}},
+		{"все первую", VoiceTarget{All: true, Index: 1, Bad: true}},
+		{"первую и вторую", VoiceTarget{Index: 2, Bad: true}},
+	}
+	for _, c := range cases {
+		if got := ParseVoiceTarget(c.in); got != c.want {
+			t.Errorf("%q: got %+v want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestHasVoiceVerb(t *testing.T) {
+	for in, want := range map[string]bool{
+		"разрешить все": true, "отклони все": true, "да все": false, "ок, всё": false, "хорошо": false,
+		"какое разрешение": true, // checked together with weakOnce, which does not accept the noun
+	} {
+		if got := HasVoiceVerb(in); got != want {
+			t.Errorf("%q: %v", in, got)
+		}
+	}
+	if _, ok := ParseVoiceDecision("какое разрешение у монитора"); ok {
+		t.Error("a noun must not be an answer")
+	}
+	if _, ok := ParseVoiceDecision("нужно подтверждение"); ok {
+		t.Error("a noun must not be an answer")
+	}
+}
+
 func TestParseVoiceDecision(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -163,6 +207,12 @@ func TestParseVoiceDecision(t *testing.T) {
 		ok   bool
 	}{
 		{"Да", ScopeOnce, true},
+		{"разрешить", ScopeOnce, true},
+		{"разреши все", ScopeOnce, true},
+		{"подтвердить", ScopeOnce, true},
+		{"не разрешать", ScopeDeny, true},
+		{"не выполняй", ScopeDeny, true},
+		{"отклонить все", ScopeDeny, true},
 		{"только сейчас", ScopeOnce, true},
 		{"Разрешаю, один раз.", ScopeOnce, true},
 		{"в этой сессии", ScopeSession, true},
