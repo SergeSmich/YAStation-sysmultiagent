@@ -64,6 +64,7 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore) (map[
 		stored = file.Providers
 	}
 	agents := make(map[string]*bridge.Agent, len(cfg.Agents))
+	hub := &peerHub{}
 	for _, a := range cfg.Agents {
 		target, err := cfg.resolveLLM(a)
 		if err != nil {
@@ -82,13 +83,21 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore) (map[
 			ChatParameters: chatParameters,
 		}
 		var answerer bridge.Completer = client
+		var toolset assistant.Toolset
 		if a.AssistantTools {
 			if tools == nil {
 				return nil, fmt.Errorf("agent %q needs assistant_tools.enabled", a.Name)
 			}
-			answerer = &assistant.Agent{Client: client, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+			toolset = tools
 		}
-		agents[a.Name] = &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: a.SystemPrompt}
+		if a.Peers {
+			toolset = &peerToolset{base: toolset, self: a.Name, hub: hub}
+		}
+		if toolset != nil {
+			answerer = &assistant.Agent{Client: client, Tools: toolset, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+		}
+		agents[a.Name] = &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: a.SystemPrompt, Description: a.Description, Peers: a.Peers}
 	}
+	hub.agents.Store(&agents)
 	return agents, nil
 }

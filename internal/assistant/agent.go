@@ -205,5 +205,12 @@ func (a *Agent) allowedAfterHistory(name string) bool {
 	if policy, ok := a.Tools.(interface{ AllowedAfterHistory(string) bool }); ok {
 		return policy.AllowedAfterHistory(name)
 	}
+	return DefaultAllowedAfterHistory(name)
+}
+
+// DefaultAllowedAfterHistory is the rule for toolsets without their own policy:
+// after private history was read in an answer, tools that reach the network or
+// change the station stay blocked. A toolset that wraps another one reuses it.
+func DefaultAllowedAfterHistory(name string) bool {
 	return name != "check_quasar_bridge_update" && name != "install_quasar_bridge_update" && name != "read_webpage" && name != "play_sound" && name != "play_music" && !strings.HasPrefix(name, "mcp__")
 }

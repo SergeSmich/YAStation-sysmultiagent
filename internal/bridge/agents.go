@@ -24,6 +24,10 @@ type Agent struct {
 	Name     string
 	Answerer Completer
 	Prompt   string
+	// Description is shown to the other roles; Peers tells the roster that this
+	// role may call them.
+	Description string
+	Peers       bool
 }
 
 // ValidAgentName keeps route strings, VoiceConfig keys and journal entries
@@ -78,6 +82,9 @@ func (e *Engine) SetAgents(agents map[string]*Agent) error {
 		if len([]rune(agent.Prompt)) > MaxAgentPromptRunes {
 			return fmt.Errorf("agent %q prompt is too long", name)
 		}
+		if !ValidAgentDescription(agent.Description) {
+			return fmt.Errorf("agent %q description is too long", name)
+		}
 	}
 	if len(agents) == 0 {
 		agents = nil
@@ -119,7 +126,27 @@ func (e *Engine) answerAs(ctx context.Context, route, text, name string) (Resolu
 	if !ok {
 		return Resolution{Route: route}, fmt.Errorf("agent %q is not configured", name)
 	}
-	return e.answer(ctx, route, text, agent.Answerer, agent.Prompt)
+	prompt := agent.Prompt
+	if roster := e.roster(agent); roster != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = defaultAnswerPrompt
+		}
+		prompt += "\n" + roster
+	}
+	var slot *handoffSlot
+	if agent.Peers {
+		ctx, slot = withHandoff(ctx)
+	}
+	res, err := e.answer(ctx, route, text, agent.Answerer, prompt)
+	if err == nil && slot != nil {
+		if target := slot.get(); target != "" && target != name {
+			// The registry may have been reloaded during the turn.
+			if _, exists := e.Agent(target); exists {
+				res.Handoff = AgentRoute(target)
+			}
+		}
+	}
+	return res, err
 }
 
 var errNoAnswerer = errors.New("LLM is not configured")

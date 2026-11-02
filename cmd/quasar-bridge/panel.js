@@ -916,6 +916,17 @@ function renderAgents(force) {
     prompt.rows = 5;
     row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
 
+    const description = settingsControl('input', 'description', agent.description, 'чем занимается — это читают другие роли');
+    description.type = 'text';
+    description.maxLength = 300;
+    description.autocomplete = 'off';
+    row.appendChild(settingsField('Описание для других ролей', description, 'wide'));
+
+    const peers = settingsControl('input', 'peers', '');
+    peers.type = 'checkbox';
+    peers.checked = Boolean(agent.peers);
+    row.appendChild(settingsField('Может спрашивать другие роли и передавать им разговор', peers));
+
     const remove = el('button', 'ghost danger', 'Удалить роль');
     remove.type = 'button';
     remove.dataset.remove = 'agent';
@@ -1613,7 +1624,7 @@ function editSettingsField(event) {
   } else if (row.dataset.kind === 'agent') {
     const agent = agentsState[index];
     if (!agent) return;
-    agent[control.dataset.field] = control.value;
+    agent[control.dataset.field] = control.type === 'checkbox' ? control.checked : control.value;
     if (control.dataset.field === 'provider') {
       updateAgentRow(row, agent);
     }
@@ -2045,7 +2056,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderWakeWords(true);
   });
   document.getElementById('add-agent').addEventListener('click', () => {
-    agentsState.push({ name: '', system_prompt: '', voice: '', model: '' });
+    agentsState.push({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false });
     renderAgents(true);
   });
   // Routing lives inside the same form, but keeps its own state and controls:

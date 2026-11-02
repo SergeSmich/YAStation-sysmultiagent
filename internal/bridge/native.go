@@ -34,6 +34,9 @@ import (
 type Resolution struct {
 	Route  string
 	Answer string
+	// Handoff is the role route that keeps the conversation after this answer;
+	// empty means the answering route keeps it.
+	Handoff string
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -981,7 +984,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			// until the person falls silent or ends the conversation. The hold
 			// is armed before the answer goes out, so the next window can never
 			// race it.
-			n.holdRole(p.ctx, result.Route)
+			held := result.Route
+			if result.Handoff != "" {
+				held = result.Handoff
+			}
+			n.holdRole(p.ctx, held)
 		}
 		if err := n.reply(p, result.Answer); err != nil {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))

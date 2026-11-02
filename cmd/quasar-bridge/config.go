@@ -50,6 +50,10 @@ type agentConfig struct {
 	SystemPrompt    string   `json:"system_prompt"`
 	Voice           string   `json:"voice"`
 	AssistantTools  bool     `json:"assistant_tools"`
+	// Description is the short line the other roles read about this one; Peers
+	// lets the role consult colleagues and hand the conversation over.
+	Description string `json:"description"`
+	Peers       bool   `json:"peers"`
 }
 
 // llmProviderConfig declares one model endpoint a role may use: a cloud API or
@@ -559,6 +563,9 @@ func (c *config) validateAgents() error {
 		}
 		if utf8.RuneCountInString(a.SystemPrompt) > bridge.MaxAgentPromptRunes {
 			return errors.New("agents[].system_prompt is too long")
+		}
+		if !bridge.ValidAgentDescription(a.Description) {
+			return errors.New("agents[].description is too long")
 		}
 		if a.AssistantTools && !c.AssistantTools.Enabled {
 			return errors.New("agents[].assistant_tools requires assistant_tools.enabled")
