@@ -43,7 +43,7 @@ func TestSetAgentsValidatesRegistry(t *testing.T) {
 	if err := e.SetAgents(map[string]*Agent{"briefing": nil}); err == nil {
 		t.Fatal("nil agent accepted")
 	}
-	long := strings.Repeat("я", MaxAgentPromptRunes+1)
+	long := strings.Repeat("я", MaxAgentPromptRunes+2001)
 	if err := e.SetAgents(map[string]*Agent{"briefing": {Name: "briefing", Answerer: answerer, Prompt: long}}); err == nil {
 		t.Fatal("oversized prompt accepted")
 	}

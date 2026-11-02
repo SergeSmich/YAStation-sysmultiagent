@@ -927,6 +927,11 @@ function renderAgents(force) {
     peers.checked = Boolean(agent.peers);
     row.appendChild(settingsField('Может спрашивать другие роли и передавать им разговор', peers));
 
+    const sysadmin = settingsControl('input', 'sysadmin', '');
+    sysadmin.type = 'checkbox';
+    sysadmin.checked = Boolean(agent.sysadmin);
+    row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin));
+
     const remove = el('button', 'ghost danger', 'Удалить роль');
     remove.type = 'button';
     remove.dataset.remove = 'agent';
@@ -2056,7 +2061,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderWakeWords(true);
   });
   document.getElementById('add-agent').addEventListener('click', () => {
-    agentsState.push({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false });
+    agentsState.push({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false, sysadmin: false });
     renderAgents(true);
   });
   // Routing lives inside the same form, but keeps its own state and controls:
@@ -2096,3 +2101,338 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('stamp').textContent = 'нет связи';
     });
 });
+
+// ---- Sysadmin tab. Everything that comes from a host or a model goes in via
+// textContent / .value only. The queue refreshes every 3 s while the tab is
+// visible; forms are redrawn only on open and after a save, so typing is safe.
+const SYSADMIN_URL = '/api/panel/sysadmin/';
+let sysadminState = null;
+
+function sysadminVisible() {
+  const section = document.getElementById('section-sysadmin');
+  return Boolean(section) && !section.classList.contains('is-hidden') && !document.hidden;
+}
+
+function sysadminSay(id, text, isError) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.textContent = text || '';
+  node.classList.toggle('error', Boolean(isError));
+}
+
+function sysadminLeft(expires) {
+  const sec = Math.max(0, Math.round((new Date(expires).getTime() - Date.now()) / 1000));
+  return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+
+function sysadminItemCard(item, pending) {
+  const card = el('div', 'settings-card');
+  const head = el('strong', '', (item.host || '—') + ' · ' + item.tool);
+  card.appendChild(head);
+  card.appendChild(el('div', '', item.summary));
+  const meta = pending
+    ? 'источник: ' + item.origin + ' · осталось ' + sysadminLeft(item.expires)
+    : 'источник: ' + item.origin + ' · ' + item.status;
+  card.appendChild(el('div', 'muted small', meta));
+  if (!pending && (item.result || item.error)) {
+    const out = el('pre', 'update-command', item.error ? 'ошибка: ' + item.error : item.result);
+    card.appendChild(out);
+  }
+  if (pending) {
+    const actions = el('div', 'actions');
+    const allow = el('button', '', 'Разрешить');
+    const deny = el('button', 'ghost', 'Отклонить');
+    allow.type = 'button';
+    deny.type = 'button';
+    const decide = async (ok) => {
+      allow.disabled = true;
+      deny.disabled = true;
+      try {
+        await postJSON(SYSADMIN_URL + 'approve', { id: item.id, allow: ok });
+      } catch (error) {
+        sysadminSay('sysadmin-error', error.message, true);
+      }
+      refreshSysadmin(false);
+    };
+    allow.addEventListener('click', () => decide(true));
+    deny.addEventListener('click', () => decide(false));
+    actions.append(allow, deny);
+    card.appendChild(actions);
+  }
+  return card;
+}
+
+function renderSysadminQueue(state) {
+  const queue = document.getElementById('sysadmin-queue');
+  const recent = document.getElementById('sysadmin-recent');
+  if (!queue || !recent) return;
+  const pending = Array.isArray(state.queue) ? state.queue : [];
+  queue.replaceChildren();
+  if (!pending.length) queue.appendChild(el('p', 'muted small', 'Ничего не ждёт.'));
+  for (const item of pending) queue.appendChild(sysadminItemCard(item, true));
+  recent.replaceChildren();
+  const done = Array.isArray(state.recent) ? state.recent : [];
+  if (!done.length) recent.appendChild(el('p', 'muted small', 'Пока пусто.'));
+  for (const item of done) recent.appendChild(sysadminItemCard(item, false));
+  const err = document.getElementById('sysadmin-error');
+  if (err) {
+    err.hidden = !state.error;
+    err.textContent = state.error ? 'Ошибка настроек: ' + state.error : '';
+  }
+}
+
+function fillSysadminHostForm(host) {
+  const h = host || { name: '', addr: '', port: '', user: '', key_path: '', mac: '', has_password: false };
+  document.getElementById('sa-host-name').value = h.name;
+  document.getElementById('sa-host-addr').value = h.addr;
+  document.getElementById('sa-host-port').value = h.port || '';
+  document.getElementById('sa-host-user').value = h.user;
+  document.getElementById('sa-host-pass').value = '';
+  document.getElementById('sa-host-clear').checked = false;
+  document.getElementById('sa-host-key').value = h.key_path || '';
+  document.getElementById('sa-host-mac').value = h.mac || '';
+  document.getElementById('sa-host-pass-note').textContent = h.has_password ? 'пароль сохранён; пусто — не менять' : '';
+}
+
+function renderSysadminHosts(state) {
+  const list = document.getElementById('sysadmin-hosts');
+  list.replaceChildren();
+  const hosts = Array.isArray(state.hosts) ? state.hosts : [];
+  if (!hosts.length) list.appendChild(el('p', 'muted small', 'Хостов нет.'));
+  for (const host of hosts) {
+    const row = el('div', 'settings-card');
+    const title = host.name + ' — ' + host.user + '@' + host.addr + ':' + host.port;
+    row.appendChild(el('strong', '', title));
+    row.appendChild(el('div', 'muted small', (host.has_password ? 'пароль сохранён' : 'без пароля') +
+      (host.key_path ? ' · ключ ' + host.key_path : '') + (host.mac ? ' · MAC ' + host.mac : '')));
+    const actions = el('div', 'actions');
+    const edit = el('button', 'ghost', 'Изменить');
+    const del = el('button', 'ghost', 'Удалить');
+    edit.type = 'button';
+    del.type = 'button';
+    edit.addEventListener('click', () => fillSysadminHostForm(host));
+    del.addEventListener('click', async () => {
+      if (!window.confirm('Удалить хост ' + host.name + '?')) return;
+      try {
+        await postJSON(SYSADMIN_URL + 'host/delete', { name: host.name });
+        sysadminSay('sa-host-status', 'удалён', false);
+      } catch (error) {
+        sysadminSay('sa-host-status', error.message, true);
+      }
+      refreshSysadmin(true);
+    });
+    actions.append(edit, del);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+function sysadminRuleRow(rule) {
+  const row = el('div', 'actions');
+  row.dataset.kind = 'sa-rule';
+  const tool = el('input');
+  tool.type = 'text';
+  tool.placeholder = 'инструмент (sysadmin_exec)';
+  tool.value = rule.tool || '';
+  tool.dataset.field = 'tool';
+  const match = el('input');
+  match.type = 'text';
+  match.placeholder = 'подстрока (например apt)';
+  match.value = rule.match || '';
+  match.dataset.field = 'match';
+  const mode = el('select');
+  for (const m of ['allow', 'ask', 'deny']) mode.appendChild(option(m, m));
+  mode.value = rule.mode || 'ask';
+  mode.dataset.field = 'mode';
+  const del = el('button', 'ghost', '×');
+  del.type = 'button';
+  del.addEventListener('click', () => row.remove());
+  row.append(tool, match, mode, del);
+  return row;
+}
+
+function renderSysadminTelegram(state) {
+  const tg = state.telegram || { enabled: false, users: [], agent: '', has_token: false };
+  document.getElementById('sa-tg-enabled').checked = Boolean(tg.enabled);
+  document.getElementById('sa-tg-users').value = (tg.users || []).join(', ');
+  document.getElementById('sa-tg-agent').value = tg.agent || '';
+  document.getElementById('sa-tg-token').value = '';
+  document.getElementById('sa-tg-clear').checked = false;
+  document.getElementById('sa-tg-token-note').textContent = tg.has_token ? 'токен сохранён; пусто — не менять' : 'токен не задан';
+}
+
+function renderSysadminPolicy(state) {
+  const policy = state.policy || { default: 'ask', rules: [] };
+  document.getElementById('sa-policy-default').value = policy.default || 'ask';
+  const list = document.getElementById('sysadmin-rules');
+  list.replaceChildren();
+  for (const rule of policy.rules || []) list.appendChild(sysadminRuleRow(rule));
+}
+
+function renderSysadminMemory(state) {
+  const pp = document.getElementById('sysadmin-passport');
+  pp.replaceChildren();
+  const passport = state.passport || {};
+  for (const section of Object.keys(passport).sort()) pp.appendChild(sysadminPassportRow(section, passport[section]));
+  const facts = document.getElementById('sysadmin-facts');
+  facts.replaceChildren();
+  const list = Array.isArray(state.facts) ? state.facts : [];
+  if (!list.length) facts.appendChild(el('p', 'muted small', 'Фактов нет.'));
+  for (const fact of list) {
+    const row = el('div', 'settings-card');
+    row.appendChild(el('strong', '', fact.topic));
+    row.appendChild(el('div', '', fact.text));
+    row.appendChild(el('div', 'muted small', new Date(fact.time).toLocaleString()));
+    const forget = el('button', 'ghost', 'Забыть');
+    forget.type = 'button';
+    forget.addEventListener('click', async () => {
+      try {
+        await postJSON(SYSADMIN_URL + 'memory/forget', { id: fact.id });
+      } catch (error) {
+        sysadminSay('sysadmin-error', error.message, true);
+      }
+      refreshSysadmin(true);
+    });
+    row.appendChild(forget);
+    facts.appendChild(row);
+  }
+}
+
+function sysadminPassportRow(section, text) {
+  const row = el('div', 'settings-card');
+  row.appendChild(el('strong', '', section));
+  const area = el('textarea');
+  area.rows = 4;
+  area.maxLength = 4000;
+  area.spellcheck = false;
+  area.value = text || '';
+  const save = el('button', '', 'Сохранить раздел');
+  save.type = 'button';
+  save.dataset.sysadminSave = 'passport';
+  const status = el('span', 'muted small');
+  save.addEventListener('click', async () => {
+    try {
+      await postJSON(SYSADMIN_URL + 'passport', { section, text: area.value });
+      status.textContent = 'сохранено';
+      status.classList.remove('error');
+    } catch (error) {
+      status.textContent = error.message;
+      status.classList.add('error');
+    }
+  });
+  const actions = el('div', 'actions');
+  actions.append(save, status);
+  row.append(area, actions);
+  return row;
+}
+
+async function refreshSysadmin(full) {
+  try {
+    const state = await getJSON(SYSADMIN_URL + 'state');
+    sysadminState = state;
+    renderSysadminQueue(state);
+    if (full) {
+      renderSysadminHosts(state);
+      renderSysadminPolicy(state);
+      renderSysadminMemory(state);
+      renderSysadminTelegram(state);
+    }
+  } catch (error) {
+    sysadminSay('sysadmin-error', error.message, true);
+    const err = document.getElementById('sysadmin-error');
+    if (err) err.hidden = false;
+  }
+}
+
+function initSysadmin() {
+  if (!document.getElementById('section-sysadmin')) return;
+  fillSysadminHostForm(null);
+  document.getElementById('sa-host-save').addEventListener('click', async () => {
+    const portText = document.getElementById('sa-host-port').value.trim();
+    const body = {
+      name: document.getElementById('sa-host-name').value.trim(),
+      addr: document.getElementById('sa-host-addr').value.trim(),
+      port: portText ? Number(portText) : 0,
+      user: document.getElementById('sa-host-user').value.trim(),
+      key_path: document.getElementById('sa-host-key').value.trim(),
+      mac: document.getElementById('sa-host-mac').value.trim(),
+      password: document.getElementById('sa-host-pass').value,
+      clear_password: document.getElementById('sa-host-clear').checked
+    };
+    try {
+      await postJSON(SYSADMIN_URL + 'host', body);
+      sysadminSay('sa-host-status', 'сохранено', false);
+      fillSysadminHostForm(null);
+      refreshSysadmin(true);
+    } catch (error) {
+      sysadminSay('sa-host-status', error.message, true);
+    }
+  });
+  document.getElementById('sa-tg-save').addEventListener('click', async () => {
+    const raw = document.getElementById('sa-tg-users').value.split(/[\s,;]+/).filter(Boolean);
+    const users = raw.map(Number);
+    if (users.some((n) => !Number.isSafeInteger(n) || n <= 0)) {
+      sysadminSay('sa-tg-status', 'user_id — положительные числа через запятую', true);
+      return;
+    }
+    const body = {
+      enabled: document.getElementById('sa-tg-enabled').checked,
+      users,
+      agent: document.getElementById('sa-tg-agent').value.trim(),
+      token: document.getElementById('sa-tg-token').value.trim(),
+      clear_token: document.getElementById('sa-tg-clear').checked
+    };
+    try {
+      await postJSON(SYSADMIN_URL + 'telegram', body);
+      sysadminSay('sa-tg-status', 'сохранено, бот перезапущен', false);
+      refreshSysadmin(true);
+    } catch (error) {
+      sysadminSay('sa-tg-status', error.message, true);
+    }
+  });
+  document.getElementById('sa-rule-add').addEventListener('click', () => {
+    document.getElementById('sysadmin-rules').appendChild(sysadminRuleRow({ tool: '', match: '', mode: 'ask' }));
+  });
+  document.getElementById('sa-policy-save').addEventListener('click', async () => {
+    const rules = [];
+    for (const row of document.querySelectorAll('#sysadmin-rules [data-kind="sa-rule"]')) {
+      rules.push({
+        tool: row.querySelector('[data-field="tool"]').value.trim(),
+        match: row.querySelector('[data-field="match"]').value.trim(),
+        mode: row.querySelector('[data-field="mode"]').value
+      });
+    }
+    try {
+      await postJSON(SYSADMIN_URL + 'policy', { default: document.getElementById('sa-policy-default').value, rules });
+      sysadminSay('sa-policy-status', 'сохранено', false);
+    } catch (error) {
+      sysadminSay('sa-policy-status', error.message, true);
+    }
+  });
+  document.getElementById('sa-pp-add').addEventListener('click', async () => {
+    const input = document.getElementById('sa-pp-section');
+    const section = input.value.trim();
+    if (!section) return;
+    try {
+      await postJSON(SYSADMIN_URL + 'passport', { section, text: '—' });
+      input.value = '';
+      sysadminSay('sa-pp-status', '', false);
+      refreshSysadmin(true);
+    } catch (error) {
+      sysadminSay('sa-pp-status', error.message, true);
+    }
+  });
+  let wasVisible = false;
+  setInterval(() => {
+    const visible = sysadminVisible();
+    if (visible) refreshSysadmin(!wasVisible);
+    wasVisible = visible;
+  }, 3000);
+  document.querySelectorAll('#tabs [data-tab="sysadmin"]').forEach((button) => {
+    button.addEventListener('click', () => { wasVisible = true; refreshSysadmin(true); });
+  });
+  if (sysadminVisible()) { wasVisible = true; refreshSysadmin(true); }
+}
+
+document.addEventListener('DOMContentLoaded', initSysadmin);
+

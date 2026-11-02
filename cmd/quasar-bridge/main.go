@@ -256,8 +256,9 @@ func main() {
 		slog.Error("routing rejected", "error", err)
 		os.Exit(1)
 	}
+	sysHub := NewSysadminHub(filepath.Dir(*path), nil)
 	applyAgents := func(next config) error {
-		built, err := buildAgents(next, tools, secrets)
+		built, err := buildAgents(next, tools, secrets, sysHub)
 		if err != nil {
 			return err
 		}
@@ -270,6 +271,8 @@ func main() {
 	// A role list is logged even when empty: operators need to see that the
 	// section was read and that no role is answering.
 	slog.Info("agents_ready", "agents", engine.AgentNames(), "providers", providerNames(cfg))
+	tgRunner := newTelegramRunner(sysHub, engine, "https://api.telegram.org")
+	sysHub.OnTelegramChange(tgRunner.Reload)
 	wake := new(wakeState)
 	applyWake := func(next config) error {
 		wake.set(next.WakeWords)
@@ -518,10 +521,14 @@ func main() {
 			Metrics:    metrics,
 			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig, Secrets: secrets},
 			Decide:     engine.Decide,
+			SysHub:     sysHub,
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
 			os.Exit(1)
+		}
+		if sysHub != nil && panel != nil {
+			sysHub.SetAuditor(panelAuditAuditor{a: panel.audit})
 		}
 		panelHTTP = &http.Server{Addr: cfg.Panel.Listen, Handler: panel, ReadHeaderTimeout: 10 * time.Second}
 		// The wake-word training page is served on its own listener with the
@@ -530,6 +537,7 @@ func main() {
 			wakeHTTP = &http.Server{Addr: cfg.Panel.WakeProxyListen, Handler: wakePage, ReadHeaderTimeout: 10 * time.Second}
 		}
 	}
+	tgRunner.Reload()
 	go poller.run(ctx)
 	if metrics != nil {
 		go metrics.start(ctx)
@@ -568,6 +576,7 @@ func main() {
 		if wakeHTTP != nil {
 			_ = wakeHTTP.Shutdown(shutdownCtx)
 		}
+		tgRunner.Stop()
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	if wakeHTTP != nil {

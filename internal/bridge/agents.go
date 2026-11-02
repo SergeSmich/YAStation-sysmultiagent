@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"quasarbridge/internal/llm"
 )
 
 // AgentRoutePrefix marks a routing target that a named agent answers with its
@@ -28,6 +30,9 @@ type Agent struct {
 	// role may call them.
 	Description string
 	Peers       bool
+	// Sysadmin marks a role that carries the sysadmin toolset; text channels
+	// (Telegram) refuse to talk to a role without it.
+	Sysadmin bool
 }
 
 // ValidAgentName keeps route strings, VoiceConfig keys and journal entries
@@ -79,7 +84,9 @@ func (e *Engine) SetAgents(agents map[string]*Agent) error {
 		if agent == nil || agent.Answerer == nil {
 			return fmt.Errorf("agent %q has no model client", name)
 		}
-		if len([]rune(agent.Prompt)) > MaxAgentPromptRunes {
+		// The built prompt may carry a bridge-added block (sysadmin rules) on top
+		// of the operator's text, which config validation limits separately.
+		if len([]rune(agent.Prompt)) > MaxAgentPromptRunes+2000 {
 			return fmt.Errorf("agent %q prompt is too long", name)
 		}
 		if !ValidAgentDescription(agent.Description) {
@@ -147,6 +154,38 @@ func (e *Engine) answerAs(ctx context.Context, route, text, name string) (Resolu
 		}
 	}
 	return res, err
+}
+
+// textChatTail replaces the speakable-answer constraint for a text channel.
+const textChatTail = "\nОтвет уйдёт текстом в чат (не вслух): можно короткие списки и команды, без лишних вступлений."
+
+// AskAgent runs one turn of a named role over a text channel (Telegram). It
+// deliberately does not touch the voice dialogue store: a chat message must
+// neither inherit the room's conversation nor cancel a spoken turn in flight.
+// The caller keeps its own history and passes it in.
+func (e *Engine) AskAgent(ctx context.Context, name, text string, history []llm.Message) (string, error) {
+	agent, ok := e.Agent(name)
+	if !ok {
+		return "", fmt.Errorf("agent %q is not configured", name)
+	}
+	if agent.Answerer == nil {
+		return "", errNoAnswerer
+	}
+	prompt := agent.Prompt
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "Ты помощник пользователя. Отвечай по-русски кратко и по существу."
+	}
+	if roster := e.roster(agent); roster != "" {
+		prompt += "\n" + roster
+	}
+	messages := []llm.Message{{Role: "system", Content: prompt + textChatTail}}
+	messages = append(messages, history...)
+	messages = append(messages, llm.Message{Role: "user", Content: text})
+	answer, err := agent.Answerer.Complete(ctx, messages, false)
+	if err != nil {
+		return "", err
+	}
+	return stripAnswerLabel(answer), nil
 }
 
 var errNoAnswerer = errors.New("LLM is not configured")

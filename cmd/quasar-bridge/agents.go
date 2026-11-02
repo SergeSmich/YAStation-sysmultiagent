@@ -48,7 +48,7 @@ func providerNames(cfg config) []string {
 // a reload replaces the whole registry instead of mutating a shared client. The
 // endpoint comes from the provider the role names, from the role's own fields
 // or from the top-level llm_* values, in that order.
-func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore) (map[string]*bridge.Agent, error) {
+func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHub *sysadminHub) (map[string]*bridge.Agent, error) {
 	if len(cfg.Agents) == 0 {
 		return nil, nil
 	}
@@ -90,13 +90,21 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore) (map[
 			}
 			toolset = tools
 		}
+		prompt := a.SystemPrompt
+		if a.Sysadmin {
+			if sysHub == nil {
+				return nil, fmt.Errorf("agent %q: sysadmin is unavailable", a.Name)
+			}
+			toolset = &sysadminToolset{base: toolset, self: a.Name, hub: sysHub}
+			prompt += sysadminPrompt
+		}
 		if a.Peers {
 			toolset = &peerToolset{base: toolset, self: a.Name, hub: hub}
 		}
 		if toolset != nil {
 			answerer = &assistant.Agent{Client: client, Tools: toolset, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 		}
-		agents[a.Name] = &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: a.SystemPrompt, Description: a.Description, Peers: a.Peers}
+		agents[a.Name] = &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: prompt, Description: a.Description, Peers: a.Peers, Sysadmin: a.Sysadmin}
 	}
 	hub.agents.Store(&agents)
 	return agents, nil

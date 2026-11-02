@@ -24,7 +24,8 @@
       <button type="button" data-tab="llm" aria-pressed="false">Нейросеть</button>
       <button type="button" data-tab="voice" aria-pressed="false">Голос</button>
       <button type="button" data-tab="station" aria-pressed="false">Станция</button>
-      <button type="button" data-tab="journal" aria-pressed="false">Журнал</button>
+      <button type="button" data-tab="sysadmin" aria-pressed="false">Сисадмин</button>
+<button type="button" data-tab="journal" aria-pressed="false">Журнал</button>
     </nav>
 
     <main>
@@ -208,6 +209,70 @@
         </div>
         <p class="muted small">Команда запуска на машине с исходниками:</p>
         <pre id="update-command" class="update-command">—</pre>
+      </section>
+
+      <section id="section-sysadmin" data-group="sysadmin">
+        <h2>Сисадмин</h2>
+        <p id="sysadmin-error" class="muted small error" hidden></p>
+        <h3>Ожидают подтверждения</h3>
+        <p class="muted small">Опасные действия агента ждут вашего «Разрешить». Без ответа запрос истекает через пару минут.</p>
+        <div id="sysadmin-queue" class="settings-list"></div>
+        <h4>Недавние</h4>
+        <div id="sysadmin-recent" class="settings-list"></div>
+
+        <h3>Хосты</h3>
+        <p class="muted small">Пароль хранится отдельно, в sysadmin_secrets.json (0600), и в панель не возвращается.</p>
+        <div id="sysadmin-hosts" class="settings-list"></div>
+        <div class="settings-card" id="sysadmin-host-form">
+          <div class="field"><label for="sa-host-name">Имя</label><input id="sa-host-name" type="text" autocomplete="off" spellcheck="false" placeholder="pi"></div>
+          <div class="field"><label for="sa-host-addr">Адрес</label><input id="sa-host-addr" type="text" autocomplete="off" spellcheck="false" placeholder="192.168.1.114"></div>
+          <div class="field narrow"><label for="sa-host-port">Порт</label><input id="sa-host-port" type="number" min="1" max="65535" placeholder="22"></div>
+          <div class="field"><label for="sa-host-user">Пользователь</label><input id="sa-host-user" type="text" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="sa-host-pass">Пароль</label><input id="sa-host-pass" type="password" autocomplete="new-password"><span id="sa-host-pass-note" class="muted small"></span></div>
+          <label class="check"><input type="checkbox" id="sa-host-clear"> очистить сохранённый пароль</label>
+          <div class="field"><label for="sa-host-key">Путь к ключу</label><input id="sa-host-key" type="text" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="sa-host-mac">MAC (для включения по сети)</label><input id="sa-host-mac" type="text" autocomplete="off" spellcheck="false" placeholder="aa:bb:cc:dd:ee:ff"></div>
+          <div class="actions">
+            <button type="button" id="sa-host-save" data-sysadmin-save="host">Сохранить хост</button>
+            <span id="sa-host-status" class="muted small"></span>
+          </div>
+        </div>
+
+        <h3>Telegram</h3>
+        <p class="muted small">Бот пишет вам вне дома: отвечает ролью-сисадмином и присылает запросы подтверждения с кнопками. Отвечает только указанным user_id. Токен выдаёт @BotFather; он хранится отдельно (sysadmin_secrets.json, 0600) и в панель не возвращается.</p>
+        <div class="settings-card" id="sysadmin-telegram-form">
+          <label class="check"><input type="checkbox" id="sa-tg-enabled"> включён</label>
+          <div class="field"><label for="sa-tg-users">Разрешённые user_id (через запятую)</label><input id="sa-tg-users" type="text" autocomplete="off" spellcheck="false" placeholder="123456789"></div>
+          <div class="field"><label for="sa-tg-agent">Роль (с флагом «Сисадмин»)</label><input id="sa-tg-agent" type="text" autocomplete="off" spellcheck="false" placeholder="сисадмин"></div>
+          <div class="field"><label for="sa-tg-token">Токен бота</label><input id="sa-tg-token" type="password" autocomplete="new-password"><span id="sa-tg-token-note" class="muted small"></span></div>
+          <label class="check"><input type="checkbox" id="sa-tg-clear"> очистить сохранённый токен</label>
+          <div class="actions">
+            <button type="button" id="sa-tg-save" data-sysadmin-save="telegram">Сохранить Telegram</button>
+            <span id="sa-tg-status" class="muted small"></span>
+          </div>
+        </div>
+
+        <h3>Политика разрешений</h3>
+        <p class="muted small">Опасное по классификации (reboot, rm -rf, защищённые службы) запрещено всегда, правила это не отменяют.</p>
+        <div class="field narrow"><label for="sa-policy-default">По умолчанию</label>
+          <select id="sa-policy-default"><option value="allow">allow — разрешать</option><option value="ask">ask — спрашивать</option><option value="deny">deny — запрещать</option></select>
+        </div>
+        <div id="sysadmin-rules" class="settings-list"></div>
+        <div class="actions">
+          <button type="button" id="sa-rule-add" class="ghost">+ правило</button>
+          <button type="button" id="sa-policy-save" data-sysadmin-save="policy">Сохранить политику</button>
+          <span id="sa-policy-status" class="muted small"></span>
+        </div>
+
+        <h3>Память</h3>
+        <div id="sysadmin-passport" class="settings-list"></div>
+        <div class="actions">
+          <input id="sa-pp-section" type="text" maxlength="64" placeholder="раздел (pi, windows, network…)" autocomplete="off">
+          <button type="button" id="sa-pp-add" class="ghost">+ раздел</button>
+          <span id="sa-pp-status" class="muted small"></span>
+        </div>
+        <h4>Факты</h4>
+        <div id="sysadmin-facts" class="settings-list"></div>
       </section>
 
       <section id="section-voice" data-group="voice">

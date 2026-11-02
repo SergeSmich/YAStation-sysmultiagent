@@ -89,7 +89,7 @@ func TestBuildAgentsUsesOwnClientAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents, err := buildAgents(cfg, nil, nil)
+	agents, err := buildAgents(cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestBuildAgentsUsesOwnClientAndKey(t *testing.T) {
 	if _, ok := client.ChatParameters["temperature"]; !ok {
 		t.Fatalf("chat parameters not inherited: %+v", client.ChatParameters)
 	}
-	if agents, err := buildAgents(config{}, nil, nil); err != nil || agents != nil {
+	if agents, err := buildAgents(config{}, nil, nil, nil); err != nil || agents != nil {
 		t.Fatalf("empty registry: %+v %v", agents, err)
 	}
 }
@@ -122,7 +122,7 @@ func TestBuildAgentsWrapsAssistantTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := &assistant.Tools{Config: cfg.AssistantTools}
-	agents, err := buildAgents(cfg, tools, nil)
+	agents, err := buildAgents(cfg, tools, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestBuildAgentsFailsWithoutTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildAgents(cfg, nil, nil); err == nil {
+	if _, err := buildAgents(cfg, nil, nil, nil); err == nil {
 		t.Fatal("role with tools accepted without a tools instance")
 	}
 }
@@ -180,7 +180,7 @@ func TestReloadAgentsIsHotApplied(t *testing.T) {
 	applied := 0
 	apply := func(next config) error {
 		applied++
-		agents, err := buildAgents(next, nil, nil)
+		agents, err := buildAgents(next, nil, nil, nil)
 		if err != nil {
 			return err
 		}

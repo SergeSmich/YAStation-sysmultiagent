@@ -133,6 +133,8 @@ type panelDeps struct {
 	// box uses it, so the operator sees the same decision the next utterance
 	// would get instead of a description of the rules.
 	Decide func(context.Context, string) bridge.RouteDecision
+	// SysHub is the sysadmin hub (hosts, policy, memory, approvals). May be nil.
+	SysHub *sysadminHub
 }
 
 // panelServer is the second listener. It reads the same live state as /healthz
@@ -153,12 +155,13 @@ type panelServer struct {
 	metrics    *panelMetrics
 	settings   settingsDeps
 	decide     func(context.Context, string) bridge.RouteDecision
+	sysHub     *sysadminHub
 	updates    *updateChecker
 	// stationVolume remembers the level the operator set, next to the config.
 	stationVolume stationVolumeStore
-	logPath    string
-	login      *template.Template
-	mux        *http.ServeMux
+	logPath       string
+	login         *template.Template
+	mux           *http.ServeMux
 	// panelPort is the port of the main listener, used to send a session-less
 	// visitor of the training page back to the panel login.
 	panelPort string
@@ -178,24 +181,25 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		return nil, err
 	}
 	p := &panelServer{
-		auth:       deps.Auth,
-		audit:      newPanelAudit(cfg.AuditFile),
-		authPath:   deps.AuthPath,
-		caPath:     deps.CAPath,
-		configPath: deps.ConfigPath,
-		sessions:   newPanelSessions(),
-		limiter:    newPanelLimiter(),
-		snapshot:   deps.Snapshot,
-		voice:      deps.Voice,
-		live:       deps.Live,
-		journal:    deps.Journal,
-		metrics:    deps.Metrics,
-		settings:   deps.Settings,
-		decide:     deps.Decide,
-		updates:    newUpdateChecker(),
-		logPath:    cfg.LogPath,
-		login:      login,
-		panelPort:  portOfListen(cfg.Listen),
+		auth:          deps.Auth,
+		audit:         newPanelAudit(cfg.AuditFile),
+		authPath:      deps.AuthPath,
+		caPath:        deps.CAPath,
+		configPath:    deps.ConfigPath,
+		sessions:      newPanelSessions(),
+		limiter:       newPanelLimiter(),
+		snapshot:      deps.Snapshot,
+		voice:         deps.Voice,
+		live:          deps.Live,
+		journal:       deps.Journal,
+		metrics:       deps.Metrics,
+		settings:      deps.Settings,
+		decide:        deps.Decide,
+		sysHub:        deps.SysHub,
+		updates:       newUpdateChecker(),
+		logPath:       cfg.LogPath,
+		login:         login,
+		panelPort:     portOfListen(cfg.Listen),
 		stationVolume: newStationVolumeStore(deps.ConfigPath),
 	}
 	// A panel built without a metrics collector still serves the endpoint: the
@@ -242,6 +246,14 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("GET /api/panel/backup", p.requireSession(p.apiBackup))
 	mux.HandleFunc("GET /api/panel/station/volume", p.requireSession(p.apiStationVolume))
 	mux.HandleFunc("POST /api/panel/station/volume", p.requireMutation(p.apiStationVolumeUpdate))
+	mux.HandleFunc("GET /api/panel/sysadmin/state", p.requireSession(p.apiSysadminState))
+	mux.HandleFunc("POST /api/panel/sysadmin/approve", p.requireMutation(p.apiSysadminApprove))
+	mux.HandleFunc("POST /api/panel/sysadmin/host", p.requireMutation(p.apiSysadminHost))
+	mux.HandleFunc("POST /api/panel/sysadmin/host/delete", p.requireMutation(p.apiSysadminHostDelete))
+	mux.HandleFunc("POST /api/panel/sysadmin/policy", p.requireMutation(p.apiSysadminPolicy))
+	mux.HandleFunc("POST /api/panel/sysadmin/memory/forget", p.requireMutation(p.apiSysadminMemoryForget))
+	mux.HandleFunc("POST /api/panel/sysadmin/passport", p.requireMutation(p.apiSysadminPassport))
+	mux.HandleFunc("POST /api/panel/sysadmin/telegram", p.requireMutation(p.apiSysadminTelegram))
 	p.mux = mux
 	return p, nil
 }

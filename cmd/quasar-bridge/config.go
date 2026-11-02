@@ -54,6 +54,7 @@ type agentConfig struct {
 	// lets the role consult colleagues and hand the conversation over.
 	Description string `json:"description"`
 	Peers       bool   `json:"peers"`
+	Sysadmin    bool   `json:"sysadmin"`
 }
 
 // llmProviderConfig declares one model endpoint a role may use: a cloud API or
