@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,5 +109,31 @@ func TestChatSupportsToolCallsAndToolResults(t *testing.T) {
 	msg, err = c.Chat(t.Context(), messages, tools)
 	if err != nil || msg.Content != "Сейчас полдень" {
 		t.Fatalf("answer: %+v %v", msg, err)
+	}
+}
+
+func TestGoogleEndpointOmitsChatTemplateKwargs(t *testing.T) {
+	for _, tc := range []struct {
+		name, base string
+		params     map[string]any
+		omitted    bool
+	}{
+		{"google", "https://generativelanguage.googleapis.com/v1beta/openai", nil, true},
+		{"google explicit parameter wins", "https://generativelanguage.googleapis.com/v1beta/openai", map[string]any{"chat_template_kwargs": map[string]any{"x": 1}}, false},
+		{"deepseek", "https://api.deepseek.com/v1", nil, false},
+	} {
+		var body string
+		hc := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+			b, _ := io.ReadAll(r.Body)
+			body = string(b)
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))}, nil
+		})}
+		c := &Client{BaseURL: tc.base, Model: "m", API: "chat_completions", ChatParameters: tc.params, HTTP: hc}
+		if _, err := c.Complete(context.Background(), []Message{{Role: "user", Content: "hi"}}, false); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := !strings.Contains(body, "chat_template_kwargs"); got != tc.omitted {
+			t.Fatalf("%s: omitted=%v want %v", tc.name, got, tc.omitted)
+		}
 	}
 }

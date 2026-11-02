@@ -124,6 +124,11 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 		"temperature": 0, "max_tokens": 1024,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 	}
+	// Google's OpenAI-compatible endpoint rejects unknown fields with HTTP 400,
+	// and chat_template_kwargs is a vLLM-style extension it does not know.
+	if strings.Contains(strings.ToLower(c.BaseURL), "generativelanguage.googleapis.com") {
+		delete(request, "chat_template_kwargs")
+	}
 	if structured {
 		request["response_format"] = map[string]string{"type": "json_object"}
 	}
