@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/subtle"
 	stdjson "encoding/json"
 	"log/slog"
@@ -215,10 +214,12 @@ func (p *panelServer) apiVoiceTest(w http.ResponseWriter, r *http.Request) {
 	if body.Play {
 		// Heard on the station: the phrase is read as an answer of the station's
 		// own turn, because the speaker plays nothing it did not ask for.
+		// A request the station never sent is not played, so the phrase is
+		// armed for the next window: a tap on the station or a start word.
 		started := time.Now()
-		_, err := native.Audition(context.WithoutCancel(r.Context()), voiceCase.Text, bridge.VoiceSettings{
+		err := native.ArmAudition(voiceCase.Text, bridge.VoiceSettings{
 			Voice: voiceCase.Voice, Emotion: voiceCase.Emotion, Speed: voiceCase.Speed, Volume: voiceCase.Volume,
-		})
+		}, 60*time.Second)
 		result := bridge.VoiceProbeResult{VoiceProbeCase: voiceCase, OK: err == nil, ElapsedMS: time.Since(started).Milliseconds()}
 		outcome := "ok"
 		if err != nil {

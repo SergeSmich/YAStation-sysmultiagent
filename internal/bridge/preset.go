@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"quasarbridge/internal/reply"
 )
 
 // DefaultPresetTTL bounds how long an armed reaction waits for its microphone
@@ -32,6 +34,34 @@ type PresetAnswer struct {
 	Text    string
 	Route   string
 	Expires time.Time
+	// Audition, when set, turns the window into a verbatim reading of its phrase
+	// in the chosen voice (the panel's "listen" button).
+	Audition *audition
+}
+
+// ArmAudition prepares a reading of text for the next window the station opens.
+// A synthetic request the station never sent is not played (its dialog state
+// machine logs "InputStartAck ... no such id was sent" and stays silent), so
+// the phrase waits for a real window: the person says the wake word or taps the
+// station, and the bridge answers that request with the phrase.
+func (n *Native) ArmAudition(text string, voice VoiceSettings, ttl time.Duration) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ErrPresetEmpty
+	}
+	if !IsKnownVoice(voice.Voice) {
+		return errors.New("unknown voice")
+	}
+	if voice.Speed < 0 || voice.Speed > 3 || voice.Volume < 0 || voice.Volume > 3 {
+		return errors.New("speed and volume must be within 0..3")
+	}
+	if ttl <= 0 {
+		ttl = DefaultPresetTTL
+	}
+	n.mu.Lock()
+	n.preset = &PresetAnswer{Text: text, Expires: time.Now().Add(ttl), Audition: &audition{text: text, voice: voice}}
+	n.mu.Unlock()
+	return nil
 }
 
 // ArmPreset stores a prepared reaction for the next window from the station. A
@@ -47,6 +77,12 @@ func (n *Native) ArmPreset(text, route string, ttl time.Duration) error {
 		ttl = DefaultPresetTTL
 	}
 	n.mu.Lock()
+	if old := n.preset; old != nil && old.Audition != nil && time.Now().Before(old.Expires) {
+		// A reading the operator asked for waits for the next window; a start
+		// word said meanwhile opens that window and must not discard it.
+		n.mu.Unlock()
+		return nil
+	}
 	n.preset = &PresetAnswer{Text: text, Route: route, Expires: time.Now().Add(ttl)}
 	n.mu.Unlock()
 	return nil
@@ -91,6 +127,12 @@ func (n *Native) applyPreset(p *nativeRequest, preset PresetAnswer) bool {
 		// Nothing is expected from the cloud any more. Releasing the window now
 		// keeps it from answering on its own while the role's model is thinking.
 		release = p.gated && !p.streaming && effective != "" && effective != "yandex"
+		if preset.Audition != nil {
+			// Read back as is, never sent to the cloud, microphone stays closed.
+			p.audition = preset.Audition
+			reply.SuppressListening(p.ctx)
+			release = p.gated && !p.streaming
+		}
 		p.cloudReleased = release
 	}
 	n.mu.Unlock()

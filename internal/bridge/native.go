@@ -852,7 +852,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		// next phrase from scratch would hand it to the cloud or the default
 		// model in the middle of a dialogue.
 		held := ""
-		if pin == "" && !p.isText {
+		if pin == "" && !p.isText && spoken == nil {
 			held = n.heldRouteOf(p.ctx)
 			if held != "" && endsDialogue(text) {
 				// The person ended the conversation on purpose. The turn is

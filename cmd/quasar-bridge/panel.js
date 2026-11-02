@@ -1813,7 +1813,7 @@ async function submitVoice(event) {
 async function testVoice() {
   const status = document.getElementById('voice-status');
   const play = document.getElementById('voice-play').checked;
-  status.textContent = play ? 'синтез и воспроизведение на станции…' : 'синтез…';
+  status.textContent = play ? 'готовлю фразу…' : 'синтез…';
   try {
     const payload = await postJSON(VOICE_TEST_URL, {
       voice: document.getElementById('voice-name').value,
@@ -1828,7 +1828,9 @@ async function testVoice() {
     });
     const result = payload && payload.results && payload.results[0];
     if (result && result.ok) {
-      status.textContent = 'голос принят, ' + result.elapsed_ms + ' мс' + (play ? ' — слушайте станцию' : '');
+      status.textContent = play
+        ? 'фраза готова на 60 с: коснитесь станции или скажите «Алиса»/старт-слово — она прозвучит вместо ответа'
+        : 'голос принят, ' + result.elapsed_ms + ' мс';
     } else {
       status.textContent = 'ошибка: ' + ((result && result.error) || 'нет ответа');
     }
