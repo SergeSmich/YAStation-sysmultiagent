@@ -587,6 +587,21 @@ function fillModels(datalist, ids) {
     item.value = id;
     datalist.appendChild(item);
   }
+  const pick = datalist.parentNode && datalist.parentNode.querySelector('.model-pick');
+  if (pick) {
+    pick.replaceChildren();
+    const head = el('option');
+    head.value = '';
+    head.textContent = (ids && ids.length) ? 'Выбрать из списка (' + ids.length + ')…' : 'Список пуст — нажмите «Модели»';
+    pick.appendChild(head);
+    for (const id of ids || []) {
+      const item = el('option');
+      item.value = id;
+      item.textContent = id;
+      pick.appendChild(item);
+    }
+    pick.value = '';
+  }
 }
 
 // applyProviderGuess puts what the bridge recognised from the key into the row.
@@ -707,10 +722,23 @@ function renderProviders(force) {
     const models = el('datalist');
     models.id = 'llm-models-' + index;
     models.className = 'model-select';
-    fillModels(models, provider._models || providerModels[provider.name] || []);
     model.setAttribute('list', models.id);
     const modelField = settingsField('Модель', model);
     modelField.appendChild(models);
+    // A datalist only offers the options that match the text already in the
+    // field, so with a model filled in it shows that one model. The select below
+    // always lists everything the provider returned.
+    const pick = el('select', 'model-pick');
+    pick.setAttribute('aria-label', 'Выбрать модель из списка');
+    pick.addEventListener('change', () => {
+      if (!pick.value) return;
+      model.value = pick.value;
+      model.dispatchEvent(new Event('input', { bubbles: true }));
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+      pick.value = '';
+    });
+    modelField.appendChild(pick);
+    fillModels(models, provider._models || providerModels[provider.name] || []);
     row.appendChild(modelField);
 
     const key = settingsControl('input', 'api_key', provider._key, '');
