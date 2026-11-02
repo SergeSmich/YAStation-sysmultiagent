@@ -2132,7 +2132,7 @@ function sysadminItemCard(item, pending) {
   card.appendChild(el('div', '', item.summary));
   const meta = pending
     ? 'источник: ' + item.origin + ' · осталось ' + sysadminLeft(item.expires)
-    : 'источник: ' + item.origin + ' · ' + item.status;
+    : 'источник: ' + item.origin + ' · ' + item.status + (item.scope ? ' · ' + item.scope : '') + (item.note ? ' · ' + item.note : '');
   card.appendChild(el('div', 'muted small', meta));
   if (!pending && (item.result || item.error)) {
     const out = el('pre', 'update-command', item.error ? 'ошибка: ' + item.error : item.result);
@@ -2140,23 +2140,25 @@ function sysadminItemCard(item, pending) {
   }
   if (pending) {
     const actions = el('div', 'actions');
-    const allow = el('button', '', 'Разрешить');
-    const deny = el('button', 'ghost', 'Отклонить');
-    allow.type = 'button';
-    deny.type = 'button';
-    const decide = async (ok) => {
-      allow.disabled = true;
-      deny.disabled = true;
+    const choices = item.remember
+      ? [['once', 'Только сейчас', ''], ['session', 'В сессии', ''], ['always', 'Всегда', ''], ['deny', 'Отклонить', 'ghost']]
+      : [['once', 'Разрешить', ''], ['deny', 'Отклонить', 'ghost']];
+    const buttons = choices.map(([scope, label, cls]) => {
+      const button = el('button', cls, label);
+      button.type = 'button';
+      return [scope, button];
+    });
+    const decide = async (scope) => {
+      for (const [, button] of buttons) button.disabled = true;
       try {
-        await postJSON(SYSADMIN_URL + 'approve', { id: item.id, allow: ok });
+        await postJSON(SYSADMIN_URL + 'approve', { id: item.id, scope });
       } catch (error) {
         sysadminSay('sysadmin-error', error.message, true);
       }
       refreshSysadmin(false);
     };
-    allow.addEventListener('click', () => decide(true));
-    deny.addEventListener('click', () => decide(false));
-    actions.append(allow, deny);
+    for (const [scope, button] of buttons) button.addEventListener('click', () => decide(scope));
+    actions.append(...buttons.map(([, button]) => button));
     card.appendChild(actions);
   }
   return card;

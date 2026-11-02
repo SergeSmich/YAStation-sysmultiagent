@@ -97,6 +97,9 @@ type sysadminHub struct {
 	secStamp         fileStamp
 	loadErr          error
 	onTelegramChange func()
+
+	sessMu  sync.Mutex
+	session map[string]struct{}
 }
 
 // NewSysadminHub creates the long-lived sysadmin state rooted at dir.
@@ -106,6 +109,7 @@ func NewSysadminHub(dir string, aud sysadmin.Auditor) *sysadminHub {
 	_ = h.mem.Load()
 	h.queue = sysadmin.NewQueue(2*time.Minute, 50)
 	h.queue.SetAuditor(aud)
+	h.queue.SetGranter(h.grant)
 	h.known = sysadmin.NewKnownHosts(filepath.Join(dir, "sysadmin_known_hosts.json"))
 	h.exec = sysadmin.NewExecutor(h.execHosts, h.known)
 	return h

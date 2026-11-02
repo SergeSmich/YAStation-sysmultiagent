@@ -361,6 +361,7 @@ func main() {
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
+			n.VoiceGate = sysHub.VoiceGate(engine)
 			n.ShouldListen = cfg.ListenAfterReply
 			n.SetVoice(voice.Load())
 			n.FirstFrameTimeout = time.Duration(cfg.FirstFrameMS) * time.Millisecond

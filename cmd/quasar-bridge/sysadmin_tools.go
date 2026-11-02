@@ -212,7 +212,7 @@ func (s *sysadminToolset) Call(ctx context.Context, name, args string) (any, err
 		if dec(&in) != nil {
 			return nil, errors.New("invalid sysadmin_wake arguments")
 		}
-		return s.wake(origin, in.Host)
+		return s.wake(ctx, origin, in.Host)
 	case toolSysHTTPGet:
 		var in struct {
 			URL string `json:"url"`
@@ -295,20 +295,32 @@ func (s *sysadminToolset) Call(ctx context.Context, name, args string) (any, err
 }
 
 // submit queues an action and tells the model how to continue.
-func (s *sysadminToolset) submit(origin string, a sysadmin.Action) any {
+func (s *sysadminToolset) submit(ctx context.Context, origin string, a sysadmin.Action) any {
 	a.Origin = origin
+	a.ChatID = chatFrom(ctx)
 	id := s.hub.Queue().Submit(a)
 	return map[string]any{
 		"status": "awaiting_approval", "id": id,
-		"note": "Действие ждёт подтверждения человека в панели или Telegram (около 2 минут). Скажи об этом пользователю; результат узнаешь через sysadmin_result.",
+		"note": "Действие ждёт решения человека около 2 минут: кнопки в Telegram и панели, а голосом — ответ на колонке. " +
+			"Скажи пользователю, что именно хочешь сделать, и спроси: «Разрешить? Только сейчас, в этой сессии, всегда или отмена?» — " +
+			"его ответ обработает станция сама. Результат узнаешь через sysadmin_result.",
 	}
 }
 
 func (s *sysadminToolset) execCommand(ctx context.Context, origin, host, command string, timeout time.Duration) (any, error) {
 	pol := s.policy()
 	mode, risk := pol.DecideShell(command)
-	if mode == sysadmin.ModeAllow && risk == sysadmin.RiskRead && isSensitive(command) {
+	sensitive := isSensitive(command)
+	if mode == sysadmin.ModeAllow && risk == sysadmin.RiskRead && sensitive {
 		mode = sysadmin.ModeAsk
+	}
+	remember := ""
+	if !sensitive && risk != sysadmin.RiskForbidden {
+		remember = command
+	}
+	if mode == sysadmin.ModeAsk && remember != "" && s.hub.SessionAllowed("shell", host, command) {
+		mode = sysadmin.ModeAllow
+		origin += " (разрешено в сессии)"
 	}
 	s.hub.Audit("sysadmin_exec", map[string]any{"host": host, "command": clip(command, 300), "mode": string(mode), "origin": origin})
 	switch mode {
@@ -321,7 +333,7 @@ func (s *sysadminToolset) execCommand(ctx context.Context, origin, host, command
 		}
 		return hostData(formatExec(res)), nil
 	}
-	return s.submit(origin, sysadmin.Action{Tool: "ssh_exec", Host: host, Summary: command,
+	return s.submit(ctx, origin, sysadmin.Action{Tool: "ssh_exec", Host: host, Summary: command, PolicyTool: "shell", Subject: remember,
 		Run: func(ctx context.Context) (string, error) {
 			res, err := s.hub.Exec().Exec(ctx, host, command, timeout)
 			if err != nil {
@@ -333,8 +345,17 @@ func (s *sysadminToolset) execCommand(ctx context.Context, origin, host, command
 
 func (s *sysadminToolset) readFile(ctx context.Context, origin, host, path string, max int) (any, error) {
 	mode := s.policy().Decide("read_file", path)
-	if mode == sysadmin.ModeAllow && isSensitive(path) {
+	sensitive := isSensitive(path)
+	if mode == sysadmin.ModeAllow && sensitive {
 		mode = sysadmin.ModeAsk
+	}
+	remember := ""
+	if !sensitive {
+		remember = path
+	}
+	if mode == sysadmin.ModeAsk && remember != "" && s.hub.SessionAllowed("read_file", host, path) {
+		mode = sysadmin.ModeAllow
+		origin += " (разрешено в сессии)"
 	}
 	s.hub.Audit("sysadmin_read_file", map[string]any{"host": host, "path": clip(path, 300), "mode": string(mode), "origin": origin})
 	switch mode {
@@ -347,7 +368,7 @@ func (s *sysadminToolset) readFile(ctx context.Context, origin, host, path strin
 		}
 		return hostData(text), nil
 	}
-	return s.submit(origin, sysadmin.Action{Tool: "read_file", Host: host, Summary: path,
+	return s.submit(ctx, origin, sysadmin.Action{Tool: "read_file", Host: host, Summary: path, PolicyTool: "read_file", Subject: remember,
 		Run: func(ctx context.Context) (string, error) {
 			return s.hub.Exec().ReadFile(ctx, host, path, max)
 		}}), nil
@@ -362,7 +383,7 @@ func wakeBroadcast(addr string) string {
 	return fmt.Sprintf("%d.%d.%d.255", ip[0], ip[1], ip[2])
 }
 
-func (s *sysadminToolset) wake(origin, host string) (any, error) {
+func (s *sysadminToolset) wake(ctx context.Context, origin, host string) (any, error) {
 	if err := s.hostExists(host); err != nil {
 		return nil, err
 	}
@@ -377,6 +398,10 @@ func (s *sysadminToolset) wake(origin, host string) (any, error) {
 		}
 	}
 	mode := s.policy().Decide("wol", host)
+	if mode == sysadmin.ModeAsk && s.hub.SessionAllowed("wol", host, host) {
+		mode = sysadmin.ModeAllow
+		origin += " (разрешено в сессии)"
+	}
 	s.hub.Audit("sysadmin_wake", map[string]any{"host": host, "mode": string(mode), "origin": origin})
 	run := func(context.Context) (string, error) {
 		if err := s.hub.Exec().WakeOnLAN(mac, wakeBroadcast(addr)); err != nil {
@@ -394,7 +419,7 @@ func (s *sysadminToolset) wake(origin, host string) (any, error) {
 		}
 		return map[string]string{"status": out}, nil
 	}
-	return s.submit(origin, sysadmin.Action{Tool: "wol", Host: host, Summary: "разбудить " + host, Run: run}), nil
+	return s.submit(ctx, origin, sysadmin.Action{Tool: "wol", Host: host, Summary: "разбудить " + host, PolicyTool: "wol", Subject: host, Run: run}), nil
 }
 
 // localURL accepts only literal private addresses, .local names and localhost,

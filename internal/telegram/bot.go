@@ -28,10 +28,50 @@ type Asker interface {
 	Ask(ctx context.Context, chatID int64, text string) (string, error)
 }
 
+// Followuper lets the agent report the outcome of an approved action in its own
+// words. An Asker that implements it gets the result instead of the raw text.
+type Followuper interface {
+	Followup(ctx context.Context, chatID int64, it sysadmin.Item) (string, error)
+}
+
 type Approvals interface {
 	Pending() []sysadmin.Item
-	Decide(id string, allow bool, by string) (sysadmin.Item, error)
+	DecideScope(id string, scope sysadmin.Scope, by string) (sysadmin.Item, error)
 	Result(id string) (sysadmin.Item, bool)
+}
+
+// approvalKeyboard builds the buttons of a request card. Only requests that
+// can be remembered offer the session and always choices.
+func approvalKeyboard(it sysadmin.Item) map[string]any {
+	var rows [][]map[string]string
+	if it.Remember {
+		rows = [][]map[string]string{
+			{
+				{"text": "✅ Только сейчас", "callback_data": "a:" + it.ID},
+				{"text": "🕘 В сессии", "callback_data": "s:" + it.ID},
+			},
+			{
+				{"text": "♾ Всегда", "callback_data": "w:" + it.ID},
+				{"text": "⛔ Отклонить", "callback_data": "d:" + it.ID},
+			},
+		}
+	} else {
+		rows = [][]map[string]string{{
+			{"text": "✅ Разрешить", "callback_data": "a:" + it.ID},
+			{"text": "⛔ Отклонить", "callback_data": "d:" + it.ID},
+		}}
+	}
+	return map[string]any{"inline_keyboard": rows}
+}
+
+var callbackScopes = map[string]sysadmin.Scope{
+	"a": sysadmin.ScopeOnce, "s": sysadmin.ScopeSession,
+	"w": sysadmin.ScopeAlways, "d": sysadmin.ScopeDeny,
+}
+
+var scopeLabels = map[sysadmin.Scope]string{
+	sysadmin.ScopeOnce: "Разрешено один раз", sysadmin.ScopeSession: "Разрешено до перезагрузки моста",
+	sysadmin.ScopeAlways: "Разрешено всегда", sysadmin.ScopeDeny: "Отклонено",
 }
 
 type Bot struct {
@@ -238,15 +278,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID, userID int64, text stri
 		}
 		for _, it := range items {
 			card := fmt.Sprintf("%s | %s | %s | %s", it.Host, it.Tool, it.Summary, it.Origin)
-			kb := map[string]any{
-				"inline_keyboard": [][]map[string]string{
-					{
-						{"text": "✅ Разрешить", "callback_data": "a:" + it.ID},
-						{"text": "⛔ Отклонить", "callback_data": "d:" + it.ID},
-					},
-				},
-			}
-			b.sendMessage(ctx, chatID, card, kb)
+			b.sendMessage(ctx, chatID, card, approvalKeyboard(it))
 		}
 	case "/status":
 		b.sendChunked(ctx, chatID, "ok")
@@ -287,30 +319,21 @@ func (b *Bot) handleText(ctx context.Context, chatID, userID int64, text string)
 }
 
 func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
-	data := cq.Data
-	var allow bool
-	var id string
-	if strings.HasPrefix(data, "a:") {
-		allow = true
-		id = strings.TrimPrefix(data, "a:")
-	} else if strings.HasPrefix(data, "d:") {
-		allow = false
-		id = strings.TrimPrefix(data, "d:")
-	} else {
+	kind, id, found := strings.Cut(cq.Data, ":")
+	scope, known := callbackScopes[kind]
+	if !found || !known || id == "" {
 		return
 	}
-	if id == "" {
-		return
-	}
-	_, err := b.ap.Decide(id, allow, fmt.Sprintf("telegram:%d", cq.From.ID))
+	allow := scope != sysadmin.ScopeDeny
+	decided, err := b.ap.DecideScope(id, scope, fmt.Sprintf("telegram:%d", cq.From.ID))
 	if err != nil {
 		msg := err.Error()
 		b.answerCallback(ctx, cq.ID, "Ошибка: "+msg)
 		return
 	}
-	resText := "Разрешено"
-	if !allow {
-		resText = "Отклонено"
+	resText := scopeLabels[scope]
+	if decided.Note != "" {
+		resText = "Выполнено один раз: " + decided.Note
 	}
 	b.answerCallback(ctx, cq.ID, resText)
 	// edit markup remove buttons / add mark
@@ -319,8 +342,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 	b.editMessageReplyMarkup(ctx, cq.Message.Chat.ID, cq.Message.MessageID, markup, text)
 
 	if allow {
-		uid := cq.From.ID
-		go func(id string, userID int64, chatID int64) {
+		go func(id string, chatID int64) {
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
 			timeout := time.After(60 * time.Second)
@@ -340,6 +362,16 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 					continue
 				}
 				// done/failed
+				if fu, ok := b.asker.(Followuper); ok && it.ChatID == chatID {
+					fctx, cancel := context.WithTimeout(ctx, b.cfg.AskTimeout)
+					res, ferr := fu.Followup(fctx, chatID, it)
+					cancel()
+					if ferr == nil && strings.TrimSpace(res) != "" {
+						b.sendChunked(ctx, chatID, res)
+						return
+					}
+					slog.Warn("telegram followup failed", "err", ferr)
+				}
 				out := it.Result
 				if it.Err != "" {
 					out = "Ошибка: " + it.Err
@@ -348,10 +380,9 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 					out = string([]rune(out)[:3500])
 				}
 				b.sendMessage(ctx, chatID, out, nil)
-				_ = userID
 				return
 			}
-		}(id, uid, cq.Message.Chat.ID)
+		}(id, cq.Message.Chat.ID)
 	}
 }
 
@@ -425,14 +456,7 @@ func splitChunks(s string, max int) []string {
 
 func (b *Bot) Notify(it sysadmin.Item) {
 	card := fmt.Sprintf("Хост: %s\nИнструмент: %s\nSummary: %s\nИсточник: %s", it.Host, it.Tool, it.Summary, it.Origin)
-	kb := map[string]any{
-		"inline_keyboard": [][]map[string]string{
-			{
-				{"text": "✅ Разрешить", "callback_data": "a:" + it.ID},
-				{"text": "⛔ Отклонить", "callback_data": "d:" + it.ID},
-			},
-		},
-	}
+	kb := approvalKeyboard(it)
 	for u := range b.users {
 		b.sendMessage(context.Background(), u, card, kb)
 	}

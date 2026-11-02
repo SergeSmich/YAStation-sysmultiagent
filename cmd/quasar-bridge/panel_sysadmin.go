@@ -55,6 +55,7 @@ func (p *panelServer) apiSysadminApprove(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		ID    string `json:"id"`
 		Allow bool   `json:"allow"`
+		Scope string `json:"scope"`
 	}
 	dec := stdjson.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -62,12 +63,23 @@ func (p *panelServer) apiSysadminApprove(w http.ResponseWriter, r *http.Request)
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	item, err := p.sysHub.Queue().Decide(body.ID, body.Allow, "panel")
+	scope := sysadmin.ScopeDeny
+	if body.Scope != "" {
+		s, ok := sysadmin.ParseScope(body.Scope)
+		if !ok {
+			writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown scope"})
+			return
+		}
+		scope = s
+	} else if body.Allow {
+		scope = sysadmin.ScopeOnce
+	}
+	item, err := p.sysHub.Queue().DecideScope(body.ID, scope, "panel")
 	if err != nil {
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	p.sysHub.Audit("sysadmin_approve", map[string]any{"id": body.ID, "allow": body.Allow})
+	p.sysHub.Audit("sysadmin_approve", map[string]any{"id": body.ID, "scope": string(scope)})
 	writePanelJSON(w, http.StatusOK, map[string]any{"item": item})
 }
 

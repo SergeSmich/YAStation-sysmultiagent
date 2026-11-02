@@ -139,7 +139,11 @@ type Native struct {
 	probeBusy     atomic.Bool
 	wg            sync.WaitGroup
 	OnRoute       func(id, route string)
-	GateText      bool
+	// VoiceGate may answer a spoken phrase before routing. It reports the answer,
+	// the route that speaks it (empty: the held role, else "llm") and whether it
+	// handled the phrase. It must be set before the session starts.
+	VoiceGate func(ctx context.Context, text string) (answer, route string, ok bool)
+	GateText  bool
 	ShouldListen  bool
 	voice         atomic.Pointer[VoiceConfig]
 	DecisionDelay time.Duration
@@ -867,7 +871,26 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				held = ""
 			}
 		}
-		if spoken != nil {
+		var gated bool
+		if gate := n.VoiceGate; gate != nil && spoken == nil && pin == "" && !p.isText {
+			// A spoken answer to a question the bridge itself is waiting on
+			// (a permission request) is not a new request: it is handled here
+			// and never reaches the router or the cloud.
+			if answer, route, ok := gate(p.ctx, text); ok {
+				if route == "" {
+					route = held
+				}
+				if route == "" {
+					route = "llm"
+				}
+				result = Resolution{Route: route, Answer: answer}
+				gated = true
+				slog.Info("native_voice_gate", "request", requestTag(p.id), "route", route)
+			}
+		}
+		if gated {
+			// answered by the gate
+		} else if spoken != nil {
 			// Read the phrase back as is: no classifier, no model.
 			result = Resolution{Route: "audition", Answer: spoken.text}
 		} else if n.resolver != nil {
