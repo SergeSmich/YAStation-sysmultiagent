@@ -100,6 +100,8 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		"wake-dictionary-list",
 		"model-combo",
 		"'/api/panel/llm/check'",
+		"'/api/panel/llm/ask'",
+		"data-test-model",
 		"llm_presets",
 		"provider_models",
 		"danger-solid",

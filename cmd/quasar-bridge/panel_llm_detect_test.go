@@ -149,7 +149,7 @@ func TestPanelLLMDetectKeepsTheAddressWhenTheProviderIsUnreachable(t *testing.T)
 		t.Fatalf("detect = %d %s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{`"detected":true`, `"verified":false`, `"provider":"groq"`, "HTTP 401"} {
+	for _, want := range []string{`"detected":true`, `"verified":false`, `"provider":"groq"`, "не принял ключ"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("detect body lacks %s: %s", want, body)
 		}

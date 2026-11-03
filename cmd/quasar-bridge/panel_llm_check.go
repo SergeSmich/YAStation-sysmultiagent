@@ -30,7 +30,7 @@ func (p *panelServer) apiLLMCheck(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		p.audit.record("llm_check", r, "bad_request", nil)
-		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "запрос не разобран: обновите страницу (Ctrl+F5)"})
 		return
 	}
 	name := normalizeProviderName(body.Provider)
@@ -64,7 +64,7 @@ func (p *panelServer) apiLLMCheck(w http.ResponseWriter, r *http.Request) {
 	answer := map[string]any{"provider": name, "model": model}
 	models, err := fetchLLMModelsAPI(ctx, baseURL, key, api)
 	if err != nil {
-		answer["models_error"] = err.Error()
+		answer["models_error"] = explainLLMError(err)
 	} else {
 		answer["models"] = models
 		if name != "" {
@@ -84,7 +84,7 @@ func (p *panelServer) apiLLMCheck(w http.ResponseWriter, r *http.Request) {
 		}, false)
 		answer["latency_ms"] = time.Since(start).Milliseconds()
 		if chatErr != nil {
-			answer["chat_error"] = chatErr.Error()
+			answer["chat_error"] = explainLLMError(chatErr)
 		} else {
 			answer["chat_ok"] = true
 			answer["sample"] = panelLLMSample(reply)

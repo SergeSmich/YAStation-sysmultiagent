@@ -31,7 +31,7 @@ const (
 func (p *panelServer) panelProvider(name string) (llmProviderConfig, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return llmProviderConfig{}, "", errors.New("provider is required")
+		return llmProviderConfig{}, "", errors.New("не указана нейросеть")
 	}
 	cfg, err := readConfig(p.configPath)
 	if err != nil {
@@ -39,7 +39,7 @@ func (p *panelServer) panelProvider(name string) (llmProviderConfig, string, err
 	}
 	provider, ok := cfg.providerByName(name)
 	if !ok {
-		return llmProviderConfig{}, "", errors.New("provider is not configured")
+		return llmProviderConfig{}, "", errors.New("такой нейросети нет в настройках: сохраните её")
 	}
 	stored := map[string]string{}
 	if p.settings.Secrets != nil {
@@ -63,7 +63,7 @@ func decodePanelLLMRequest(w http.ResponseWriter, r *http.Request) (string, erro
 	decoder := stdjson.NewDecoder(http.MaxBytesReader(w, r.Body, panelLLMBodyLimit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
-		return "", errors.New("invalid request body")
+		return "", errors.New("запрос не разобран: обновите страницу (Ctrl+F5)")
 	}
 	return strings.TrimSpace(body.Provider), nil
 }
@@ -103,7 +103,7 @@ func (p *panelServer) apiLLMTest(w http.ResponseWriter, r *http.Request) {
 		p.audit.record("llm_test", r, "failed", map[string]any{"provider": provider.Name, "latency_ms": elapsed})
 		writePanelJSON(w, http.StatusBadGateway, map[string]any{
 			"ok": false, "provider": provider.Name, "model": provider.Model,
-			"latency_ms": elapsed, "error": err.Error(),
+			"latency_ms": elapsed, "error": explainLLMError(err),
 		})
 		return
 	}
@@ -148,7 +148,7 @@ func (p *panelServer) apiLLMModels(w http.ResponseWriter, r *http.Request) {
 	models, err := fetchLLMModelsAPI(ctx, provider.BaseURL, key, provider.API)
 	if err != nil {
 		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
-		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": explainLLMError(err)})
 		return
 	}
 	_ = storeLLMModels(p.configPath, provider.Name, models)

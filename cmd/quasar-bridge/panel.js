@@ -12,6 +12,7 @@ const LLM_TEST_URL = '/api/panel/llm/test';
 const LLM_MODELS_URL = '/api/panel/llm/models';
 const LLM_DETECT_URL = '/api/panel/llm/detect';
 const LLM_CHECK_URL = '/api/panel/llm/check';
+const LLM_ASK_URL = '/api/panel/llm/ask';
 const PASSWORD_URL = '/api/panel/password';
 const ROUTING_TEST_URL = '/api/panel/routing/test';
 const UPDATE_URL = '/api/panel/update';
@@ -918,8 +919,8 @@ async function applyProviderKey(provider, row, force) {
     if (payload.verified) {
       setKeyNote(row, 'Применено: ' + (payload.provider || provider.name) + ', моделей: ' + count + '. Нажмите «Сохранить».', 'ok');
     } else {
-      setKeyNote(row, 'Адрес заполнен (' + (payload.provider || provider.name) + '), но сервис не ответил: ' +
-        (payload.note || 'нет ответа'), 'error');
+      setKeyNote(row, 'Адрес сервиса «' + (payload.provider || provider.name) + '» заполнен, но проверить ключ не удалось. ' +
+        (payload.note || 'Сервис не ответил.'), 'error');
     }
     return payload;
   } catch (error) {
@@ -1267,6 +1268,11 @@ function renderAgents(force) {
 
     const actions = el('div', 'row-actions');
     actions.appendChild(saveButton('agent'));
+    const testModel = el('button', 'ghost', 'Проверить модель');
+    testModel.type = 'button';
+    testModel.dataset.testModel = '1';
+    testModel.title = 'Задаёт выбранной модели тестовый вопрос и объясняет результат';
+    actions.appendChild(testModel);
     actions.appendChild(removeOrCancel('agent', 'Удалить роль', isNew));
     actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
@@ -2230,12 +2236,42 @@ async function providerAction(event) {
     if (Array.isArray(payload.models) && name) providerModels[name] = payload.models;
     const parts = [];
     if (Array.isArray(payload.models)) parts.push('доступ есть, моделей: ' + payload.models.length);
-    else if (payload.models_error) parts.push('список моделей: ' + payload.models_error);
-    if (payload.chat_ok) parts.push('ответ за ' + (payload.latency_ms || 0) + ' мс: «' + (payload.sample || 'пусто') + '»');
-    else if (payload.chat_error) parts.push('модель не ответила: ' + payload.chat_error);
+    else if (payload.models_error) parts.push('Список моделей не получен. ' + payload.models_error);
+    if (payload.chat_ok) parts.push('Модель ответила за ' + ((payload.latency_ms || 0) / 1000).toFixed(1) + ' с: «' + (payload.sample || 'пусто') + '»');
+    else if (payload.chat_error) parts.push('Модель не ответила. ' + payload.chat_error);
     setKeyNote(row, parts.join('; ') || 'нет данных', payload.ok ? 'ok' : 'error');
   } catch (error) {
     setKeyNote(row, error.message, 'error');
+  }
+}
+
+// testRoleModel is the «Проверить модель» button of a role card: one fixed
+// question to the connection and model chosen in the card (saved or not), with
+// the verdict of the bridge written into the card status.
+async function testRoleModel(event) {
+  const button = event.target.closest('[data-test-model]');
+  if (!button) return;
+  const row = button.closest('[data-kind="agent"]');
+  if (!row) return;
+  const agent = itemOf('agent', row);
+  if (!agent) return;
+  button.disabled = true;
+  setRowStatus(row, 'спрашиваю модель…', '');
+  try {
+    const payload = await postJSON(LLM_ASK_URL, {
+      provider: String(agent.provider || '').trim().toLowerCase(),
+      model: String(agent.model || '').trim()
+    });
+    const seconds = ((payload.latency_ms || 0) / 1000).toFixed(1);
+    const head = payload.model ? 'Модель «' + payload.model + '»: ' : '';
+    const verdict = String(payload.verdict || 'нет данных');
+    const text = head + verdict + ' Время ответа: ' + seconds + ' с.'
+      + (payload.sample ? ' Ответ модели: «' + payload.sample + '».' : '');
+    setRowStatus(row, text, payload.ok ? 'ok' : 'error');
+  } catch (error) {
+    setRowStatus(row, error.message, 'error');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2512,6 +2548,7 @@ document.addEventListener('DOMContentLoaded', () => {
   settingsForm.addEventListener('change', editSettingsField);
   settingsForm.addEventListener('click', removeSettingsItem);
   settingsForm.addEventListener('click', providerAction);
+  settingsForm.addEventListener('click', testRoleModel);
   settingsForm.addEventListener('click', saveCardClick);
   settingsForm.addEventListener('click', cancelNewCard);
   document.getElementById('settings-dry-run').addEventListener('change', applyDryRun);

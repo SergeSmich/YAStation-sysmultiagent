@@ -146,13 +146,13 @@ func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		p.audit.record("llm_detect", r, "bad_request", nil)
-		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "запрос не разобран: обновите страницу (Ctrl+F5)"})
 		return
 	}
 	key := strings.TrimSpace(body.APIKey)
 	if key == "" {
 		p.audit.record("llm_detect", r, "bad_request", nil)
-		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "api_key is required"})
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "вставьте ключ"})
 		return
 	}
 	guess, ok := llmGuess{}, false
@@ -181,7 +181,7 @@ func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 		writePanelJSON(w, http.StatusOK, map[string]any{
 			"detected": true, "verified": false,
 			"provider": guess.name, "base_url": guess.baseURL, "api": guess.api,
-			"note": err.Error(),
+			"note": explainLLMError(err),
 		})
 		return
 	}
