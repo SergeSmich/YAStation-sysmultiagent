@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	stdjson "encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +29,12 @@ const (
 	wakePollTimeout   = 2 * time.Second
 	wakeListenTimeout = 5 * time.Second
 	wakePollBytes     = 1 << 20
+
+	// With the event stream up the timer is only a safety net.
+	wakeSafetyPoll       = 2 * time.Second
+	wakeEventsIdle       = 45 * time.Second // the daemon pings every 15 s
+	wakeEventsBackoffMin = time.Second
+	wakeEventsBackoffMax = 30 * time.Second
 )
 
 // wakePollInterval is the poll period. A development machine without the
@@ -67,6 +75,10 @@ type wakePoller struct {
 	table    func() *wakeTable
 	native   func() textInjector
 	client   *http.Client
+	stream   *http.Client // no overall timeout: the event stream stays open
+
+	kick     chan struct{}
+	eventsUp atomic.Bool
 
 	lastHit int64
 	primed  bool
@@ -80,6 +92,8 @@ func newWakePoller(baseURL string, interval time.Duration, table func() *wakeTab
 		table:    table,
 		native:   native,
 		client:   &http.Client{Timeout: wakePollTimeout},
+		stream:   &http.Client{},
+		kick:     make(chan struct{}, 1),
 	}
 }
 
@@ -92,16 +106,113 @@ func (p *wakePoller) run(ctx context.Context) {
 		return
 	}
 	p.poll(ctx)
-	ticker := time.NewTicker(p.interval)
-	defer ticker.Stop()
+	go p.watchEvents(ctx)
+	timer := time.NewTimer(p.nextInterval())
+	defer timer.Stop()
 	slog.Info("wake_poll_started", "url", p.baseURL, "interval_ms", p.interval.Milliseconds())
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			p.poll(ctx)
+		case <-p.kick:
+		case <-timer.C:
 		}
+		p.poll(ctx)
+		timer.Reset(p.nextInterval())
+	}
+}
+
+// nextInterval is the pause before the next poll. While the event stream of
+// the daemon is up, a word wakes the poller at once and the timer is only a
+// safety net; without the stream (an older daemon, a dropped connection) the
+// poller falls back to the fast period.
+func (p *wakePoller) nextInterval() time.Duration {
+	if p.eventsUp.Load() {
+		return max(p.interval, wakeSafetyPoll)
+	}
+	return p.interval
+}
+
+// watchEvents keeps GET /api/events open and nudges the poller on every
+// "data:" line. The line is not parsed: the hit list from /api/state stays the
+// single source of truth, so ordering, de-duplication and counter resets work
+// as before and a lost event only costs one safety-net period.
+func (p *wakePoller) watchEvents(ctx context.Context) {
+	backoff := wakeEventsBackoffMin
+	failing := false
+	for ctx.Err() == nil {
+		connected, err := p.readEvents(ctx)
+		p.eventsUp.Store(false)
+		if ctx.Err() != nil {
+			return
+		}
+		p.nudge() // the stream is gone: switch to the fast period at once
+		if connected {
+			backoff = wakeEventsBackoffMin
+			failing = false
+		}
+		if !failing {
+			failing = true
+			slog.Info("wake_events_unavailable", "url", p.baseURL, "error", err)
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, wakeEventsBackoffMax)
+	}
+}
+
+// readEvents reads one event connection until it ends. connected tells
+// whether the stream delivered at least one line (a ping counts), so a daemon
+// that accepts and immediately drops the stream keeps the reconnect backoff.
+func (p *wakePoller) readEvents(ctx context.Context) (connected bool, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/events", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	// The daemon pings every 15 s; a silent connection is a dead one. The
+	// timer also covers a daemon that accepts the connection and never answers.
+	idle := time.AfterFunc(wakeEventsIdle, cancel)
+	defer idle.Stop()
+	resp, err := p.stream.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return false, fmt.Errorf("wake-word daemon returned HTTP %d", resp.StatusCode)
+	}
+	p.eventsUp.Store(true)
+	slog.Info("wake_events_connected", "url", p.baseURL)
+	p.nudge() // catch up on whatever happened while the stream was down
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 4096), 64<<10)
+	for scanner.Scan() {
+		idle.Reset(wakeEventsIdle)
+		connected = true
+		if strings.HasPrefix(scanner.Text(), "data:") {
+			p.nudge()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return connected, err
+	}
+	return connected, io.EOF
+}
+
+// nudge asks the poll loop for an immediate poll; one pending nudge is enough.
+func (p *wakePoller) nudge() {
+	select {
+	case p.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -130,6 +241,12 @@ func (p *wakePoller) poll(ctx context.Context) {
 		if !p.primed {
 			p.primed = true
 			slog.Info("wake_poll_ready", "url", p.baseURL, "last_hit", 0, "hits", 0)
+		} else if p.lastHit > 0 {
+			// The list was emptied: the daemon restarted and numbers hits from
+			// 1 again. Forget the old counter, or the first word spoken after
+			// the restart would look like an old hit and be swallowed.
+			slog.Info("wake_poll_restart", "last_hit", p.lastHit)
+			p.lastHit = 0
 		}
 		return
 	}

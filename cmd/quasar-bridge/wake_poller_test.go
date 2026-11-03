@@ -18,6 +18,9 @@ type fakeWakeDaemon struct {
 	hits   []wakeHit
 	status int
 	listen int
+
+	events bool        // serve /api/events
+	push   chan string // raw SSE text to send on the stream
 }
 
 func (f *fakeWakeDaemon) setHits(hits ...wakeHit) {
@@ -47,6 +50,27 @@ func (f *fakeWakeDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hits[i], hits[j] = hits[j], hits[i]
 		}
 		_ = stdjson.NewEncoder(w).Encode(map[string]any{"hits": hits})
+	case r.URL.Path == "/api/events" && r.Method == http.MethodGet:
+		if !f.events {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case line := <-f.push:
+				_, _ = w.Write([]byte(line))
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+			}
+		}
 	case r.URL.Path == "/api/listen" && r.Method == http.MethodPost:
 		f.mu.Lock()
 		f.listen++
@@ -285,5 +309,88 @@ func TestWakePollIntervalFromEnvironment(t *testing.T) {
 	t.Setenv("QUASAR_WAKE_POLL_MS", "")
 	if got := wakePollInterval(); got != defaultWakePollInterval {
 		t.Fatalf("interval = %v, want %v", got, defaultWakePollInterval)
+	}
+}
+
+func waitWake(t *testing.T, what string, limit time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestWakePollerEventStreamWakesPoller verifies a word reaches the bridge right
+// after the daemon announces it, long before the safety-net timer fires.
+func TestWakePollerEventStreamWakesPoller(t *testing.T) {
+	daemon := &fakeWakeDaemon{
+		hits:   []wakeHit{{ID: 3, Word: "егорка"}},
+		events: true,
+		push:   make(chan string, 4),
+	}
+	injector := &pinnedInjector{}
+	poller := newTestWakePoller(t, daemon, wakeWordsConfig{Words: []wakeWordConfig{
+		{Word: "егорка", Action: wakeAsk, Agent: "briefing", Text: "дай сводку"},
+	}}, injector)
+	poller.interval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { poller.run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	waitWake(t, "event stream", 2*time.Second, poller.eventsUp.Load)
+	// Let the catch-up poll that follows the connection finish first, so the
+	// reaction below can only come from the "data:" line.
+	time.Sleep(150 * time.Millisecond)
+	daemon.setHits(wakeHit{ID: 3, Word: "егорка"}, wakeHit{ID: 4, Word: "егорка"})
+	daemon.push <- ": ping\n\n"
+	daemon.push <- "data: {\"id\":4}\n\n"
+	waitWake(t, "reaction to the event", time.Second, func() bool { return len(injector.armed()) == 1 })
+	if poller.nextInterval() != time.Hour {
+		t.Fatalf("next interval = %v", poller.nextInterval())
+	}
+}
+
+// TestWakePollerFallsBackWithoutEventStream verifies an older daemon without
+// /api/events is still polled at the fast period.
+func TestWakePollerFallsBackWithoutEventStream(t *testing.T) {
+	daemon := &fakeWakeDaemon{hits: []wakeHit{{ID: 3, Word: "егорка"}}}
+	injector := &pinnedInjector{}
+	poller := newTestWakePoller(t, daemon, wakeWordsConfig{Words: []wakeWordConfig{
+		{Word: "егорка", Action: wakeAsk, Agent: "briefing", Text: "дай сводку"},
+	}}, injector)
+	poller.interval = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { poller.run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	time.Sleep(60 * time.Millisecond)
+	daemon.setHits(wakeHit{ID: 3, Word: "егорка"}, wakeHit{ID: 4, Word: "егорка"})
+	waitWake(t, "polled reaction", time.Second, func() bool { return len(injector.armed()) == 1 })
+	if poller.eventsUp.Load() || poller.nextInterval() != 20*time.Millisecond {
+		t.Fatalf("events up = %v, next = %v", poller.eventsUp.Load(), poller.nextInterval())
+	}
+}
+
+// TestWakePollerFirstWordAfterDaemonRestart verifies an emptied hit list resets
+// the counter, so the first word after a restart is not swallowed.
+func TestWakePollerFirstWordAfterDaemonRestart(t *testing.T) {
+	daemon := &fakeWakeDaemon{hits: []wakeHit{{ID: 10, Word: "егорка"}}}
+	injector := &pinnedInjector{}
+	poller := newTestWakePoller(t, daemon, wakeWordsConfig{Words: []wakeWordConfig{
+		{Word: "егорка", Action: wakeAsk, Agent: "briefing", Text: "дай сводку"},
+	}}, injector)
+	poller.poll(context.Background())
+	daemon.setHits()
+	poller.poll(context.Background())
+	daemon.setHits(wakeHit{ID: 1, Word: "егорка"})
+	poller.poll(context.Background())
+	if len(injector.armed()) != 1 {
+		t.Fatalf("armed %d presets after a restart", len(injector.armed()))
 	}
 }
