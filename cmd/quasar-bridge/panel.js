@@ -39,6 +39,16 @@ let wakeDictionary = [];
 let wakeDictionaryNote = '';
 let wakePage = '';
 let wordsState = [];
+// Providers, roles and start words are saved card by card. The saved* arrays hold
+// what the file holds right now, index for index with the *State arrays (a card
+// is replaced after its own save, a deletion is written at once), so one card
+// can be written without touching the unsaved edits of its neighbours.
+// newItems holds the form opened by a «+» button: it is not in the list yet.
+let savedProviderObjs = [];
+let savedAgentObjs = [];
+let savedWordObjs = [];
+let savedDryRun = false;
+const newItems = { provider: null, agent: null, word: null };
 let settingsActions = ['listen', 'ask', 'command'];
 let settingsVoices = [];
 // routingState is the working copy of the routing section; routingPresets holds
@@ -545,6 +555,148 @@ function option(value, label) {
   return item;
 }
 
+// cloneItem copies an item as the file holds it: the page-only fields (typed
+// key, forget flag, preset…) start with an underscore and never go back.
+function cloneItem(item) {
+  const copy = JSON.parse(JSON.stringify(item || {}));
+  for (const key of Object.keys(copy)) {
+    if (key.startsWith('_')) delete copy[key];
+  }
+  return copy;
+}
+
+// setRowStatus writes the answer of the station into the card that asked, next
+// to its own buttons, instead of the shared line in the page header.
+function setRowStatus(row, text, kind) {
+  const note = row && row.querySelector('.row-status');
+  if (!note) return;
+  note.textContent = text || '';
+  note.classList.remove('ok', 'error');
+  if (kind) note.classList.add(kind);
+}
+
+// itemOf returns the object a card edits: the open «+» form or a list entry.
+function itemOf(kind, row) {
+  if (row.dataset.index === 'new') return newItems[kind];
+  const list = kind === 'provider' ? providersState : kind === 'agent' ? agentsState : wordsState;
+  return list[Number(row.dataset.index)];
+}
+
+// rowEntries lists the cards to draw: the «+» form first, then the saved ones.
+function rowEntries(kind, list) {
+  const entries = list.map((item, index) => ({ item, index: String(index), isNew: false }));
+  if (newItems[kind]) entries.unshift({ item: newItems[kind], index: 'new', isNew: true });
+  return entries;
+}
+
+// saveButton is the «Сохранить» of one card; the click handler reads data-save.
+function saveButton(kind) {
+  const button = el('button', 'btn-accent', 'Сохранить');
+  button.type = 'button';
+  button.dataset.save = kind;
+  return button;
+}
+
+// removeOrCancel is «Отмена» for the «+» form (nothing was written) and the red
+// delete button for a saved card (the file is written at once, after a confirm).
+function removeOrCancel(kind, label, isNew) {
+  if (isNew) {
+    const cancel = el('button', 'ghost', 'Отмена');
+    cancel.type = 'button';
+    cancel.dataset.cancelNew = kind;
+    return cancel;
+  }
+  const remove = el('button', 'ghost danger-solid', label);
+  remove.type = 'button';
+  remove.dataset.remove = kind;
+  return remove;
+}
+
+// serviceLabel names the service a saved connection talks to: the preset whose
+// address it uses, otherwise the host of the address.
+function serviceLabel(provider) {
+  const base = String(provider.base_url || '').trim().replace(/\/+$/, '');
+  const preset = llmPresetsState.find((item) => String(item.base_url || '').replace(/\/+$/, '') === base);
+  if (preset) return preset.label;
+  try {
+    return new URL(base).host;
+  } catch (error) {
+    return base || 'не указан';
+  }
+}
+
+const KIND_SCOPE = { provider: 'providers', agent: 'roles', word: 'words' };
+
+function listOf(kind) {
+  return kind === 'provider' ? providersState : kind === 'agent' ? agentsState : wordsState;
+}
+
+function savedOf(kind) {
+  return kind === 'provider' ? savedProviderObjs : kind === 'agent' ? savedAgentObjs : savedWordObjs;
+}
+
+// isDirty tells whether a card holds edits that are not in the file yet.
+function isDirty(kind, item, saved) {
+  if (!item) return false;
+  if (!saved) return true;
+  if (kind === 'provider') {
+    return Boolean(item._key || item._clearKey) ||
+      JSON.stringify(providerPayload(item)) !== JSON.stringify(saved);
+  }
+  return JSON.stringify(cloneItem(item)) !== JSON.stringify(saved);
+}
+
+// carryDirty remembers the cards with unsaved edits before the lists are
+// replaced by the answer of the station, so saving one card never throws the
+// edits of its neighbours away. skip is the card that was just written, removed
+// the index that disappeared (the ones after it move up).
+function carryDirty(kind, skip, removed) {
+  const list = listOf(kind);
+  const saved = savedOf(kind);
+  const carried = [];
+  list.forEach((item, index) => {
+    if (index === skip || !isDirty(kind, item, saved[index])) return;
+    carried.push({ index: removed != null && index > removed ? index - 1 : index, item });
+  });
+  return carried;
+}
+
+function restoreDirty(kind, carried) {
+  const list = listOf(kind);
+  let any = false;
+  for (const entry of carried) {
+    if (entry.index < list.length) {
+      list[entry.index] = entry.item;
+      any = true;
+    }
+  }
+  return any;
+}
+
+function renderKind(kind) {
+  if (kind === 'provider') {
+    renderProviders(true);
+    renderAgents(true);
+  } else if (kind === 'agent') {
+    renderAgents(true);
+    renderWakeWords(true);
+  } else {
+    renderWakeWords(true);
+  }
+}
+
+// commitSettings writes one partial patch and redraws the lists it touched. plan
+// names them: {kind, skip, removed} as for carryDirty.
+async function commitSettings(body, plan) {
+  const payload = await postJSON(SETTINGS_URL, body);
+  const carried = plan.map((step) => ({ kind: step.kind, items: carryDirty(step.kind, step.skip, step.removed) }));
+  for (const step of plan) renderSettings(payload || {}, true, KIND_SCOPE[step.kind]);
+  for (const entry of carried) {
+    if (restoreDirty(entry.kind, entry.items)) renderKind(entry.kind);
+  }
+  return payload || {};
+}
+
 function settingsControl(tag, field, value, placeholder) {
   const control = el(tag);
   control.dataset.field = field;
@@ -805,23 +957,32 @@ function renderProviders(force) {
   const list = document.getElementById('llm-providers-list');
   if (!force && list.contains(document.activeElement)) return;
   list.replaceChildren();
-  if (!providersState.length) {
-    list.appendChild(el('p', 'muted small', 'Пока нет подключений. Добавьте первую нейросеть.'));
+  const entries = rowEntries('provider', providersState);
+  if (!entries.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет подключений. Добавьте первую нейросеть кнопкой «+ нейросеть».'));
     return;
   }
-  providersState.forEach((provider, index) => {
-    const row = el('div', 'settings-row form');
+  entries.forEach(({ item: provider, index, isNew }) => {
+    const row = el('div', 'settings-row form' + (isNew ? ' is-new' : ''));
     row.dataset.kind = 'provider';
-    row.dataset.index = String(index);
-    row.dataset.syncedName = provider.name || '';
+    row.dataset.index = index;
+    row.dataset.syncedName = isNew ? '' : (provider.name || '');
+    if (isNew) row.appendChild(el('h3', 'row-title', 'Новая нейросеть'));
 
-    // A named service fills the address and the format; the key alone cannot
-    // tell Qwen from DeepSeek, so the operator picks those here.
+    // A saved connection shows its service as plain text: the service is fixed
+    // when the connection is created. A new one picks it from the list.
     const preset = el('select', 'preset-pick');
     preset.setAttribute('aria-label', 'Сервис');
     preset.appendChild(option('', 'выбрать сервис…'));
     for (const item of llmPresetsState) preset.appendChild(option(item.id, item.label));
     preset.value = provider._preset || '';
+    if (!isNew) {
+      const fixed = el('input');
+      fixed.type = 'text';
+      fixed.readOnly = true;
+      fixed.value = serviceLabel(provider);
+      row.appendChild(settingsField('Сервис', fixed, 'wide'));
+    }
     preset.addEventListener('change', () => {
       const chosen = llmPresetsState.find((item) => item.id === preset.value);
       provider._preset = preset.value;
@@ -843,11 +1004,14 @@ function renderProviders(force) {
       updateKeyBadge(row, provider);
       setKeyNote(row, 'Адрес и формат заполнены. Введите ключ и нажмите «Применить».', '');
     });
-    row.appendChild(settingsField('Сервис', preset, 'wide'));
+    if (isNew) row.appendChild(settingsField('Сервис', preset, 'wide'));
 
     const name = settingsControl('input', 'name', provider.name, 'например, deepseek');
     name.type = 'text';
     name.autocomplete = 'off';
+    // The name is the credential key and what the roles point at: after the first
+    // save it is not edited (delete and add to change it).
+    name.readOnly = !isNew;
     // The stored form is lower case, and the name doubles as the credential key:
     // fold what the operator types instead of rejecting "DeepSeek" later.
     name.addEventListener('input', () => {
@@ -858,17 +1022,20 @@ function renderProviders(force) {
       name.setSelectionRange(caret, caret);
     });
     const nameField = settingsField('Название', name);
-    nameField.appendChild(el('span', 'muted small', 'латиница, цифры, «-», «_», до 32 символов'));
+    if (isNew) nameField.appendChild(el('span', 'muted small', 'латиница, цифры, «-», «_», до 32 символов'));
     row.appendChild(nameField);
 
-    const api = settingsControl('select', 'api', provider.api || 'chat_completions');
-    for (const value of PROVIDER_APIS) api.appendChild(option(value, value));
-    api.value = provider.api || 'chat_completions';
-    const apiField = settingsField('Формат API', api);
-    apiField.appendChild(el('span', 'muted small',
-      'chat_completions = POST /chat/completions (DeepSeek, OpenRouter, OpenAI, …); ' +
-      'responses = POST /responses (Responses API, только у OpenAI и совместимых)'));
-    row.appendChild(apiField);
+    // The wire format is shown only while the connection is being created.
+    if (isNew) {
+      const api = settingsControl('select', 'api', provider.api || 'chat_completions');
+      for (const value of PROVIDER_APIS) api.appendChild(option(value, value));
+      api.value = provider.api || 'chat_completions';
+      const apiField = settingsField('Формат API', api);
+      apiField.appendChild(el('span', 'muted small',
+        'chat_completions = POST /chat/completions (DeepSeek, OpenRouter, OpenAI, …); ' +
+        'responses = POST /responses (Responses API, только у OpenAI и совместимых)'));
+      row.appendChild(apiField);
+    }
 
     const base = settingsControl('input', 'base_url', provider.base_url, 'https://api.deepseek.com/v1');
     base.type = 'text';
@@ -877,7 +1044,13 @@ function renderProviders(force) {
 
     const combo = modelCombo('model', provider.model, 'например, deepseek-chat',
       () => modelIdsFor(String(provider.name || '').trim()));
-    row.appendChild(comboField('Модель', combo.wrap));
+    // The model of a role is chosen in «Роли» and does not change this card. The
+    // field here is only the fallback for a role that names none, so it stays
+    // hidden once it holds a value (the key check fills it).
+    const modelField = comboField('Модель по умолчанию', combo.wrap);
+    modelField.classList.add('provider-model');
+    modelField.hidden = Boolean(String(provider.model || '').trim());
+    row.appendChild(modelField);
 
     const key = settingsControl('input', 'api_key', provider._key, '');
     key.type = 'password';
@@ -899,12 +1072,11 @@ function renderProviders(force) {
     row.appendChild(keyField);
 
     const actions = el('div', 'row-actions');
+    actions.appendChild(saveButton('provider'));
     actions.appendChild(providerButton('Проверить', 'test'));
-    actions.appendChild(providerButton('Забыть ключ', 'forget'));
-    const remove = el('button', 'ghost danger-solid', 'Удалить');
-    remove.type = 'button';
-    remove.dataset.remove = 'provider';
-    actions.appendChild(remove);
+    if (!isNew) actions.appendChild(providerButton('Забыть ключ', 'forget'));
+    actions.appendChild(removeOrCancel('provider', 'Удалить', isNew));
+    actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
 
     list.appendChild(row);
@@ -975,14 +1147,16 @@ function renderWakeWords(force) {
   const list = document.getElementById('wake-words-list');
   if (!force && list.contains(document.activeElement)) return;
   list.replaceChildren();
-  if (!wordsState.length) {
-    list.appendChild(el('p', 'muted small', 'Пока нет старт-слов. Добавьте первое слово.'));
+  const entries = rowEntries('word', wordsState);
+  if (!entries.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет старт-слов. Добавьте первое кнопкой «+ слово».'));
     return;
   }
-  wordsState.forEach((word, index) => {
-    const row = el('div', 'settings-row form');
+  entries.forEach(({ item: word, index, isNew }) => {
+    const row = el('div', 'settings-row form' + (isNew ? ' is-new' : ''));
     row.dataset.kind = 'word';
-    row.dataset.index = String(index);
+    row.dataset.index = index;
+    if (isNew) row.appendChild(el('h3', 'row-title', 'Новое старт-слово'));
 
     const wordInput = settingsControl('input', 'word', word.word, 'например, брифинг');
     wordInput.type = 'text';
@@ -1015,11 +1189,10 @@ function renderWakeWords(force) {
     textField.appendChild(el('span', 'muted small word-text-hint', 'Пусто — роль ответит на сказанное после слова. Дальше та же роль ведёт разговор до тишины или «хватит».'));
     row.appendChild(textField);
 
-    const remove = el('button', 'ghost danger', 'Удалить слово');
-    remove.type = 'button';
-    remove.dataset.remove = 'word';
     const actions = el('div', 'row-actions');
-    actions.appendChild(remove);
+    actions.appendChild(saveButton('word'));
+    actions.appendChild(removeOrCancel('word', 'Удалить слово', isNew));
+    actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
     list.appendChild(row);
     updateWordRow(row, word);
@@ -1030,16 +1203,18 @@ function renderAgents(force) {
   const list = document.getElementById('agents-list');
   if (!force && list.contains(document.activeElement)) return;
   list.replaceChildren();
-  if (!agentsState.length) {
-    list.appendChild(el('p', 'muted small', 'Пока нет ролей. Добавьте первую роль.'));
+  const entries = rowEntries('agent', agentsState);
+  if (!entries.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет ролей. Добавьте первую кнопкой «+ роль».'));
     syncAgentSelects();
     return;
   }
-  agentsState.forEach((agent, index) => {
-    const row = el('div', 'settings-row form');
+  entries.forEach(({ item: agent, index, isNew }) => {
+    const row = el('div', 'settings-row form' + (isNew ? ' is-new' : ''));
     row.dataset.kind = 'agent';
-    row.dataset.index = String(index);
-    row.dataset.syncedName = agent.name || '';
+    row.dataset.index = index;
+    row.dataset.syncedName = isNew ? '' : (agent.name || '');
+    if (isNew) row.appendChild(el('h3', 'row-title', 'Новая роль'));
 
     const name = settingsControl('input', 'name', agent.name, 'буквы (рус. и лат.) в нижнем регистре, цифры, - и _');
     name.type = 'text';
@@ -1049,7 +1224,8 @@ function renderAgents(force) {
     const provider = settingsControl('select', 'provider', agent.provider);
     provider.className = 'agent-provider';
     provider.appendChild(option('', 'по умолчанию'));
-    for (const item of providersState) {
+    // Only saved connections: the station refuses a role that names an unknown one.
+    for (const item of savedProviderObjs) {
       if (item.name) provider.appendChild(option(item.name, item.name));
     }
     provider.value = agent.provider || '';
@@ -1089,11 +1265,10 @@ function renderAgents(force) {
     sysadmin.checked = Boolean(agent.sysadmin);
     row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin));
 
-    const remove = el('button', 'ghost danger', 'Удалить роль');
-    remove.type = 'button';
-    remove.dataset.remove = 'agent';
     const actions = el('div', 'row-actions');
-    actions.appendChild(remove);
+    actions.appendChild(saveButton('agent'));
+    actions.appendChild(removeOrCancel('agent', 'Удалить роль', isNew));
+    actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
     list.appendChild(row);
     updateAgentRow(row, agent);
@@ -1120,11 +1295,10 @@ function updateAgentRow(row, agent) {
 // reject such a role.
 function syncProviderSelects() {
   const list = document.getElementById('agents-list');
-  const names = providersState.map((provider) => provider.name).filter(Boolean);
+  const names = savedProviderObjs.map((provider) => provider.name).filter(Boolean);
   for (const select of list.querySelectorAll('.agent-provider')) {
     const row = select.closest('[data-kind="agent"]');
-    const index = Number(row.dataset.index);
-    const agent = agentsState[index];
+    const agent = itemOf('agent', row);
     if (!agent) continue;
     if (agent.provider && !names.includes(agent.provider)) {
       agent.provider = '';
@@ -1157,11 +1331,11 @@ function updateWordRow(row, word) {
 function syncAgentSelects() {
   const list = document.getElementById('wake-words-list');
   for (const select of list.querySelectorAll('.word-agent-select')) {
-    const index = Number(select.closest('[data-kind="word"]').dataset.index);
-    const word = wordsState[index];
+    const word = itemOf('word', select.closest('[data-kind="word"]'));
     if (!word) continue;
     const current = word.agent || '';
-    const names = agentsState.map((agent) => agent.name).filter(Boolean);
+    // Only saved roles: the station refuses a word that names an unknown one.
+    const names = savedAgentNames.slice();
     if (current && !names.includes(current)) word.agent = '';
     select.replaceChildren(option('', 'без роли'));
     for (const name of names) select.appendChild(option(name, name));
@@ -1681,9 +1855,11 @@ function renderSettings(payload, force, scope) {
   if (touchingRoles) {
     agentsState = Array.isArray(payload.agents) ? payload.agents : [];
     savedAgentNames = agentsState.map((agent) => String((agent && agent.name) || ''));
+    savedAgentObjs = agentsState.map(cloneItem);
   }
   if (touchingProviders) {
     providersState = Array.isArray(payload.llm_providers) ? payload.llm_providers : [];
+    savedProviderObjs = providersState.map((provider) => providerPayload(provider));
     savedProviders = new Map(providersState.map((provider) => [
       String(provider.name || ''), JSON.stringify(providerPayload(provider))
     ]));
@@ -1696,6 +1872,8 @@ function renderSettings(payload, force, scope) {
   const wakeWords = touchingWords ? (payload.wake_words || {}) : {};
   if (touchingWords) {
     wordsState = Array.isArray(wakeWords.words) ? wakeWords.words : [];
+    savedWordObjs = wordsState.map(cloneItem);
+    savedDryRun = Boolean(wakeWords.dry_run);
   }
   settingsActions = Array.isArray(payload.actions) ? payload.actions : ['listen', 'ask', 'command'];
   settingsVoices = Array.isArray(payload.voices) ? payload.voices : [];
@@ -1737,9 +1915,8 @@ function editSettingsField(event) {
   if (!control.dataset.field) return;
   const row = control.closest('[data-kind]');
   if (!row) return;
-  const index = Number(row.dataset.index);
   if (row.dataset.kind === 'word') {
-    const word = wordsState[index];
+    const word = itemOf('word', row);
     if (!word) return;
     word[control.dataset.field] = control.value;
     if (control.dataset.field === 'action') {
@@ -1752,7 +1929,7 @@ function editSettingsField(event) {
       updateWordRow(row, word);
     }
   } else if (row.dataset.kind === 'provider') {
-    const provider = providersState[index];
+    const provider = itemOf('provider', row);
     if (!provider) return;
     if (control.dataset.field === 'api_key') {
       provider._key = control.value;
@@ -1761,49 +1938,204 @@ function editSettingsField(event) {
       return;
     }
     provider[control.dataset.field] = control.value;
+    // A saved connection keeps its name (the field is read-only); only the В«+В» form
+    // can be renamed, and nothing refers to it yet.
     if (control.dataset.field === 'name' && event.type === 'change') {
-      // A rename is a new provider name everywhere: the roles linked to it and
-      // the stored key both follow, otherwise the old name would be rejected as
-      // an unknown provider on save.
-      const previousName = row.dataset.syncedName || '';
-      if (previousName && previousName !== provider.name) {
-        for (const agent of agentsState) {
-          if (agent.provider === previousName) agent.provider = provider.name;
-        }
-        if (previousName in providerKeysState) {
-          // A stored key belongs to the old name and cannot travel with it: the
-          // server drops it when that provider disappears from the list. Say so
-          // now instead of showing "ключ сохранён" until the next save.
-          delete providerKeysState[previousName];
-          document.getElementById('settings-status').textContent =
-            'имя изменено: ключ нужно ввести заново';
-        }
-        if (providerModels[previousName]) {
-          providerModels[provider.name] = providerModels[previousName];
-          delete providerModels[previousName];
-        }
-      }
       row.dataset.syncedName = provider.name || '';
-      syncProviderSelects();
       updateKeyBadge(row, provider);
     }
   } else if (row.dataset.kind === 'agent') {
-    const agent = agentsState[index];
+    const agent = itemOf('agent', row);
     if (!agent) return;
     agent[control.dataset.field] = control.type === 'checkbox' ? control.checked : control.value;
     if (control.dataset.field === 'provider') {
       updateAgentRow(row, agent);
+      if (event.type === 'change') refreshRoleModels(row, agent);
     }
     if (control.dataset.field === 'name' && event.type === 'change') {
-      const previousName = row.dataset.syncedName || '';
-      if (previousName && previousName !== agent.name) {
-        for (const word of wordsState) {
-          if (word.agent === previousName) word.agent = agent.name;
-        }
-      }
+      // The words that name this role follow it when the role is saved (saveCard).
       row.dataset.syncedName = agent.name || '';
-      syncAgentSelects();
     }
+  }
+}
+
+// The «+» buttons sit in the section titles: they open an empty form on top of
+// the list (not in it yet) and unfold the section if it was folded.
+const NEW_ITEMS = {
+  provider: () => ({ name: '', api: 'chat_completions', base_url: '', model: '' }),
+  word: () => ({ word: '', action: 'listen', text: '', agent: '' }),
+  agent: () => ({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false, sysadmin: false })
+};
+
+function openNewCard(kind, button) {
+  if (!newItems[kind]) newItems[kind] = NEW_ITEMS[kind]();
+  const details = button.closest('details');
+  if (details) details.open = true;
+  renderKind(kind);
+  const row = document.querySelector('[data-kind="' + kind + '"][data-index="new"]');
+  if (row) {
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const first = row.querySelector('input:not([readonly]), select');
+    if (first) first.focus({ preventScroll: true });
+  }
+}
+
+function cancelNewCard(event) {
+  const button = event.target.closest('[data-cancel-new]');
+  if (!button) return;
+  const kind = button.dataset.cancelNew;
+  newItems[kind] = null;
+  renderKind(kind);
+}
+
+// cardSaving keeps a double click from sending the same card twice.
+let cardSaving = false;
+
+function saveCardClick(event) {
+  const button = event.target.closest('[data-save]');
+  if (!button) return;
+  const row = button.closest('[data-kind]');
+  if (!row || cardSaving) return;
+  cardSaving = true;
+  button.disabled = true;
+  saveCard(button.dataset.save, row)
+    .catch((error) => setRowStatus(row, error.message, 'error'))
+    .finally(() => {
+      cardSaving = false;
+      button.disabled = false;
+    });
+}
+
+// finishCard puts the answer into the card that was written. The lists were
+// redrawn by the save, so the card is found again by its place in the list.
+function finishCard(kind, index, text) {
+  const row = document.querySelector('[data-kind="' + kind + '"][data-index="' + index + '"]');
+  setRowStatus(row, text, 'ok');
+}
+
+// saveCard writes ONE card: the saved copy of the list with this entry replaced
+// (or appended, for the «+» form). The unsaved edits of the other cards are not
+// sent and survive the redraw (see commitSettings).
+async function saveCard(kind, row) {
+  const isNew = row.dataset.index === 'new';
+  const index = isNew ? -1 : Number(row.dataset.index);
+  const item = itemOf(kind, row);
+  if (!item) return;
+  const fail = (text) => setRowStatus(row, text, 'error');
+  setRowStatus(row, '', '');
+  const body = {};
+  const plan = [{ kind, skip: isNew ? -1 : index, removed: null }];
+  if (kind === 'provider') {
+    const missing = () => !String(item.name || '').trim() || !String(item.base_url || '').trim() ||
+      !String(item.model || '').trim();
+    // A key pasted into a fresh card is enough to save: fill the card from the
+    // key first, otherwise the check below would refuse an empty address or model.
+    if (String(item._key || '').trim() && missing()) {
+      setRowStatus(row, 'определяю сервис по ключу…', '');
+      try {
+        await applyProviderKey(item, row, false);
+      } catch (error) {
+        // Not fatal: the card may be complete by hand, the check below reports the rest.
+      }
+    }
+    const name = String(item.name || '').trim().toLowerCase();
+    if (missing()) return fail('нужны название, адрес API и модель');
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+      return fail('название: латиница, цифры, «-», «_», до 32 символов — например deepseek');
+    }
+    if (savedProviderObjs.some((saved, at) => at !== index && saved.name === name)) {
+      return fail('нейросеть с таким названием уже есть');
+    }
+    item.name = name;
+    const list = savedProviderObjs.slice();
+    if (isNew) list.push(providerPayload(item));
+    else list[index] = providerPayload(item);
+    body.llm_providers = list;
+  } else if (kind === 'agent') {
+    const name = String(item.name || '').trim().toLowerCase();
+    if (!name) return fail('укажите имя роли');
+    if (savedAgentObjs.some((saved, at) => at !== index && saved.name === name)) {
+      return fail('роль с таким именем уже есть');
+    }
+    const before = isNew ? '' : String((savedAgentObjs[index] || {}).name || '');
+    item.name = name;
+    const list = savedAgentObjs.slice();
+    if (isNew) list.push(cloneItem(item));
+    else list[index] = cloneItem(item);
+    body.agents = list;
+    // The words that name the role follow its new name, in the same write.
+    if (before && before !== name) {
+      body.wake_words = {
+        dry_run: savedDryRun,
+        words: savedWordObjs.map((word) => (word.agent === before ? Object.assign({}, word, { agent: name }) : word))
+      };
+      plan.push({ kind: 'word', skip: -1, removed: null });
+    }
+  } else {
+    if (!String(item.word || '').trim()) return fail('укажите слово или фразу');
+    const target = String(item.agent || '').trim();
+    if (target && !savedAgentNames.includes(target)) {
+      return fail('роль «' + target + '» ещё не сохранена — сначала сохраните её во вкладке «Роли»');
+    }
+    const list = savedWordObjs.slice();
+    if (isNew) list.push(cloneItem(item));
+    else list[index] = cloneItem(item);
+    body.wake_words = { dry_run: savedDryRun, words: list };
+  }
+  setRowStatus(row, 'сохраняю…', '');
+  try {
+    const payload = await commitSettings(body, plan);
+    if (isNew) newItems[kind] = null;
+    const at = isNew ? listOf(kind).length - 1 : index;
+    if (isNew) renderKind(kind);
+    finishCard(kind, at, payload.unchanged ? 'без изменений' : 'сохранено');
+    if (kind === 'word') loadWakeDictionary();
+  } catch (error) {
+    fail(error.message);
+  }
+}
+
+// removeSettingsItem deletes a saved card. The file is written at once, so the
+// operator is asked first.
+async function deleteCard(kind, row) {
+  const index = Number(row.dataset.index);
+  const item = itemOf(kind, row);
+  if (!item || Number.isNaN(index)) return;
+  const title = String(item.name || item.word || '');
+  if (!window.confirm('Удалить «' + title + '»? Это применится сразу.')) return;
+  const body = {};
+  const plan = [{ kind, skip: index, removed: index }];
+  let note = '';
+  if (kind === 'provider') {
+    body.llm_providers = savedProviderObjs.filter((saved, at) => at !== index);
+    const name = String((savedProviderObjs[index] || {}).name || '');
+    const linked = savedAgentObjs.filter((agent) => agent.provider === name);
+    if (linked.length) {
+      // A role may not point at a connection that is gone: it goes back to the default.
+      body.agents = savedAgentObjs.map((agent) => (agent.provider === name ? Object.assign({}, agent, { provider: '' }) : agent));
+      plan.push({ kind: 'agent', skip: -1, removed: null });
+      note = 'роли переведены на нейросеть по умолчанию: ' + linked.map((agent) => agent.name).join(', ');
+    }
+  } else if (kind === 'agent') {
+    const gone = String((savedAgentObjs[index] || {}).name || '');
+    const users = savedWordObjs.filter((word) => word.agent === gone).map((word) => word.word);
+    if (users.length) {
+      setRowStatus(row, 'роль нужна старт-словам: ' + users.join(', ') + ' — сначала смените или удалите их', 'error');
+      return;
+    }
+    body.agents = savedAgentObjs.filter((saved, at) => at !== index);
+  } else {
+    body.wake_words = { dry_run: savedDryRun, words: savedWordObjs.filter((saved, at) => at !== index) };
+  }
+  setRowStatus(row, 'удаляю…', '');
+  try {
+    await commitSettings(body, plan);
+    renderKind(kind);
+    const status = document.getElementById('settings-status');
+    status.classList.remove('error');
+    status.textContent = 'удалено: ' + title + (note ? '; ' + note : '');
+  } catch (error) {
+    setRowStatus(row, error.message, 'error');
   }
 }
 
@@ -1812,23 +2144,55 @@ function removeSettingsItem(event) {
   if (!button) return;
   const row = button.closest('[data-kind]');
   if (!row) return;
-  const index = Number(row.dataset.index);
-  if (row.dataset.kind === 'word') {
-    wordsState.splice(index, 1);
-    renderWakeWords(true);
-  } else if (row.dataset.kind === 'provider') {
-    const removed = providersState[index];
-    providersState.splice(index, 1);
-    if (removed) {
-      delete providerKeysState[removed.name];
-      delete providerModels[removed.name];
+  deleteCard(button.dataset.remove, row);
+}
+
+// refreshRoleModels follows a change of the connection in a role card: the model
+// list is the one of the new connection (fetched when the page has none), and a
+// model the new connection does not offer is dropped instead of kept silently.
+async function refreshRoleModels(row, agent) {
+  const name = String(agent.provider || '');
+  if (!name) return;
+  const input = row.querySelector('[data-field="model"]');
+  const reconcile = () => {
+    const ids = modelIdsFor(name);
+    if (agent.provider !== name || !ids.length || !agent.model || ids.includes(agent.model)) return;
+    agent.model = '';
+    if (input) input.value = '';
+    setRowStatus(row, 'модель сброшена: у нейросети «' + name + '» её нет', '');
+  };
+  if (modelIdsFor(name).length) {
+    reconcile();
+    return;
+  }
+  setRowStatus(row, 'загружаю список моделей…', '');
+  try {
+    const payload = await postJSON(LLM_MODELS_URL, { provider: name });
+    if (Array.isArray(payload.models)) providerModels[name] = payload.models;
+    if (agent.provider === name) {
+      setRowStatus(row, 'моделей: ' + modelIdsFor(name).length, 'ok');
+      reconcile();
     }
-    syncProviderSelects();
-    renderProviders(true);
-  } else if (row.dataset.kind === 'agent') {
-    agentsState.splice(index, 1);
-    syncAgentSelects();
-    renderAgents(true);
+  } catch (error) {
+    if (agent.provider === name) setRowStatus(row, 'список моделей: ' + error.message, 'error');
+  }
+}
+
+// The dry-run switch is not a card: it is written as soon as it is flipped.
+async function applyDryRun() {
+  const box = document.getElementById('settings-dry-run');
+  const note = document.getElementById('dry-run-status');
+  const wanted = box.checked;
+  note.textContent = 'применяю…';
+  note.classList.remove('ok', 'error');
+  try {
+    await commitSettings({ wake_words: { dry_run: wanted, words: savedWordObjs } }, [{ kind: 'word', skip: -1, removed: null }]);
+    note.textContent = 'применено';
+    note.classList.add('ok');
+  } catch (error) {
+    box.checked = savedDryRun;
+    note.textContent = error.message;
+    note.classList.add('error');
   }
 }
 
@@ -1840,16 +2204,14 @@ async function providerAction(event) {
   if (!button) return;
   const row = button.closest('[data-kind="provider"]');
   if (!row) return;
-  const provider = providersState[Number(row.dataset.index)];
+  const provider = itemOf('provider', row);
   if (!provider) return;
-  const status = document.getElementById('settings-status');
-  status.classList.remove('error');
   const action = button.dataset.providerAction;
   if (action === 'forget') {
     provider._clearKey = true;
     provider._key = '';
     updateKeyBadge(row, provider);
-    status.textContent = 'ключ будет удалён при сохранении';
+    setRowStatus(row, 'ключ будет удалён при сохранении', '');
     return;
   }
   // «Проверить» works on the row as it stands, saved or not: it proves the key
@@ -1896,9 +2258,8 @@ const settingsScopeLabels = {
 async function submitSettings(event) {
   event.preventDefault();
   if (settingsSaving) return;
-  // event.submitter is the button that started the submit: the four «Сохранить»
-  // write different sections. It is empty only when the form was submitted from
-  // code, and then the whole configuration is written, as before.
+  // Only the routing «Сохранить» is a submit button; the cards save through
+  // saveCard. A submit from anywhere else writes nothing.
   const scope = event.submitter && event.submitter.dataset
     ? String(event.submitter.dataset.scope || '')
     : '';
@@ -1911,99 +2272,22 @@ async function submitSettings(event) {
 }
 
 async function applySettings(scope) {
+  // Providers, roles and start words are written card by card (saveCard); this
+  // form-wide path is left to the routing section.
+  if (scope !== 'routing') return;
   const status = document.getElementById('settings-status');
-  const label = settingsScopeLabels[scope] || '';
-  const withPrefix = (text) => (label ? label + ': ' + text : text);
-  const all = !scope;
+  const withPrefix = (text) => settingsScopeLabels.routing + ': ' + text;
   status.classList.remove('error');
-  const body = {};
-  let renamed = false;
-  if (all || scope === 'providers') {
-    // A key pasted into a fresh row is enough to save: fill the row from the key
-    // first, otherwise the checks below would refuse an empty address or model.
-    for (const provider of providersState) {
-      if (!String(provider._key || '').trim()) continue;
-      // A missing model is fine: the guess only fills the list to pick from.
-      const needsGuess = !String(provider.name || '').trim() ||
-        !String(provider.base_url || '').trim() || !String(provider.model || '').trim();
-      if (!needsGuess) continue;
-      const row = document.querySelector('[data-kind="provider"][data-index="' +
-        String(providersState.indexOf(provider)) + '"]');
-      status.textContent = withPrefix('определяю провайдера по ключу…');
-      try {
-        await applyProviderKey(provider, row, false);
-      } catch (error) {
-        // Not fatal: the row may already be complete by hand, and the checks below
-        // report anything that is still missing.
-      }
-    }
-    // Reported here, in the operator's words, instead of the strict decoder's
-    // "llm_providers[].name must be 1..32 characters…" from the server.
-    for (const provider of providersState) {
-      const name = String(provider.name || '').trim().toLowerCase();
-      if (!name || !String(provider.base_url || '').trim() || !String(provider.model || '').trim()) {
-        status.textContent = withPrefix('у подключения нужны название, адрес API и модель');
-        status.classList.add('error');
-        return;
-      }
-      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
-        status.textContent = withPrefix('название подключения: латиница, цифры, «-», «_», до 32 символов — например deepseek');
-        status.classList.add('error');
-        return;
-      }
-      // One canonical spelling: the name is the credential key in secrets.json and
-      // the value a role points at, so fold it here and carry the roles along.
-      // A rename is also written with the roles: a role pointing at the old name
-      // would be rejected as an unknown provider by the server.
-      if (name !== provider.name) {
-        for (const agent of agentsState) {
-          if (agent.provider === provider.name) agent.provider = name;
-        }
-        provider.name = name;
-        renamed = true;
-      }
-    }
-    body.llm_providers = providersState.map(providerPayload);
-  }
-  // One spelling for a role name: trimmed and lower-case, Cyrillic included. The
-  // start words that point at the old spelling follow it.
-  for (const agent of agentsState) {
-    const before = String(agent.name || '');
-    const folded = before.trim().toLowerCase();
-    if (folded === before) continue;
-    for (const word of wordsState) {
-      if (word.agent === before) word.agent = folded;
-    }
-    agent.name = folded;
-  }
-  // A start word may point at a role that was just added and not saved yet: the
-  // server checks the words against the roles of the same request, so the roles
-  // go along, otherwise the word would be refused as pointing at an unknown role.
-  const savedRoles = new Set(savedAgentNames);
-  const wordsNeedRoles = scope === 'words' && wordsState.some((word) => {
-    const name = String((word && word.agent) || '').trim();
-    return name !== '' && !savedRoles.has(name);
-  });
-  if (all || scope === 'roles' || renamed || wordsNeedRoles) body.agents = agentsState;
-  if (all || scope === 'words') {
-    body.wake_words = {
-      dry_run: document.getElementById('settings-dry-run').checked,
-      words: wordsState
-    };
-  }
-  if (all || scope === 'routing') {
-    // The routing form is read here, not on every keystroke: the section has
-    // controls outside the rule rows (prompt, timeout, refusal) and one read keeps
-    // the payload and what the operator sees in step.
-    readRoutingForm();
-    body.routing = routingPayload();
-  }
+  // The routing form is read here, not on every keystroke: the section has
+  // controls outside the rule rows (prompt, timeout, refusal) and one read keeps
+  // the payload and what the operator sees in step.
+  readRoutingForm();
+  const body = { routing: routingPayload() };
   status.textContent = withPrefix('сохраняю…');
   try {
     const payload = await postJSON(SETTINGS_URL, body);
     status.textContent = withPrefix(payload && payload.unchanged ? 'без изменений' : 'применено');
     renderSettings(payload || {}, true, scope);
-    if (all || scope === 'words') loadWakeDictionary();
   } catch (error) {
     status.textContent = withPrefix(error.message);
     status.classList.add('error');
@@ -2107,13 +2391,41 @@ function startTimers() {
 const TAB_KEY = 'midi-panel-tab';
 const THEME_KEY = 'midi-panel-theme';
 
+// The «Агенты» tab has its own strip of sub-tabs (Голос, Роли, Нейросети); a card
+// with data-sub shows only while its sub-tab is the chosen one.
+const SUB_KEY = 'midi-panel-sub';
+let currentSub = 'voice';
+
+function showSub(sub, remember) {
+  const buttons = Array.from(document.querySelectorAll('#subtabs [data-sub]'));
+  if (!buttons.some((button) => button.dataset.sub === sub)) sub = buttons.length ? buttons[0].dataset.sub : '';
+  currentSub = sub;
+  for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.sub === sub));
+  applyTabVisibility();
+  if (remember) {
+    try { localStorage.setItem(SUB_KEY, sub); } catch (error) { /* private mode: no memory */ }
+  }
+}
+
+let currentTab = '';
+
+function applyTabVisibility() {
+  const strip = document.getElementById('subtabs');
+  if (strip) strip.classList.toggle('is-hidden', currentTab !== 'agents');
+  for (const card of document.querySelectorAll('[data-group]')) {
+    const hidden = card.dataset.group !== currentTab || (card.dataset.sub && card.dataset.sub !== currentSub);
+    card.classList.toggle('is-hidden', Boolean(hidden));
+  }
+}
+
 function showTab(name, remember) {
   const buttons = Array.from(document.querySelectorAll('#tabs [data-tab]'));
+  // Tabs saved before the «Агенты» tab existed.
+  if (name === 'llm' || name === 'voice') name = 'agents';
   if (!buttons.some((button) => button.dataset.tab === name)) name = buttons.length ? buttons[0].dataset.tab : '';
   for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.tab === name));
-  for (const card of document.querySelectorAll('[data-group]')) {
-    card.classList.toggle('is-hidden', card.dataset.group !== name);
-  }
+  currentTab = name;
+  applyTabVisibility();
   if (remember) {
     try { localStorage.setItem(TAB_KEY, name); } catch (error) { /* private mode: no memory */ }
   }
@@ -2124,8 +2436,14 @@ function initTabs() {
   if (!buttons.length) return;
   let saved = '';
   try { saved = localStorage.getItem(TAB_KEY) || ''; } catch (error) { saved = ''; }
+  let savedSub = '';
+  try { savedSub = localStorage.getItem(SUB_KEY) || ''; } catch (error) { savedSub = ''; }
+  showSub(savedSub, false);
   showTab(saved, false);
   for (const button of buttons) button.addEventListener('click', () => showTab(button.dataset.tab, true));
+  for (const button of document.querySelectorAll('#subtabs [data-sub]')) {
+    button.addEventListener('click', () => showSub(button.dataset.sub, true));
+  }
   // 1..N jump between tabs, unless the operator is typing.
   document.addEventListener('keydown', (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -2180,29 +2498,31 @@ document.addEventListener('DOMContentLoaded', () => {
     if (event.key !== 'Enter' || event.isComposing || event.defaultPrevented) return;
     const control = event.target;
     if (!control || control.tagName !== 'INPUT') return;
-    if (control.type === 'checkbox' || control.type === 'radio') return;
+    // Inside a card Enter saves that card; in the routing section it saves
+    // routing; anywhere else (a checkbox included) it must not submit the form.
+    const card = control.closest('[data-kind="provider"],[data-kind="agent"],[data-kind="word"]');
     const section = control.closest('section[id]');
-    const button = section ? section.querySelector('button[data-scope]') : null;
-    if (!button) return;
+    const button = card
+      ? card.querySelector('button[data-save]')
+      : (section ? section.querySelector('button[data-scope]') : null);
     event.preventDefault();
-    button.click();
+    if (button && control.type !== 'checkbox' && control.type !== 'radio') button.click();
   });
   settingsForm.addEventListener('input', editSettingsField);
   settingsForm.addEventListener('change', editSettingsField);
   settingsForm.addEventListener('click', removeSettingsItem);
   settingsForm.addEventListener('click', providerAction);
-  document.getElementById('add-llm-provider').addEventListener('click', () => {
-    providersState.push({ name: '', api: 'chat_completions', base_url: '', model: '' });
-    renderProviders(true);
-  });
-  document.getElementById('add-wake-word').addEventListener('click', () => {
-    wordsState.push({ word: '', action: 'listen', text: '', agent: '' });
-    renderWakeWords(true);
-  });
-  document.getElementById('add-agent').addEventListener('click', () => {
-    agentsState.push({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false, sysadmin: false });
-    renderAgents(true);
-  });
+  settingsForm.addEventListener('click', saveCardClick);
+  settingsForm.addEventListener('click', cancelNewCard);
+  document.getElementById('settings-dry-run').addEventListener('change', applyDryRun);
+  // The «+» buttons live inside <summary>: stop the click from folding the section.
+  for (const [id, kind] of [['add-llm-provider', 'provider'], ['add-wake-word', 'word'], ['add-agent', 'agent']]) {
+    document.getElementById(id).addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openNewCard(kind, event.currentTarget);
+    });
+  }
   // Routing lives inside the same form, but keeps its own state and controls:
   // the generic settings handler stops at controls without data-field.
   settingsForm.addEventListener('input', editRoutingRule);

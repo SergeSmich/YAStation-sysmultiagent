@@ -459,3 +459,40 @@ body.light .combo-menu { background: #ffffff; }
 /* Solid dark red: the one button that destroys a row stands out from the ghost ones. */
 button.danger-solid { background: #991b1b; border-color: #7f1d1d; color: #ffffff; font-weight: 600; }
 button.danger-solid:hover { background: #7f1d1d; border-color: #7f1d1d; }
+/* «Агенты»: a second, quieter strip of sub-tabs, and a spoiler per section so
+   only its title shows until it is opened. */
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+.subtabs button {
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+.subtabs button:hover { color: var(--text); border-color: var(--line-strong); }
+.subtabs button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+details.fold > summary { cursor: pointer; font-size: 18px; font-weight: 700; padding: 2px 0; list-style-position: inside; }
+details.fold[open] > summary { margin-bottom: 10px; }
+/* Section titles carry the «+» button next to the text. */
+details.fold > summary { display: flex; align-items: center; gap: 12px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "▸"; color: var(--muted); font-size: 14px; }
+details.fold[open] > summary::before { content: "▾"; }
+.fold-title { flex: 0 1 auto; }
+.add-item { padding: 4px 12px; font-size: 13px; font-weight: 600; border-radius: 999px; }
+/* The training link is a standalone strip on top of the «Голос» sub-tab. */
+.train-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 14px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2);
+}
+.train-bar .button-link { font-weight: 600; }
+/* One card = one form with its own «Сохранить» and its own answer line. */
+.row-title { grid-column: 1 / -1; margin: 0; font-size: 15px; color: var(--accent2); }
+.settings-row.is-new { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.row-status { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.row-status.ok, #dry-run-status.ok { color: var(--ok); }
+.row-status.error, #dry-run-status.error { color: var(--err); }
+.service-fixed { padding: 7px 0; font-weight: 600; }
+.provider-model[hidden] { display: none; }

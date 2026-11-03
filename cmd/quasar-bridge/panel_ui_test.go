@@ -60,18 +60,27 @@ func TestPanelUIWiresTheSettingsSections(t *testing.T) {
 	if !strings.Contains(string(page), `target="_blank"`) {
 		t.Fatal("panel.html: the training-page link does not open a new tab")
 	}
-	// Four «Сохранить», four sections. Each button names the section it writes,
-	// because the page sends only that section: one bad row in the providers must
-	// not block saving the roles, and saving the roles must not rewrite the
-	// providers that are still being edited.
-	for _, scope := range []string{"providers", "words", "roles", "routing"} {
-		marker := `data-scope="` + scope + `"`
-		if !strings.Contains(string(page), marker) {
-			t.Fatalf("panel.html: no «Сохранить» button for section %q (%s)", scope, marker)
-		}
+	// Providers, roles and start words are saved card by card: the «Сохранить»
+	// buttons are built by the script (data-save), so the page keeps a single
+	// section-wide button, the routing one. The «+» buttons sit in the section
+	// titles.
+	if !strings.Contains(string(page), `data-scope="routing"`) {
+		t.Fatal(`panel.html: no «Сохранить» button for the routing section`)
 	}
-	if got := strings.Count(string(page), `data-scope="`); got != 4 {
-		t.Fatalf("panel.html: %d scoped save buttons, want exactly 4", got)
+	if got := strings.Count(string(page), `data-scope="`); got != 1 {
+		t.Fatalf("panel.html: %d scoped save buttons, want exactly 1", got)
+	}
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), `button.dataset.save = kind`) {
+		t.Fatal("panel.js: saveButton does not set data-save")
+	}
+	for _, kind := range []string{"provider", "agent", "word"} {
+		if !strings.Contains(string(script), `saveButton('`+kind+`')`) {
+			t.Fatalf("panel.js: no per-card «Сохранить» for %s", kind)
+		}
 	}
 }
 

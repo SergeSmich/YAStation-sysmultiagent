@@ -21,8 +21,7 @@
     </header>
     <nav class="tabs" id="tabs" role="toolbar" aria-label="Разделы панели">
       <button type="button" data-tab="routing" aria-pressed="true">Маршрутизация</button>
-      <button type="button" data-tab="llm" aria-pressed="false">Нейросеть</button>
-      <button type="button" data-tab="voice" aria-pressed="false">Голос</button>
+      <button type="button" data-tab="agents" aria-pressed="false">Агенты</button>
       <button type="button" data-tab="station" aria-pressed="false">Станция</button>
       <button type="button" data-tab="sysadmin" aria-pressed="false">Сисадмин</button>
 <button type="button" data-tab="journal" aria-pressed="false">Журнал</button>
@@ -35,40 +34,39 @@
         <span id="settings-status" class="muted small" aria-live="polite"></span>
       </header>
 
+      <nav class="subtabs is-hidden" id="subtabs" role="toolbar" aria-label="Подразделы агентов">
+        <button type="button" data-sub="voice" aria-pressed="true">Голос</button>
+        <button type="button" data-sub="roles" aria-pressed="false">Роли</button>
+        <button type="button" data-sub="llm" aria-pressed="false">Нейросети</button>
+      </nav>
+
       <form id="settings-form" class="settings-form">
-        <section id="section-providers" class="settings-card" data-group="llm">
-          <h2>Нейросети</h2>
-          <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ.</p>
+        <section id="section-providers" class="settings-card" data-group="agents" data-sub="llm">
+          <details class="fold"><summary><span class="fold-title">Нейросети</span><button type="button" id="add-llm-provider" class="ghost add-item">+ нейросеть</button></summary>
+          <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ. У каждой карточки своя кнопка «Сохранить».</p>
           <div id="llm-providers-list" class="settings-list"></div>
-          <div class="card-actions">
-            <button type="button" id="add-llm-provider" class="ghost">+ нейросеть</button>
-            <button type="submit" class="btn-accent" data-scope="providers">Сохранить</button>
-          </div>
+          </details>
         </section>
 
-        <section id="section-words" class="settings-card" data-group="voice">
-          <h2>Старт-слова</h2>
+        <section id="section-train" class="train-bar" data-group="agents" data-sub="voice">
+          <a id="wake-train" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Обучение старт-слов</a>
+          <span id="wake-train-hint" class="muted small"></span>
+        </section>
+
+        <section id="section-words" class="settings-card" data-group="agents" data-sub="voice">
+          <details class="fold"><summary><span class="fold-title">Старт-слова</span><button type="button" id="add-wake-word" class="ghost add-item">+ слово</button></summary>
           <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry-run)</label>
-          <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно.</p>
+          <span id="dry-run-status" class="row-status small" aria-live="polite"></span>
+          <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно. Переключатель применяется сразу.</p>
           <div id="wake-words-list" class="settings-list"></div>
           <p id="wake-dictionary-hint" class="muted small wake-dictionary"></p>
-          <div class="actions">
-            <a id="wake-train" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Обучение старт-слов</a>
-            <span id="wake-train-hint" class="muted small"></span>
-          </div>
-          <div class="card-actions">
-            <button type="button" id="add-wake-word" class="ghost">+ слово</button>
-            <button type="submit" class="btn-accent" data-scope="words">Сохранить</button>
-          </div>
+          </details>
         </section>
 
-        <section id="section-roles" class="settings-card" data-group="llm">
-          <h2>Роли</h2>
+        <section id="section-roles" class="settings-card" data-group="agents" data-sub="roles">
+          <details class="fold"><summary><span class="fold-title">Роли</span><button type="button" id="add-agent" class="ghost add-item">+ роль</button></summary>
           <div id="agents-list" class="settings-list"></div>
-          <div class="card-actions">
-            <button type="button" id="add-agent" class="ghost">+ роль</button>
-            <button type="submit" class="btn-accent" data-scope="roles">Сохранить</button>
-          </div>
+          </details>
         </section>
 
         <section id="section-routing" class="settings-card" data-group="routing">
@@ -289,8 +287,8 @@
         </details>
       </section>
 
-      <section id="section-voice" data-group="voice">
-        <h2>Голос</h2>
+      <section id="section-voice" data-group="agents" data-sub="voice">
+        <details class="fold"><summary>Голос</summary>
         <div id="voice" class="panel">—</div>
         <form id="voice-form" class="panel form">
           <div class="field">
@@ -350,7 +348,7 @@
             <label class="check"><input type="checkbox" id="voice-play" checked> на станции</label>
             <span id="voice-status" class="muted"></span>
           </div>
-        </form>
+        </form></details>
       </section>
 
       <section id="section-turns" data-group="journal">
