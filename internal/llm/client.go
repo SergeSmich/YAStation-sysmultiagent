@@ -166,15 +166,18 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 			FinishReason string  `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		logCall(c, started, 0, 0, err)
 		return Message{}, errors.New("invalid LLM response")
 	}
-	logCall(c, started, result.Usage.PromptTokens, result.Usage.CompletionTokens, nil)
+	logCall(c, started, result.Usage.PromptTokens, result.Usage.CompletionTokens, nil, result.Usage.PromptTokensDetails.CachedTokens)
 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
 		return Message{}, errors.New("LLM returned no answer")
 	}
@@ -189,9 +192,15 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 // logCall writes one line per model round: where the time and the tokens of a
 // slow answer went. Host and model only; the URL may carry userinfo and the
 // key never reaches a log.
-func logCall(c *Client, started time.Time, promptTokens, completionTokens int, err error) {
+//
+// cachedTokens is the part of the prompt the service served from its prefix
+// cache; it is logged only when the service reports one.
+func logCall(c *Client, started time.Time, promptTokens, completionTokens int, err error, cachedTokens ...int) {
 	attrs := []any{"host", hostOf(c.BaseURL), "model", c.Model, "elapsed_ms", time.Since(started).Milliseconds(),
 		"prompt_tokens", promptTokens, "completion_tokens", completionTokens}
+	if len(cachedTokens) > 0 && cachedTokens[0] > 0 {
+		attrs = append(attrs, "cached_tokens", cachedTokens[0])
+	}
 	if err != nil {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) {

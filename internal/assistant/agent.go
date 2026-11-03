@@ -197,8 +197,67 @@ func (a *Agent) execute(ctx context.Context, call llm.ToolCall, historyRead *boo
 			name = call.Function.Name
 		}
 	}
-	slog.Info("assistant_tool", "tool", name, "phase", phase, "ok", err == nil, "elapsed_ms", time.Since(start).Milliseconds())
+	attrs := []any{"tool", name, "phase", phase, "ok", err == nil, "elapsed_ms", time.Since(start).Milliseconds()}
+	if arg := loggedArgument(name, call.Function.Arguments); arg != "" {
+		// What the sysadmin actually asked a host to do, and what came back:
+		// without it a wrong answer cannot be traced to a wrong command.
+		attrs = append(attrs, "arg", arg)
+		if loggedResultAllowed(name, arg) {
+			attrs = append(attrs, "result", clipLog(string(raw), 200))
+		}
+	}
+	slog.Info("assistant_tool", attrs...)
 	return llm.Message{Role: "tool", ToolCallID: call.ID, Content: string(raw)}, nil
+}
+
+// loggedArgument returns the one argument of a host-facing sysadmin tool that
+// is worth a journal line, cut short. Other tools (memory, history, plans)
+// carry personal text and log nothing.
+func loggedArgument(tool, arguments string) string {
+	var key string
+	switch tool {
+	case "sysadmin_exec":
+		key = "command"
+	case "sysadmin_find_app":
+		key = "query"
+	case "sysadmin_launch":
+		key = "target"
+	case "sysadmin_read_file":
+		key = "path"
+	case "sysadmin_http_get":
+		key = "url"
+	default:
+		return ""
+	}
+	var args map[string]any
+	if json.Unmarshal([]byte(arguments), &args) != nil {
+		return ""
+	}
+	text, _ := args[key].(string)
+	return clipLog(text, 160)
+}
+
+// loggedResultAllowed keeps secrets out of the journal: file contents are never
+// logged, and neither is the output of a command that names a secret.
+func loggedResultAllowed(tool, arg string) bool {
+	if tool == "sysadmin_read_file" {
+		return false
+	}
+	low := strings.ToLower(arg)
+	for _, marker := range []string{"secret", "token", "passw", "passwd", "shadow", "credential", "key", ".pem", ".env", "id_rsa", "ssh", "config.json"} {
+		if strings.Contains(low, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func clipLog(s string, n int) string {
+	r := []rune(strings.Join(strings.Fields(s), " "))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
 }
 
 func (a *Agent) allowedAfterHistory(name string) bool {
