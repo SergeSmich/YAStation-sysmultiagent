@@ -19,6 +19,17 @@ func TestProviderKeyFieldIsNotAPasswordField(t *testing.T) {
 	if !strings.Contains(string(style), "-webkit-text-security") {
 		t.Fatal("panel.css does not mask .secret-input")
 	}
+	page, _ := panelAssets.ReadFile("panel.html")
+	for _, id := range []string{"sa-host-pass", "sa-tg-token"} {
+		at := strings.Index(string(page), `id="`+id+`"`)
+		if at < 0 {
+			t.Fatalf("field %s missing", id)
+		}
+		end := strings.Index(string(page)[at:], ">")
+		if tag := string(page)[at : at+end]; strings.Contains(tag, `type="password"`) || !strings.Contains(tag, "secret-input") {
+			t.Fatalf("field %s is a password field again", id)
+		}
+	}
 	if _, ok := llmPresetByID("arena"); !ok {
 		t.Fatal("arena preset missing")
 	}

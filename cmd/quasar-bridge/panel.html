@@ -223,7 +223,7 @@
           <div class="field"><label for="sa-host-addr">Адрес</label><input id="sa-host-addr" type="text" autocomplete="off" spellcheck="false" placeholder="192.168.1.114"></div>
           <div class="field narrow"><label for="sa-host-port">Порт</label><input id="sa-host-port" type="number" min="1" max="65535" placeholder="22"></div>
           <div class="field"><label for="sa-host-user">Пользователь</label><input id="sa-host-user" type="text" autocomplete="off" spellcheck="false"></div>
-          <div class="field"><label for="sa-host-pass">Пароль</label><input id="sa-host-pass" type="password" autocomplete="new-password"><span id="sa-host-pass-note" class="muted small"></span></div>
+          <div class="field"><label for="sa-host-pass">Пароль</label><input id="sa-host-pass" type="text" class="secret-input" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"><span id="sa-host-pass-note" class="muted small"></span></div>
           <label class="check"><input type="checkbox" id="sa-host-clear"> очистить сохранённый пароль</label>
           <div class="field"><label for="sa-host-key">Путь к ключу</label><input id="sa-host-key" type="text" autocomplete="off" spellcheck="false"></div>
           <div class="field"><label for="sa-host-mac">MAC (для включения по сети)</label><input id="sa-host-mac" type="text" autocomplete="off" spellcheck="false" placeholder="aa:bb:cc:dd:ee:ff"></div>
@@ -239,7 +239,7 @@
           <label class="check"><input type="checkbox" id="sa-tg-enabled"> включён</label>
           <div class="field"><label for="sa-tg-users">Разрешённые user_id (через запятую)</label><input id="sa-tg-users" type="text" autocomplete="off" spellcheck="false" placeholder="123456789"></div>
           <div class="field"><label for="sa-tg-agent">Роль (с флагом «Сисадмин»)</label><input id="sa-tg-agent" type="text" autocomplete="off" spellcheck="false" placeholder="сисадмин"></div>
-          <div class="field"><label for="sa-tg-token">Токен бота</label><input id="sa-tg-token" type="password" autocomplete="new-password"><span id="sa-tg-token-note" class="muted small"></span></div>
+          <div class="field"><label for="sa-tg-token">Токен бота</label><input id="sa-tg-token" type="text" class="secret-input" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"><span id="sa-tg-token-note" class="muted small"></span></div>
           <label class="check"><input type="checkbox" id="sa-tg-clear"> очистить сохранённый токен</label>
           <div class="actions">
             <button type="button" id="sa-tg-save" data-sysadmin-save="telegram">Сохранить Telegram</button>
