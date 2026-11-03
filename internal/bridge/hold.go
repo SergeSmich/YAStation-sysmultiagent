@@ -61,9 +61,26 @@ func (n *Native) heldRouteOf(ctx context.Context) string {
 	}
 	if !time.Now().Before(held.expires) {
 		delete(n.held, key)
+		n.notifyReleased(held.route, "ttl")
 		return ""
 	}
 	return held.route
+}
+
+// notifyReleased tells the bridge that a role no longer owns a conversation, so
+// whatever it was waiting on (permission requests, an approved plan) can end.
+// It runs on its own goroutine: the caller holds the native lock.
+func (n *Native) notifyReleased(route, reason string) {
+	if fn := n.OnRoleReleased; fn != nil {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("role_released_hook_panic", "panic", r)
+				}
+			}()
+			fn(route, reason)
+		}()
+	}
 }
 
 // releaseRole ends the held conversation of this speaker and reports the route
@@ -78,8 +95,12 @@ func (n *Native) releaseRole(ctx context.Context) (string, bool) {
 	held, ok := n.held[key]
 	delete(n.held, key)
 	if !ok || !time.Now().Before(held.expires) {
+		if ok {
+			n.notifyReleased(held.route, "ttl")
+		}
 		return "", false
 	}
+	n.notifyReleased(held.route, "release")
 	return held.route, true
 }
 

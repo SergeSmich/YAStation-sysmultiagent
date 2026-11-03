@@ -301,6 +301,28 @@ func (q *Queue) DecideScope(id string, scope Scope, by string) (Item, error) {
 	return cp, nil
 }
 
+// CancelPending refuses every pending item the filter accepts (nil accepts
+// all) and says why. It is how requests that belong to a finished conversation
+// stop waiting: nobody is there to answer them any more.
+func (q *Queue) CancelPending(match func(Item) bool, reason string) int {
+	q.mu.Lock()
+	q.expireLocked()
+	n := 0
+	for _, id := range q.order {
+		it := q.items[id]
+		if it == nil || it.Status != "pending" || (match != nil && !match(*it)) {
+			continue
+		}
+		it.Status, it.Note, it.Err = "denied", reason, reason
+		n++
+	}
+	q.mu.Unlock()
+	if n > 0 && q.audit != nil {
+		q.audit.Audit("cancel_pending", map[string]any{"count": n, "reason": reason})
+	}
+	return n
+}
+
 func (q *Queue) Result(id string) (Item, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

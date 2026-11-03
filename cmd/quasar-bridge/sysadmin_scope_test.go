@@ -282,7 +282,7 @@ func TestVoiceGateSeveralRequests(t *testing.T) {
 
 	// Bare «да» lists the requests and decides none.
 	answer, _, ok := gate(ctx, "да")
-	if !ok || !strings.Contains(answer, "1:") || !strings.Contains(answer, "3:") {
+	if !ok || !strings.Contains(answer, "Ждут разрешения: 3") || strings.Contains(answer, "klipper") {
 		t.Fatalf("no list: %q %v", answer, ok)
 	}
 	// A lasting grant for everything at once is refused.

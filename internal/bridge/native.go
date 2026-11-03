@@ -37,6 +37,8 @@ type Resolution struct {
 	// Handoff is the role route that keeps the conversation after this answer;
 	// empty means the answering route keeps it.
 	Handoff string
+	// NoHold ends the conversation with the role after this answer.
+	NoHold bool
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -143,6 +145,12 @@ type Native struct {
 	// the route that speaks it (empty: the held role, else "llm") and whether it
 	// handled the phrase. It must be set before the session starts.
 	VoiceGate func(ctx context.Context, text string) (answer, route string, ok bool)
+	// DialogueEnd lets the bridge take part when a held role's conversation
+	// ends or continues: it may answer instead of the role (say, ask whether to
+	// save the session) and may release the role with that answer.
+	DialogueEnd func(ctx context.Context, route, text string, ending bool) (answer string, release, handled bool)
+	// OnRoleReleased is told when a held role stopped owning the conversation.
+	OnRoleReleased func(route, reason string)
 	GateText  bool
 	ShouldListen  bool
 	voice         atomic.Pointer[VoiceConfig]
@@ -859,9 +867,21 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		// next phrase from scratch would hand it to the cloud or the default
 		// model in the middle of a dialogue.
 		held := ""
+		endAnswer, endRoute := "", ""
 		if pin == "" && !p.isText && spoken == nil {
 			held = n.heldRouteOf(p.ctx)
-			if held != "" && endsDialogue(text) {
+			if held != "" && n.DialogueEnd != nil {
+				if ans, rel, ok := n.DialogueEnd(p.ctx, held, text, endsDialogue(text)); ok {
+					endAnswer, endRoute = ans, held
+					if rel {
+						if route, ok := n.releaseRole(p.ctx); ok {
+							slog.Info("native_role_released", "request", requestTag(p.id), "route", route, "reason", "dialogue_end")
+						}
+						held = ""
+					}
+				}
+			}
+			if held != "" && endAnswer == "" && endsDialogue(text) {
 				// The person ended the conversation on purpose. The turn is
 				// routed as usual, so a reset phrase still resets the topic and
 				// "хватит" still stops playback.
@@ -872,7 +892,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			}
 		}
 		var gated bool
-		if gate := n.VoiceGate; gate != nil && spoken == nil && pin == "" && !p.isText {
+		if endAnswer != "" {
+			result = Resolution{Route: endRoute, Answer: endAnswer, NoHold: held == ""}
+			gated = true
+			slog.Info("native_dialogue_end_answer", "request", requestTag(p.id), "route", endRoute)
+		} else if gate := n.VoiceGate; gate != nil && spoken == nil && pin == "" && !p.isText {
 			// A spoken answer to a question the bridge itself is waiting on
 			// (a permission request) is not a new request: it is handled here
 			// and never reaches the router or the cloud.
@@ -1002,7 +1026,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
-		if !p.isText && result.Route != "" {
+		if !p.isText && result.Route != "" && !result.NoHold {
 			// The role that produced this answer keeps the reopened windows
 			// until the person falls silent or ends the conversation. The hold
 			// is armed before the answer goes out, so the next window can never

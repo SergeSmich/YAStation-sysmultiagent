@@ -110,6 +110,16 @@ type sysadminHub struct {
 	voiceMu       sync.Mutex
 	voiceListed   []string
 	voiceListedAt time.Time
+
+	// One approval per task and the saved conversations (sysadmin_plan.go).
+	planMu   sync.Mutex
+	plan     taskPlan
+	sessions *sysadmin.Sessions
+	touched  bool      // the agent did something since the last conversation ended
+	saveAsk  time.Time // «Сохранить, чтобы вернуться?» was asked at this time
+	activity []string  // what the agent changed in this conversation
+	topic    string    // the latest task, for the saved session
+	topicHost string
 }
 
 // NewSysadminHub creates the long-lived sysadmin state rooted at dir.
@@ -122,6 +132,7 @@ func NewSysadminHub(dir string, aud sysadmin.Auditor) *sysadminHub {
 	h.queue.SetGranter(h.grant)
 	h.known = sysadmin.NewKnownHosts(filepath.Join(dir, "sysadmin_known_hosts.json"))
 	h.exec = sysadmin.NewExecutor(h.execHosts, h.known)
+	h.sessions = sysadmin.NewSessions(filepath.Join(dir, "sysadmin_sessions.json"))
 	return h
 }
 

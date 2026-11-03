@@ -206,17 +206,11 @@ func (h *sysadminHub) voiceAnnounce(items []sysadmin.Item, prefix string) string
 	h.voiceMu.Lock()
 	h.voiceListed, h.voiceListedAt = ids, time.Now()
 	h.voiceMu.Unlock()
-	var b strings.Builder
-	b.WriteString(prefix + "Ждёт заявок: " + strconv.Itoa(len(items)) + ". ")
-	for i, it := range items {
-		if i == voiceHeardMax {
-			b.WriteString("И другие, они в панели. ")
-			break
-		}
-		b.WriteString(strconv.Itoa(i+1) + ": " + clipSpoken(it.Host+" "+it.Summary, 70) + ". ")
+	if len(items) == 1 {
+		return prefix + clipSpoken(items[0].Summary, 70) + ". Можно?"
 	}
-	b.WriteString("Скажите «разрешить все», «отклонить все» или «разрешить первую».")
-	return b.String()
+	// Several requests: no names, only the count; the details are in the panel.
+	return prefix + "Ждут разрешения: " + strconv.Itoa(len(items)) + ". Разрешить все?"
 }
 
 func (h *sysadminHub) voiceFresh() bool {
