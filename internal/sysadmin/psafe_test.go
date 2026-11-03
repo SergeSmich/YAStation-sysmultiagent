@@ -11,6 +11,10 @@ func TestIsSafeChangePS(t *testing.T) {
 		`Start-Process calc.exe`,
 		`Start-Process -FilePath firefox`,
 		`start chrome`,
+		`Stop-Process -Name notepad`,
+		`Stop-Process -Name MetroExodus -Force`,
+		`Stop-Process -Name 'metroexodus.exe' -Force -ErrorAction SilentlyContinue`,
+		`spps calc`,
 	}
 	for _, c := range safe {
 		if !IsSafeChangePS(c) {
@@ -39,7 +43,18 @@ func TestIsSafeChangePS(t *testing.T) {
 		"Start-Process notepad`n",
 		`Start-Process \\srv\share\x`,
 		`Start-Process reg`,
-		`Stop-Process -Name notepad`,
+		`Stop-Process -Id 20612 -Force`,
+		`Stop-Process 20612`,
+		`Stop-Process -Name *`,
+		`Stop-Process -Name note*`,
+		`Stop-Process -Name explorer -Force`,
+		`Stop-Process -Name svchost.exe`,
+		`Stop-Process -Name sshd -Force`,
+		`Stop-Process -Name notepad, calc`,
+		`Stop-Process -Name a b`,
+		`Stop-Process -Name notepad; Remove-Item x`,
+		`Stop-Process -ErrorAction Stop notepad`,
+		`Get-Process notepad | Stop-Process`,
 	}
 	for _, c := range unsafe {
 		if IsSafeChangePS(c) {

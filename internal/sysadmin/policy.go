@@ -416,7 +416,8 @@ func readStage(f []string) bool {
 	name, args := f[0], f[1:]
 	switch name {
 	case "ls", "cat", "head", "df", "du", "free", "uptime", "uname", "whoami", "lsblk", "id", "wc",
-		"stat", "grep", "pwd", "lscpu", "lsusb", "lspci", "findmnt", "uniq", "cut", "tr", "nproc":
+		"stat", "grep", "pwd", "lscpu", "lsusb", "lspci", "findmnt", "uniq", "cut", "tr", "nproc",
+		"which", "whereis", "type", "pidof", "pgrep":
 		if name == "uniq" && len(args) > 0 {
 			// "uniq in out" writes the second file.
 			for _, a := range args {
@@ -524,7 +525,7 @@ func readStage(f []string) bool {
 // host a plain pipeline of read-only cmdlets is a Read.
 func ClassifyShellOS(command string, windows bool) Risk {
 	risk := ClassifyShell(command)
-	if risk == RiskChange && windows && IsReadOnlyPS(command) {
+	if risk == RiskChange && windows && (IsReadOnlyPS(command) || IsDiagnosticPS(command)) {
 		return RiskRead
 	}
 	return risk

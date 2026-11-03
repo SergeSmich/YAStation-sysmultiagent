@@ -14,8 +14,10 @@ import (
 var (
 	launchAppRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,60}$`)
 	// Strict allow-list: letters, digits, space and . _ - \ /. No quotes of any kind
-	// (including typographic ones), brackets, commas or operators.
-	launchPathRe = regexp.MustCompile(`^[A-Za-z]:[\\/][\p{L}\p{N} ._\\/-]{1,240}$`)
+	// (including typographic ones), commas or operators. Square brackets and
+	// parentheses are kept: Start-menu folders are named like "Metro Exodus [GOG.com]"
+	// and the path only ever travels inside double quotes.
+	launchPathRe = regexp.MustCompile(`^[A-Za-z]:[\\/][\p{L}\p{N} ._\\/()\[\]-]{1,240}$`)
 )
 
 // safeDocExts are documents and media: opening one runs no code of its own.
@@ -38,6 +40,9 @@ var launchBlocked = map[string]bool{
 var launchBlockedExt = map[string]bool{
 	".bat": true, ".cmd": true, ".vbs": true, ".vbe": true, ".js": true, ".jse": true, ".wsf": true, ".hta": true,
 	".scr": true, ".msi": true, ".reg": true, ".ps1": true, ".com": true, ".pif": true, ".url": true,
+	".jar": true, ".py": true, ".cpl": true, ".msc": true, ".wsh": true, ".sct": true, ".application": true,
+	".appref-ms": true, ".msp": true, ".xll": true, ".docm": true, ".xlsm": true, ".pptm": true, ".psm1": true,
+	".ps1xml": true, ".vb": true, ".chm": true,
 }
 
 // Launch describes what to start and whether it needs no question.
@@ -72,7 +77,7 @@ func ParseLaunch(target string) (Launch, error) {
 			name := strings.ToLower(strings.TrimSuffix(path.Base(slashed), path.Ext(slashed)))
 			return Launch{Target: t, Subject: name, Safe: psAllowedApps[name], File: true}, nil
 		}
-		if launchBlockedExt[ext] {
+		if launchBlockedExt[ext] || (ext == ".exe" && launchBlocked[strings.TrimSuffix(strings.ToLower(path.Base(slashed)), ".exe")]) {
 			return Launch{}, errors.New("скрипты и установщики этим способом не запускаются")
 		}
 		return Launch{Target: t, Subject: strings.ToLower(t), Safe: safeDocExts[ext], File: true}, nil

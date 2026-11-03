@@ -23,6 +23,7 @@ const (
 	toolSysPlan   = "sysadmin_plan"
 	toolSysLaunch = "sysadmin_launch"
 	toolSysFind   = "sysadmin_find_app"
+	toolSysStop   = "sysadmin_stop_launched"
 	toolSysSave   = "sysadmin_session_save"
 	toolSysLast   = "sysadmin_session_last"
 )
@@ -236,6 +237,11 @@ func (s *sysadminToolset) launch(ctx context.Context, origin, host, target strin
 		case s.hub.SessionAllowed("launch", host, l.Subject):
 			mode = sysadmin.ModeAllow
 			origin += " (разрешено в сессии)"
+		default:
+			// The person asked to open it; only deleting and changing system
+			// settings need a question. Scripts and shells are refused by ParseLaunch.
+			mode = sysadmin.ModeAllow
+			origin += " (запуск по просьбе)"
 		}
 	}
 	s.hub.Audit("sysadmin_launch", map[string]any{"host": host, "target": clip(target, 200), "mode": string(mode), "origin": origin})
@@ -248,6 +254,7 @@ func (s *sysadminToolset) launch(ctx context.Context, origin, host, target strin
 		if strings.Contains(out, "NO_INTERACTIVE_USER") {
 			return "", errors.New("на ПК никто не вошёл в Windows: открывать программу негде")
 		}
+		s.hub.launched.watch(s.hub, host, l.Subject)
 		return out, nil
 	}
 	switch mode {

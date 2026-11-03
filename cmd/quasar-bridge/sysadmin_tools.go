@@ -36,7 +36,10 @@ const (
 const sysadminPrompt = sysadminPromptTag +
 	"Ты ведёшь домашнюю систему: ПК с Windows, Raspberry Pi (Klipper, Home Assistant) и колонку. " +
 	"Действуй сам, коротко и по-человечески, как толковый помощник: не перечисляй шаги, устройства и команды, технику называй только по просьбе. " +
-	"Сначала смотри (sysadmin_passport_get, sysadmin_recall), потом делай. Читающие команды идут сразу. " +
+	"Сначала смотри (sysadmin_passport_get, sysadmin_recall), потом делай. Любой поиск и диагностика (файлы, процессы, диски, нагрузка, службы, сеть) идут сразу без вопросов: " +
+	"Get-ChildItem -Recurse, Get-Process, dir /s /b | findstr, wmic, which; для поиска процесса игры ищи по маске имени. Вопрос нужен только про удаление и изменение системных параметров. " +
+	"Запуск программ и закрытие запущенного тобой вопросов не требуют, sysadmin_plan для них не нужен. " +
+	"Закрыть программу: sysadmin_stop_launched (станция помнит процессы, которые появились после запуска): «убей это/последнее» — what=last, «и похожие/всё запущенное» — what=all, либо имя процесса. " +
 	"Перед задачей с изменениями (создать файл, поправить настройку) один раз вызови sysadmin_plan с одной понятной фразой, например «создам заметку на рабочем столе и открою её»: " +
 	"человек отвечает «да» один раз, и шаги этой задачи идут без вопросов; сразу переходи к делу. Опасное и секретное всё равно спросит отдельно. " +
 	"Программы открывай через sysadmin_launch (блокнот, хром, имя ярлыка или документ); если не уверен в названии, найди его через sysadmin_find_app. " +
@@ -50,7 +53,7 @@ func isSysadminTool(name string) bool {
 	switch name {
 	case toolSysHosts, toolSysExec, toolSysReadFile, toolSysWake, toolSysHTTPGet, toolSysRemember,
 		toolSysRecall, toolSysForget, toolSysPassportS, toolSysPassportG, toolSysResult,
-		toolSysPlan, toolSysLaunch, toolSysFind, toolSysSave, toolSysLast:
+		toolSysPlan, toolSysLaunch, toolSysFind, toolSysSave, toolSysLast, toolSysStop:
 		return true
 	}
 	return false
@@ -87,6 +90,7 @@ func (s *sysadminToolset) Definitions() []llm.Tool {
 		peerDefinition(toolSysPlan, "Ask the human once about a task with changes, in one plain phrase. After yes, steps on that host run without questions (except dangerous ones).", map[string]any{"host": str, "summary": str}, []string{"host", "summary"}),
 		peerDefinition(toolSysLaunch, "Open a program or document on the Windows PC in the user's session: Russian or English name, Start-menu shortcut name, or a document file. Scripts and shells are forbidden.", map[string]any{"host": str, "target": str}, []string{"host", "target"}),
 		peerDefinition(toolSysFind, "Find a program on the Windows PC by an inexact name (Start-menu shortcuts). Read-only.", map[string]any{"host": str, "query": str}, []string{"host", "query"}),
+		peerDefinition(toolSysStop, "Close programs started through sysadmin_launch. what: last (the last started), all (everything started), list (show), or a process name. Stops every instance of those processes; no question needed.", map[string]any{"host": str, "what": str}, []string{"host"}),
 		peerDefinition(toolSysSave, "Save the current session to resume later. Only when the human asks.", map[string]any{"topic": str, "notes": str}, []string{"topic"}),
 		peerDefinition(toolSysLast, "Get the last saved session (topic, what was done). drop=true forgets it when the human starts a new task.", map[string]any{"drop": map[string]string{"type": "boolean"}}, []string{}),
 	)
@@ -306,6 +310,15 @@ func (s *sysadminToolset) Call(ctx context.Context, name, args string) (any, err
 			return nil, errors.New("invalid sysadmin_launch arguments")
 		}
 		return s.launch(ctx, origin, in.Host, in.Target)
+	case toolSysStop:
+		var in struct {
+			Host string `json:"host"`
+			What string `json:"what"`
+		}
+		if dec(&in) != nil {
+			return nil, errors.New("invalid sysadmin_stop_launched arguments")
+		}
+		return s.stopLaunched(ctx, origin, in.Host, in.What)
 	case toolSysFind:
 		var in struct {
 			Host  string `json:"host"`

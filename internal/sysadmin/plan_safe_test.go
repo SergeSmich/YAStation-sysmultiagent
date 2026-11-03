@@ -57,7 +57,7 @@ func TestPlanSafe(t *testing.T) {
 }
 
 func TestParseLaunchHardening(t *testing.T) {
-	for _, in := range []string{"C:\\a’,(calc),’b.txt", "C:\\a“b.txt", "C:\\a(1).txt", "C:\\a,b.txt", "payload.bat", "x.ps1", "a.cmd", "app.com", "cmd .exe", "powershell -enc x", `C:\Temp\Start Menu\Programs\chrome.lnk`} {
+	for _, in := range []string{"C:\\a’,(calc),’b.txt", "C:\\a“b.txt", "C:\\a,b.txt", "payload.bat", "x.ps1", "a.cmd", "app.com", "cmd .exe", "powershell -enc x", `C:\Temp\Start Menu\Programs\chrome.lnk`} {
 		if _, err := ParseLaunch(in); err == nil {
 			t.Errorf("ParseLaunch(%q) должен отклоняться", in)
 		}

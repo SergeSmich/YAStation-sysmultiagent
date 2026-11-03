@@ -47,8 +47,46 @@ func IsSafeChangePS(command string) bool {
 		return psTempCleanup(args)
 	case "start-process", "start", "saps":
 		return psLaunch(args)
+	case "stop-process", "spps", "kill":
+		return psStop(args)
 	}
 	return false
+}
+
+var psProcName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
+var psHasLetter = regexp.MustCompile(`[a-z]`)
+
+// psCriticalProcs are processes whose end breaks Windows, the remote session or
+// the desktop; stopping one always asks.
+var psCriticalProcs = map[string]bool{
+	"system": true, "idle": true, "registry": true, "smss": true, "csrss": true, "wininit": true, "winlogon": true,
+	"services": true, "lsass": true, "svchost": true, "dwm": true, "fontdrvhost": true, "explorer": true,
+	"sshd": true, "ssh-agent": true, "conhost": true, "audiodg": true, "spoolsv": true, "memcompression": true,
+	"sihost": true, "taskhostw": true, "runtimebroker": true, "searchhost": true, "startmenuexperiencehost": true,
+	"shellexperiencehost": true, "ctfmon": true, "securityhealthservice": true, "msmpeng": true, "wudfhost": true,
+	"dllhost": true, "lsm": true, "dashost": true, "powershell": true, "pwsh": true, "cmd": true, "ssh": true,
+	"powershell_ise": true, "wmiprvse": true,
+}
+
+// psStop accepts one plain process name (no wildcards, no id) with optional
+// -Force: the human asked to close a program, and ending it is the request.
+func psStop(args []string) bool {
+	name := ""
+	for i := 0; i < len(args); i++ {
+		a := strings.ToLower(args[i])
+		switch a {
+		case "-force", "-erroraction", "-ea", "silentlycontinue", "-name":
+			continue
+		}
+		if name != "" {
+			return false
+		}
+		name = strings.TrimSuffix(strings.Trim(a, "'\""), ".exe")
+	}
+	if name == "" || !psProcName.MatchString(name) || !psHasLetter.MatchString(name) {
+		return false
+	}
+	return !psCriticalProcs[name]
 }
 
 var psTempPath = regexp.MustCompile(`(?i)^["']?\$env:(?:temp|tmp)\\\*["']?$|^["']?\$env:localappdata\\temp\\\*["']?$`)

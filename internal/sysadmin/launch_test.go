@@ -138,6 +138,16 @@ func TestParseLaunchShortcuts(t *testing.T) {
 	}
 }
 
+func TestParseLaunchShortcutWithBrackets(t *testing.T) {
+	l, err := ParseLaunch(`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Metro Exodus [GOG.com]\Metro Exodus.lnk`)
+	if err != nil {
+		t.Fatalf("ярлык с квадратными скобками в папке: %v", err)
+	}
+	if !l.File || l.Safe || l.Subject != "metro exodus" {
+		t.Fatalf("%+v: ожидалось file=true safe=false subject=metro exodus", l)
+	}
+}
+
 func TestParseLaunchRejectsInjection(t *testing.T) {
 	for _, in := range []string{
 		`notepad"; calc; "`,
@@ -169,8 +179,6 @@ func TestParseLaunchStrictPathAllowList(t *testing.T) {
 		"C:\\a‘b.txt",
 		"C:\\a“b”.txt",
 		`C:\a,b.txt`,
-		`C:\a(b).txt`,
-		`C:\a[b].txt`,
 		`C:\a{b}.txt`,
 		`C:\a'b.txt`,
 		`C:\a@b.txt`,
@@ -184,6 +192,7 @@ func TestParseLaunchStrictPathAllowList(t *testing.T) {
 	for _, in := range []string{
 		`C:\Users\Admin\Desktop\Рабочий стол\моя заметка.txt`,
 		`D:\Мои документы\Отчёт 2026 года.pdf`,
+		`C:\Users\Admin\Desktop\Отчёт (черновик) [1].pdf`,
 	} {
 		l, err := ParseLaunch(in)
 		if err != nil {

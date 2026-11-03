@@ -105,6 +105,8 @@ type sysadminHub struct {
 	sessMu  sync.Mutex
 	session map[string]struct{}
 
+	launched launchedLog // programs started through sysadmin_launch (launched.go)
+
 	// The list of requests the voice gate last read out, oldest first: «вторую»
 	// and «все» refer to what the speaker heard, not to a queue that moved.
 	voiceMu       sync.Mutex
