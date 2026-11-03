@@ -711,6 +711,9 @@ function settingsControl(tag, field, value, placeholder) {
 // the operator copies it from the provider's documentation.
 const PROVIDER_APIS = ['chat_completions', 'responses', 'gigachat'];
 
+// THINKING_LEVELS fill llm_providers[].chat_parameters.reasoning_effort.
+const THINKING_LEVELS = [['', 'по умолчанию'], ['low', 'низкое'], ['medium', 'среднее'], ['high', 'высокое']];
+
 // providerPayload builds the object the write path expects. It is an explicit
 // whitelist for two reasons: the transient fields the page keeps on the object
 // (typed key, forget flag, fetched model list) must never reach config.json, and
@@ -726,6 +729,9 @@ function providerPayload(provider) {
   if (provider.max_output_tokens) payload.max_output_tokens = Number(provider.max_output_tokens) || 0;
   if (Array.isArray(provider.hosted_tools) && provider.hosted_tools.length) {
     payload.hosted_tools = provider.hosted_tools;
+  }
+  if (provider.chat_parameters && Object.keys(provider.chat_parameters).length) {
+    payload.chat_parameters = provider.chat_parameters;
   }
   // An empty field keeps the stored key: the page never receives it back, so it
   // cannot send it again.
@@ -1105,6 +1111,19 @@ function renderProviders(force) {
     const modelField = comboField('Модель (для проверки и по умолчанию)', combo.wrap);
     modelField.classList.add('provider-model');
     row.appendChild(modelField);
+
+    // Chat tuning of this service: how long the model thinks before it answers.
+    // «Низкое» gives a short answer fast (gpt-oss on Groq); other models of the
+    // service may refuse the field, «Проверить модель» shows that.
+    if ((provider.api || 'chat_completions') === 'chat_completions') {
+      const thinking = settingsControl('select', 'thinking', (provider.chat_parameters || {}).reasoning_effort || '');
+      for (const [value, label] of THINKING_LEVELS) thinking.appendChild(option(value, label));
+      thinking.value = (provider.chat_parameters || {}).reasoning_effort || '';
+      const thinkingField = settingsField('Размышление модели', thinking);
+      thinkingField.appendChild(el('span', 'muted small',
+        'низкое — быстрее и дешевле по лимиту; подходит gpt-oss (Groq). Если сервис откажет — оставьте «по умолчанию»'));
+      row.appendChild(thinkingField);
+    }
 
     const key = settingsControl('input', 'api_key', provider._key, '');
     // Not type=password on purpose: browsers offer to save any password field and
@@ -2015,6 +2034,13 @@ function editCardField(event, control, row) {
       provider._key = control.value;
       if (control.value) provider._clearKey = false;
       updateKeyBadge(row, provider);
+      return;
+    }
+    if (control.dataset.field === 'thinking') {
+      const params = Object.assign({}, provider.chat_parameters || {});
+      if (control.value) params.reasoning_effort = control.value;
+      else delete params.reasoning_effort;
+      provider.chat_parameters = params;
       return;
     }
     provider[control.dataset.field] = control.value;

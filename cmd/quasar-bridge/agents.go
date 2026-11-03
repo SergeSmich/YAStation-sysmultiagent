@@ -75,6 +75,9 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 		var chatParameters map[string]any
 		if target.API == "chat_completions" {
 			chatParameters = cfg.LLMChatParameters
+			if target.ChatParameters != nil {
+				chatParameters = target.ChatParameters
+			}
 		}
 		client := &llm.Client{
 			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(stored, target),

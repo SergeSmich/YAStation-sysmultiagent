@@ -69,6 +69,10 @@ type llmProviderConfig struct {
 	ReasoningEffort string   `json:"reasoning_effort"`
 	MaxOutputTokens int      `json:"max_output_tokens"`
 	HostedTools     []string `json:"hosted_tools"`
+	// ChatParameters tunes this endpoint's chat_completions request (for
+	// example reasoning_effort "low" for gpt-oss on Groq). When present it
+	// replaces llm_chat_parameters for roles that use this provider.
+	ChatParameters map[string]any `json:"chat_parameters,omitempty"`
 }
 
 // wakeWordConfig is one start word: what the bridge does when the wake-word
@@ -435,6 +439,22 @@ func (c *config) validateProviders() error {
 			return err
 		}
 		p.HostedTools = tools
+		if len(p.ChatParameters) == 0 {
+			p.ChatParameters = nil
+		} else {
+			if p.API != "chat_completions" {
+				return errors.New("llm_providers[].chat_parameters requires api chat_completions")
+			}
+			if err := llm.ValidateChatParameters(p.ChatParameters); err != nil {
+				return errors.New("llm_providers[].chat_parameters: " + err.Error())
+			}
+			if v, ok := p.ChatParameters["reasoning_effort"]; ok && v != nil {
+				effort, isString := v.(string)
+				if !isString || (effort != "default" && !slices.Contains(llmReasoningEfforts, effort)) {
+					return errors.New("invalid llm_providers[].chat_parameters.reasoning_effort")
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -465,6 +485,9 @@ type llmTarget struct {
 	MaxOutputTokens int
 	HostedTools     []string
 	APIKeyEnv       string
+	// ChatParameters is the provider's own chat tuning; nil means the role
+	// falls back to llm_chat_parameters.
+	ChatParameters map[string]any
 }
 
 // resolveLLM applies the inheritance order: top-level llm_* → the named
@@ -484,6 +507,7 @@ func (c *config) resolveLLM(a agentConfig) (llmTarget, error) {
 		target.Provider = p.Name
 		target.API, target.BaseURL, target.Model = p.API, p.BaseURL, p.Model
 		target.ReasoningEffort, target.MaxOutputTokens, target.HostedTools = p.ReasoningEffort, p.MaxOutputTokens, p.HostedTools
+		target.ChatParameters = p.ChatParameters
 	}
 	if a.API != "" {
 		target.API = a.API

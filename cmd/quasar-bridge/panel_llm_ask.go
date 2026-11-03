@@ -132,10 +132,20 @@ func (p *panelServer) apiLLMAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), panelLLMAskTimeout)
 	defer cancel()
+	// The test asks with the same chat tuning a role would use, so a parameter
+	// the service refuses shows up here and not on the first real question.
+	var chatParameters map[string]any
+	if target.API == "chat_completions" {
+		chatParameters = cfg.LLMChatParameters
+		if target.ChatParameters != nil {
+			chatParameters = target.ChatParameters
+		}
+	}
 	client := &llm.Client{
 		BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(stored, target),
 		API: target.API, ReasoningEffort: target.ReasoningEffort,
 		MaxOutputTokens: panelLLMAskTokens,
+		ChatParameters:  chatParameters,
 		HTTP:            &http.Client{Timeout: panelLLMAskTimeout},
 	}
 	start := time.Now()
