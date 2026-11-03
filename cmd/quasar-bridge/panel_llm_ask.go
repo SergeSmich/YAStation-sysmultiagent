@@ -27,6 +27,19 @@ const (
 // explainLLMError turns a client error into advice. llm.Client errors carry a
 // status code or a short cause and never the key, so the text is safe to show.
 func explainLLMError(err error) string {
+	advice := adviceForLLMError(err)
+	detail := llm.ErrorDetail(err)
+	if detail == "" {
+		return advice
+	}
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "opencode") || strings.Contains(lower, "claude code") || strings.Contains(lower, "client_restricted") {
+		return "сервис пускает этот ключ только в свои программы (Claude Code, OpenCode, Codex), а мост для него «чужой клиент». Для станции такой ключ не подойдёт: выберите другую нейросеть. Сервис пишет: «" + detail + "»."
+	}
+	return advice + " Сервис пишет: «" + detail + "»."
+}
+
+func adviceForLLMError(err error) string {
 	text := err.Error()
 	lower := strings.ToLower(text)
 	if match := llmHTTPStatus.FindStringSubmatch(text); match != nil {
@@ -38,7 +51,7 @@ func explainLLMError(err error) string {
 		case "429":
 			return "сервис отказал из-за лимита запросов: бесплатная квота кончилась или запросов слишком много. Подождите немного или выберите другую модель."
 		case "400", "422":
-			return "сервис отклонил запрос. Чаще всего модель не подходит для разговора или её имя написано неверно — выберите другую модель из списка. У Google так же отвечают на неверный ключ: проверьте и его."
+			return "сервис отклонил запрос. Чаще всего модель не подходит для разговора или её имя написано неверно — выберите другую модель из списка. Если и другая модель отклоняется, проверьте ключ."
 		case "402":
 			return "на счёте нейросети нет денег. Пополните счёт или выберите бесплатную модель."
 		case "408", "504":

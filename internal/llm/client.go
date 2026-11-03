@@ -124,9 +124,9 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 		"temperature": 0, "max_tokens": 1024,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 	}
-	// Google's OpenAI-compatible endpoint rejects unknown fields with HTTP 400,
-	// and chat_template_kwargs is a vLLM-style extension it does not know.
-	if strings.Contains(strings.ToLower(c.BaseURL), "generativelanguage.googleapis.com") {
+	// Google, Groq, OpenAI and similar endpoints reject unknown fields with
+	// HTTP 400, and chat_template_kwargs is a vLLM-style extension.
+	if !acceptsTemplateKwargs(c.BaseURL) {
 		delete(request, "chat_template_kwargs")
 	}
 	if c.API == APIGigaChat {
@@ -211,7 +211,8 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LLM returned HTTP %d", resp.StatusCode)
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, newHTTPError(resp.StatusCode, detail, c.APIKey)
 	}
 	const maxResponseBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))

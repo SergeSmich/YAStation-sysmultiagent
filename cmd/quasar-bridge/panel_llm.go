@@ -156,6 +156,19 @@ func (p *panelServer) apiLLMModels(w http.ResponseWriter, r *http.Request) {
 	writePanelJSON(w, http.StatusOK, map[string]any{"provider": provider.Name, "models": models})
 }
 
+// isNonChatModel spots models that cannot hold a conversation (safety
+// classifiers, speech, embeddings): the list offers them only as a last resort,
+// or the first item of an alphabetical list would be one of them.
+func isNonChatModel(id string) bool {
+	lower := strings.ToLower(id)
+	for _, marker := range []string{"guard", "whisper", "tts", "orpheus", "playai", "embed", "moderation", "transcribe", "rerank"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseModelList reads the two documented shapes and returns unique, sorted ids.
 // Anything else is reported as "not a model list" instead of an empty answer,
 // which the page would otherwise render as "no models".
@@ -203,7 +216,15 @@ func parseModelList(data []byte) ([]string, error) {
 	}
 	models := make([]string, 0, len(ids))
 	for id := range ids {
-		models = append(models, id)
+		if !isNonChatModel(id) {
+			models = append(models, id)
+		}
+	}
+	if len(models) == 0 {
+		// Only service models: show them rather than an empty list.
+		for id := range ids {
+			models = append(models, id)
+		}
 	}
 	sort.Strings(models)
 	if len(models) > panelLLMModelsLimit {
