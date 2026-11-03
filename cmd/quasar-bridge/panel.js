@@ -2329,6 +2329,12 @@ function renderSysadminPolicy(state) {
   const list = document.getElementById('sysadmin-rules');
   list.replaceChildren();
   for (const rule of policy.rules || []) list.appendChild(sysadminRuleRow(rule));
+  const charter = document.getElementById('sa-charter');
+  const info = state.charter || {};
+  if (charter && info.text !== undefined && document.activeElement !== charter && charter.dataset.dirty !== '1') {
+    charter.value = info.text;
+    document.getElementById('sa-charter-note').textContent = info.custom ? 'свой текст' : 'стандартный текст';
+  }
 }
 
 function renderSysadminMemory(state) {
@@ -2471,6 +2477,21 @@ function initSysadmin() {
       sysadminSay('sa-policy-status', error.message, true);
     }
   });
+  const charterBox = document.getElementById('sa-charter');
+  charterBox.addEventListener('input', () => { charterBox.dataset.dirty = '1'; });
+  const saveCharter = async (reset) => {
+    try {
+      const out = await postJSON(SYSADMIN_URL + 'charter', { text: charterBox.value, reset });
+      charterBox.value = out.charter || '';
+      charterBox.dataset.dirty = '';
+      document.getElementById('sa-charter-note').textContent = out.custom ? 'свой текст' : 'стандартный текст';
+      sysadminSay('sa-charter-status', reset ? 'сброшено' : 'сохранено', false);
+    } catch (error) {
+      sysadminSay('sa-charter-status', error.message, true);
+    }
+  };
+  document.getElementById('sa-charter-save').addEventListener('click', () => saveCharter(false));
+  document.getElementById('sa-charter-reset').addEventListener('click', () => saveCharter(true));
   document.getElementById('sa-pp-add').addEventListener('click', async () => {
     const input = document.getElementById('sa-pp-section');
     const section = input.value.trim();

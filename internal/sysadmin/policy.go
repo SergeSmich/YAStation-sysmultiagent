@@ -520,8 +520,29 @@ func readStage(f []string) bool {
 	return false
 }
 
-func (p *Policy) DecideShell(command string) (Mode, Risk) {
+// ClassifyShellOS is ClassifyShell that also knows PowerShell: on a Windows
+// host a plain pipeline of read-only cmdlets is a Read.
+func ClassifyShellOS(command string, windows bool) Risk {
 	risk := ClassifyShell(command)
+	if risk == RiskChange && windows && IsReadOnlyPS(command) {
+		return RiskRead
+	}
+	return risk
+}
+
+func (p *Policy) DecideShell(command string) (Mode, Risk) { return p.DecideShellOS(command, false) }
+
+// DecideShellOS decides a command for a host of the given kind.
+func (p *Policy) DecideShellOS(command string, windows bool) (Mode, Risk) {
+	risk := ClassifyShellOS(command, windows)
+	// Class S: harmless and reversible, run at once (the agent reports after).
+	// An operator "deny" or "ask" rule for the exact command still wins.
+	if risk == RiskChange && windows && IsSafeChangePS(command) {
+		if hasMatchingRule(p, "shell", command) {
+			return p.Decide("shell", command), risk
+		}
+		return ModeAllow, risk
+	}
 	switch risk {
 	case RiskForbidden:
 		return ModeDeny, risk

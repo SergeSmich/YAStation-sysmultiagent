@@ -161,7 +161,7 @@ func (p *peerToolset) ask(ctx context.Context, name, question string) (any, erro
 	}
 	ctx, cancel := context.WithTimeout(bridge.WithPeerDepth(ctx), peerCallTimeout)
 	defer cancel()
-	system := strings.TrimSpace(peer.Prompt)
+	system := strings.TrimSpace(peer.FullPrompt())
 	if system == "" {
 		system = "Ты голосовой помощник."
 	}

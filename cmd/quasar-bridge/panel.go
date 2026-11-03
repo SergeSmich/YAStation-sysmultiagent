@@ -251,6 +251,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /api/panel/sysadmin/host", p.requireMutation(p.apiSysadminHost))
 	mux.HandleFunc("POST /api/panel/sysadmin/host/delete", p.requireMutation(p.apiSysadminHostDelete))
 	mux.HandleFunc("POST /api/panel/sysadmin/policy", p.requireMutation(p.apiSysadminPolicy))
+	mux.HandleFunc("POST /api/panel/sysadmin/charter", p.requireMutation(p.apiSysadminCharter))
 	mux.HandleFunc("POST /api/panel/sysadmin/memory/forget", p.requireMutation(p.apiSysadminMemoryForget))
 	mux.HandleFunc("POST /api/panel/sysadmin/passport", p.requireMutation(p.apiSysadminPassport))
 	mux.HandleFunc("POST /api/panel/sysadmin/telegram", p.requireMutation(p.apiSysadminTelegram))

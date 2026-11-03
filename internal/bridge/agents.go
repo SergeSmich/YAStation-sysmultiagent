@@ -33,6 +33,17 @@ type Agent struct {
 	// Sysadmin marks a role that carries the sysadmin toolset; text channels
 	// (Telegram) refuse to talk to a role without it.
 	Sysadmin bool
+	// PromptExtra, when set, is appended to Prompt on every turn, so an
+	// editable block (the sysadmin charter) takes effect without a reload.
+	PromptExtra func() string
+}
+
+// FullPrompt is the role prompt with its live extra block.
+func (a *Agent) FullPrompt() string {
+	if a.PromptExtra == nil {
+		return a.Prompt
+	}
+	return a.Prompt + a.PromptExtra()
 }
 
 // ValidAgentName keeps route strings, VoiceConfig keys and journal entries
@@ -133,7 +144,7 @@ func (e *Engine) answerAs(ctx context.Context, route, text, name string) (Resolu
 	if !ok {
 		return Resolution{Route: route}, fmt.Errorf("agent %q is not configured", name)
 	}
-	prompt := agent.Prompt
+	prompt := agent.FullPrompt()
 	if roster := e.roster(agent); roster != "" {
 		if strings.TrimSpace(prompt) == "" {
 			prompt = defaultAnswerPrompt
@@ -171,7 +182,7 @@ func (e *Engine) AskAgent(ctx context.Context, name, text string, history []llm.
 	if agent.Answerer == nil {
 		return "", errNoAnswerer
 	}
-	prompt := agent.Prompt
+	prompt := agent.FullPrompt()
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "Ты помощник пользователя. Отвечай по-русски кратко и по существу."
 	}

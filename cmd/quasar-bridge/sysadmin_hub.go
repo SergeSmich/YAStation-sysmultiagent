@@ -53,6 +53,7 @@ type sysadminCfg struct {
 	Hosts    []sysadminHostCfg   `json:"hosts"`
 	Policy   sysadminPolicyCfg   `json:"policy"`
 	Telegram sysadminTelegramCfg `json:"telegram"`
+	Charter  string              `json:"charter,omitempty"`
 }
 
 type sysadminSecretsCfg struct {
@@ -227,6 +228,21 @@ func (h *sysadminHub) Hosts() []hostView {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// HostIsWindows reports whether the host is configured as a Windows machine.
+func (h *sysadminHub) HostIsWindows(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.loadLocked() != nil {
+		return false
+	}
+	for _, hc := range h.cfg.Hosts {
+		if hc.Name == name {
+			return hc.OS == "windows"
+		}
+	}
+	return false
 }
 
 // HostMAC returns the configured MAC for Wake-on-LAN.

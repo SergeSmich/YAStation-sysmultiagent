@@ -3,6 +3,7 @@ package main
 import (
 	stdjson "encoding/json"
 	"net/http"
+	"strings"
 
 	"quasarbridge/internal/sysadmin"
 )
@@ -25,12 +26,14 @@ func (p *panelServer) apiSysadminState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hosts := p.sysHub.Hosts()
+	charter, charterCustom := p.sysHub.Charter()
 	// strip passwords: hosts config has no password field; secrets separate.
 	state := map[string]any{
 		"hosts":    hosts,
 		"queue":    p.sysHub.Queue().Pending(),
 		"recent":   p.sysHub.Queue().Recent(10),
 		"policy":   p.sysHub.Policy(),
+		"charter":  map[string]any{"text": charter, "custom": charterCustom, "max": maxCharterRunes},
 		"telegram": p.sysHub.Telegram(),
 		"passport": p.sysHub.Memory().Passport(),
 		"facts":    p.sysHub.Memory().Recall("", 50),
@@ -187,6 +190,34 @@ func (p *panelServer) apiSysadminPolicy(w http.ResponseWriter, r *http.Request) 
 	}
 	p.sysHub.Audit("sysadmin_policy", map[string]any{"default": body.Default})
 	writePanelJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (p *panelServer) apiSysadminCharter(w http.ResponseWriter, r *http.Request) {
+	if p.sysHub == nil {
+		writePanelJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sysadmin hub unavailable"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, panelSysadminBodyLimit)
+	var body struct {
+		Text  string `json:"text"`
+		Reset bool   `json:"reset"`
+	}
+	dec := stdjson.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.Reset {
+		body.Text = ""
+	}
+	if err := p.sysHub.SetCharter(body.Text); err != nil {
+		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	p.sysHub.Audit("sysadmin_charter", map[string]any{"reset": strings.TrimSpace(body.Text) == "", "runes": len([]rune(strings.TrimSpace(body.Text)))})
+	text, custom := p.sysHub.Charter()
+	writePanelJSON(w, http.StatusOK, map[string]any{"ok": true, "charter": text, "custom": custom})
 }
 
 func (p *panelServer) apiSysadminMemoryForget(w http.ResponseWriter, r *http.Request) {

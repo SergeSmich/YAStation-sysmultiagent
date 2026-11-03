@@ -104,7 +104,11 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 		if toolset != nil {
 			answerer = &assistant.Agent{Client: client, Tools: toolset, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 		}
-		agents[a.Name] = &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: prompt, Description: a.Description, Peers: a.Peers, Sysadmin: a.Sysadmin}
+		ba := &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: prompt, Description: a.Description, Peers: a.Peers, Sysadmin: a.Sysadmin}
+		if a.Sysadmin {
+			ba.PromptExtra = sysHub.CharterPrompt
+		}
+		agents[a.Name] = ba
 	}
 	hub.agents.Store(&agents)
 	return agents, nil
