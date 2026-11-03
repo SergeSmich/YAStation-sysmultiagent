@@ -1045,12 +1045,11 @@ function renderProviders(force) {
 
     const combo = modelCombo('model', provider.model, 'например, deepseek-chat',
       () => modelIdsFor(String(provider.name || '').trim()));
-    // The model of a role is chosen in «Роли» and does not change this card. The
-    // field here is only the fallback for a role that names none, so it stays
-    // hidden once it holds a value (the key check fills it).
-    const modelField = comboField('Модель по умолчанию', combo.wrap);
+    // Always visible: «Проверить» asks this model, so the operator switches it
+    // here to test another one. It is also the fallback for a role that names
+    // none; the model of a role itself is chosen in «Роли».
+    const modelField = comboField('Модель (для проверки и по умолчанию)', combo.wrap);
     modelField.classList.add('provider-model');
-    modelField.hidden = Boolean(String(provider.model || '').trim());
     row.appendChild(modelField);
 
     const key = settingsControl('input', 'api_key', provider._key, '');
@@ -1075,6 +1074,11 @@ function renderProviders(force) {
     const actions = el('div', 'row-actions');
     actions.appendChild(saveButton('provider'));
     actions.appendChild(providerButton('Проверить', 'test'));
+    const askModel = el('button', 'ghost', 'Проверить модель');
+    askModel.type = 'button';
+    askModel.dataset.testModel = '1';
+    askModel.title = 'Задаёт модели из поля «Модель» тестовый вопрос и объясняет результат (нейросеть должна быть сохранена)';
+    actions.appendChild(askModel);
     if (!isNew) actions.appendChild(providerButton('Забыть ключ', 'forget'));
     actions.appendChild(removeOrCancel('provider', 'Удалить', isNew));
     actions.appendChild(el('span', 'row-status small'));
@@ -2251,10 +2255,14 @@ async function providerAction(event) {
 async function testRoleModel(event) {
   const button = event.target.closest('[data-test-model]');
   if (!button) return;
-  const row = button.closest('[data-kind="agent"]');
+  // The same button sits in role cards and in connection cards; both carry the
+  // connection name and the model in the same fields.
+  const row = button.closest('[data-kind="agent"], [data-kind="provider"]');
   if (!row) return;
-  const agent = itemOf('agent', row);
-  if (!agent) return;
+  const isProvider = row.dataset.kind === 'provider';
+  const found = itemOf(isProvider ? 'provider' : 'agent', row);
+  if (!found) return;
+  const agent = isProvider ? { provider: found.name, model: found.model } : found;
   button.disabled = true;
   setRowStatus(row, 'спрашиваю модель…', '');
   try {
