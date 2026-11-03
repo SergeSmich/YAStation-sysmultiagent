@@ -110,9 +110,16 @@ func isSensitiveText(s string) bool {
 // LaunchPS returns the PowerShell that starts l in the interactive session.
 // `start` resolves program names the way the Start menu does (App Paths).
 func (l Launch) LaunchPS() string {
+	start := `start "" "` + l.Target + `"`
+	if l.File {
+		// Programs (games especially) expect to start in their own folder.
+		if i := strings.LastIndexAny(l.Target, `\/`); i > 2 {
+			start = `start "" /D "` + l.Target[:i] + `" "` + l.Target + `"`
+		}
+	}
 	return "$u=(Get-CimInstance Win32_ComputerSystem).UserName; if(-not $u){'NO_INTERACTIVE_USER'; return}; " +
 		"$n='QBL'+[guid]::NewGuid().ToString('N').Substring(0,8); " +
-		"$a=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c start \"\" \"" + l.Target + "\"'; " +
+		"$a=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c " + start + "'; " +
 		"$p=New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited; " +
 		"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; " +
 		"Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Settings $s -Force | Out-Null; " +

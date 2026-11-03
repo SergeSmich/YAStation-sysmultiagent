@@ -1063,7 +1063,7 @@ func (n *Native) skipUnheard(p *nativeRequest) {
 	// Nobody spoke into the reopened window: the conversation a role was
 	// holding is over, so the next phrase is classified from scratch instead of
 	// going to a role the person already walked away from.
-	if route, ok := n.releaseRole(p.ctx); ok {
+	if route, ok := n.releaseRoleWhy(p.ctx, "silence"); ok {
 		slog.Info("native_role_released", "request", requestTag(p.id), "route", route, "reason", "silence")
 	}
 	if p.gated && !p.streaming {

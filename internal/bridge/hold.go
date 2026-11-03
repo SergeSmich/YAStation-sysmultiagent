@@ -86,6 +86,13 @@ func (n *Native) notifyReleased(route, reason string) {
 // releaseRole ends the held conversation of this speaker and reports the route
 // that was held, so the caller can log what ended.
 func (n *Native) releaseRole(ctx context.Context) (string, bool) {
+	return n.releaseRoleWhy(ctx, "release")
+}
+
+// releaseRoleWhy is releaseRole with the reason handed to OnRoleReleased: an
+// explicit end ("release") closes open requests; silence ("silence") does not,
+// because the person may simply be deciding.
+func (n *Native) releaseRoleWhy(ctx context.Context, why string) (string, bool) {
 	key := dialogue.SpeakerKey(ctx)
 	if key == "" {
 		return "", false
@@ -100,7 +107,7 @@ func (n *Native) releaseRole(ctx context.Context) (string, bool) {
 		}
 		return "", false
 	}
-	n.notifyReleased(held.route, "release")
+	n.notifyReleased(held.route, why)
 	return held.route, true
 }
 

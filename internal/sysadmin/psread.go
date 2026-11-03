@@ -293,6 +293,8 @@ var psFileCmds = map[string]bool{
 	"resolve-path": true, "convert-path": true,
 }
 
+var psListCmds = map[string]bool{"get-childitem": true, "gci": true, "ls": true, "dir": true}
+
 var psGroupHead = regexp.MustCompile("^\x01(?:\\.[a-z_][a-z0-9_]*)*$")
 var psNetHost = regexp.MustCompile(`^(?:localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-z][a-z0-9\-]{0,30})$`)
 var psSmallInt = regexp.MustCompile(`^[1-9]$`)
@@ -341,7 +343,9 @@ func psStageOK(stage string, idx int) bool {
 		if strings.HasPrefix(t, "-p") && len(t) >= 3 && strings.HasPrefix("-paging", t) {
 			return false
 		}
-		if psFileCmds[head] && strings.ContainsAny(t, "*?") {
+		// A name pattern is fine for a plain listing (it shows names only, and
+		// nothing can be piped into a reader); readers get no wildcards.
+		if psFileCmds[head] && !psListCmds[head] && strings.ContainsAny(t, "*?") {
 			return false
 		}
 	}

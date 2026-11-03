@@ -216,7 +216,7 @@ func TestLaunchPSQuotesTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps := l.LaunchPS()
-	if !strings.Contains(ps, `start "" "`+l.Target+`"`) {
+	if !strings.Contains(ps, `start "" /D "C:\Users\Admin\Desktop\Рабочий стол" "`+l.Target+`"`) {
 		t.Fatalf("цель не подставлена в кавычках: %s", ps)
 	}
 	for _, must := range []string{"NO_INTERACTIVE_USER", "Register-ScheduledTask", "Unregister-ScheduledTask", "'LAUNCHED'"} {

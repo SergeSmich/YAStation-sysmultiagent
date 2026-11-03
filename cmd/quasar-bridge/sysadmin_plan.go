@@ -149,6 +149,13 @@ func (h *sysadminHub) OnRoleReleased(engine *bridge.Engine) func(route, reason s
 			return
 		}
 		name, _ := bridge.ParseAgentRoute(route)
+		if reason == "silence" || reason == "ttl" {
+			// The person went quiet, perhaps deciding on a request: let it
+			// live out its own time instead of dropping it from under them.
+			if h.voiceRequestsWaiting(route) {
+				return
+			}
+		}
 		n := h.queue.CancelPending(func(it sysadmin.Item) bool {
 			return it.ChatID == 0 && voiceRoleOf(it.Origin) == name
 		}, "сеанс закончен")

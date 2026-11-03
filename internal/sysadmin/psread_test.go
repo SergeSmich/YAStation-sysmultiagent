@@ -20,6 +20,8 @@ func TestIsReadOnlyPS(t *testing.T) {
 		"Get-NetIPAddress 2>$null",
 		"Get-Content C:\\Windows\\System32\\drivers\\etc\\hosts -Tail 20",
 		"Get-Process | Out-String",
+		"Get-ChildItem F:\\ -Recurse -Filter *metro* -Directory -ErrorAction SilentlyContinue | Select-Object -First 20 FullName",
+		"Get-ChildItem -Path F:\\Games -Filter *.exe -Recurse | Select-Object FullName",
 	}
 	for _, c := range read {
 		if !IsReadOnlyPS(c) {
