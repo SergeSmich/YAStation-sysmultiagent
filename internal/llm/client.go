@@ -190,16 +190,19 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 // slow answer went. Host and model only; the URL may carry userinfo and the
 // key never reaches a log.
 func logCall(c *Client, started time.Time, promptTokens, completionTokens int, err error) {
-	host := "?"
-	if u, perr := url.Parse(c.BaseURL); perr == nil && u.Hostname() != "" {
-		host = u.Hostname()
-	}
-	attrs := []any{"host", host, "model", c.Model, "elapsed_ms", time.Since(started).Milliseconds(),
+	attrs := []any{"host", hostOf(c.BaseURL), "model", c.Model, "elapsed_ms", time.Since(started).Milliseconds(),
 		"prompt_tokens", promptTokens, "completion_tokens", completionTokens}
 	if err != nil {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) {
 			attrs = append(attrs, "status", httpErr.Status)
+			if httpErr.RetryAfter > 0 {
+				attrs = append(attrs, "retry_after_ms", httpErr.RetryAfter.Milliseconds())
+			}
+			if httpErr.Detail != "" {
+				// Already cut to the error message with keys and ids masked.
+				attrs = append(attrs, "detail", httpErr.Detail)
+			}
 		}
 		attrs = append(attrs, "error", err.Error())
 		slog.Warn("llm_call_failed", attrs...)
@@ -208,7 +211,51 @@ func logCall(c *Client, started time.Time, promptTokens, completionTokens int, e
 	slog.Info("llm_call", attrs...)
 }
 
+// maxRetryWait is the longest pause one retry after HTTP 429 may take: a voice
+// answer cannot wait longer than the cloud does.
+const maxRetryWait = 6 * time.Second
+
+// retrySleep waits for d or until ctx ends; a variable so tests do not sleep.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// post sends the request and, when the service says "too many requests, try
+// again in a moment", waits that moment once and repeats it.
 func (c *Client) post(ctx context.Context, path string, request any) ([]byte, error) {
+	data, err := c.postOnce(ctx, path, request)
+	var httpErr *HTTPError
+	if err == nil || !errors.As(err, &httpErr) || httpErr.Status != http.StatusTooManyRequests {
+		return data, err
+	}
+	wait := httpErr.RetryAfter
+	if wait <= 0 || wait > maxRetryWait {
+		return data, err
+	}
+	wait += 100 * time.Millisecond
+	slog.Warn("llm_rate_limited_retry", "host", hostOf(c.BaseURL), "model", c.Model,
+		"wait_ms", wait.Milliseconds(), "detail", httpErr.Detail)
+	if serr := retrySleep(ctx, wait); serr != nil {
+		return nil, fmt.Errorf("LLM transport: %w", serr)
+	}
+	return c.postOnce(ctx, path, request)
+}
+
+func hostOf(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return "?"
+}
+
+func (c *Client) postOnce(ctx context.Context, path string, request any) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	body, err := json.Marshal(request)
@@ -244,7 +291,7 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, newHTTPError(resp.StatusCode, detail, c.APIKey)
+		return nil, newHTTPError(resp.StatusCode, detail, c.APIKey, resp.Header.Get("Retry-After"))
 	}
 	const maxResponseBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))

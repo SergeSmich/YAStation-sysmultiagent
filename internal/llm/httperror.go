@@ -5,9 +5,12 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -17,6 +20,49 @@ import (
 type HTTPError struct {
 	Status int
 	Detail string
+	// RetryAfter is how long the service asked to wait (Retry-After header or
+	// "try again in ..." in its message); zero when it did not say.
+	RetryAfter time.Duration
+}
+
+// IsRateLimited reports whether the service refused the request because a
+// limit (requests or tokens per minute or day) is used up.
+func IsRateLimited(err error) bool {
+	var h *HTTPError
+	return errors.As(err, &h) && h.Status == http.StatusTooManyRequests
+}
+
+// retryAfterFromHeader reads Retry-After given in seconds.
+func retryAfterFromHeader(v string) time.Duration {
+	secs, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil || secs <= 0 || secs > 3600 {
+		return 0
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
+var tryAgainIn = regexp.MustCompile(`try again in (?:(\d+)m)?(\d+(?:\.\d+)?)(ms|s)`)
+
+// retryAfterFromDetail reads "Please try again in 1m30.5s" / "7.6s" / "200ms".
+func retryAfterFromDetail(detail string) time.Duration {
+	m := tryAgainIn.FindStringSubmatch(detail)
+	if m == nil {
+		return 0
+	}
+	value, err := strconv.ParseFloat(m[2], 64)
+	if err != nil {
+		return 0
+	}
+	d := time.Duration(value * float64(time.Second))
+	if m[3] == "ms" {
+		d = time.Duration(value * float64(time.Millisecond))
+	}
+	if m[1] != "" {
+		if mins, err := strconv.Atoi(m[1]); err == nil {
+			d += time.Duration(mins) * time.Minute
+		}
+	}
+	return d
 }
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("LLM returned HTTP %d", e.Status) }
@@ -36,9 +82,16 @@ var tokenLike = regexp.MustCompile(`[A-Za-z0-9_\-]{32,}`)
 
 // newHTTPError cleans the response body: only the error message is kept, the
 // request key and anything shaped like a token are masked, the text is short.
-func newHTTPError(status int, body []byte, key string) *HTTPError {
-	return &HTTPError{Status: status, Detail: errorDetail(body, key)}
+func newHTTPError(status int, body []byte, key string, retryAfterHeader string) *HTTPError {
+	e := &HTTPError{Status: status, Detail: errorDetail(body, key)}
+	e.RetryAfter = retryAfterFromHeader(retryAfterHeader)
+	if e.RetryAfter == 0 {
+		e.RetryAfter = retryAfterFromDetail(e.Detail)
+	}
+	return e
 }
+
+var orgLike = regexp.MustCompile(`org_[A-Za-z0-9]+`)
 
 func errorDetail(body []byte, key string) string {
 	var parsed struct {
@@ -68,6 +121,7 @@ func errorDetail(body []byte, key string) string {
 	if key != "" {
 		text = strings.ReplaceAll(text, key, "***")
 	}
+	text = orgLike.ReplaceAllString(text, "org_***")
 	text = tokenLike.ReplaceAllString(text, "***")
 	text = strings.Join(strings.Fields(text), " ")
 	if runes := []rune(text); len(runes) > maxDetailRunes {

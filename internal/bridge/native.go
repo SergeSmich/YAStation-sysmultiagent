@@ -131,16 +131,16 @@ type Native struct {
 	// held is the role each speaker's conversation belongs to after that role
 	// answered. Unlike preset it is not one-shot: it survives every reopened
 	// window until the person falls silent or ends the conversation.
-	held          map[string]heldRoute
-	tts           map[string]*nativeRequest
-	streams       map[uint32]*nativeRequest
-	blocked       map[uint32]*nativeRequest
-	probes        map[string]*probeEntry
-	probeStreams  map[uint32]struct{}
-	probePlay     map[uint32]struct{}
-	probeBusy     atomic.Bool
-	wg            sync.WaitGroup
-	OnRoute       func(id, route string)
+	held         map[string]heldRoute
+	tts          map[string]*nativeRequest
+	streams      map[uint32]*nativeRequest
+	blocked      map[uint32]*nativeRequest
+	probes       map[string]*probeEntry
+	probeStreams map[uint32]struct{}
+	probePlay    map[uint32]struct{}
+	probeBusy    atomic.Bool
+	wg           sync.WaitGroup
+	OnRoute      func(id, route string)
 	// VoiceGate may answer a spoken phrase before routing. It reports the answer,
 	// the route that speaks it (empty: the held role, else "llm") and whether it
 	// handled the phrase. It must be set before the session starts.
@@ -151,10 +151,10 @@ type Native struct {
 	DialogueEnd func(ctx context.Context, route, text string, ending bool) (answer string, release, handled bool)
 	// OnRoleReleased is told when a held role stopped owning the conversation.
 	OnRoleReleased func(route, reason string)
-	GateText  bool
-	ShouldListen  bool
-	voice         atomic.Pointer[VoiceConfig]
-	DecisionDelay time.Duration
+	GateText       bool
+	ShouldListen   bool
+	voice          atomic.Pointer[VoiceConfig]
+	DecisionDelay  time.Duration
 	// HoldTTL bounds how long a role keeps a speaker's conversation after its
 	// answer. The zero value falls back to DefaultHoldTTL.
 	HoldTTL           time.Duration
@@ -737,7 +737,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				}
 				if err != nil {
 					n.discardSound(p)
-					result.Answer = "Сейчас не получилось получить ответ локальной модели."
+					result.Answer = llmFailureAnswer(err)
 				}
 				_ = n.sendCancel(p.ctx, p.id)
 				if err := n.reply(p, result.Answer); err != nil {
@@ -972,7 +972,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
 				result.Route = "llm"
-				result.Answer = "Сейчас не получилось получить ответ локальной модели."
+				result.Answer = llmFailureAnswer(err)
 			}
 		}
 		n.mu.Lock()
