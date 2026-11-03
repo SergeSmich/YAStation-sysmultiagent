@@ -410,8 +410,8 @@ func (c *config) validateProviders() error {
 		if p.API == "" {
 			p.API = "chat_completions"
 		}
-		if p.API != "chat_completions" && p.API != "responses" {
-			return errors.New("llm_providers[].api must be chat_completions or responses")
+		if p.API != "chat_completions" && p.API != "responses" && p.API != llm.APIGigaChat {
+			return errors.New("llm_providers[].api must be chat_completions, responses or gigachat")
 		}
 		if p.BaseURL == "" || !validEndpoint(p.BaseURL, "http", "https") {
 			return errors.New("invalid llm_providers[].base_url")
@@ -531,8 +531,8 @@ func (c *config) validateAgents() error {
 		if err != nil {
 			return err
 		}
-		if target.API != "chat_completions" && target.API != "responses" {
-			return errors.New("agents[].api must be chat_completions or responses")
+		if target.API != "chat_completions" && target.API != "responses" && target.API != llm.APIGigaChat {
+			return errors.New("agents[].api must be chat_completions, responses or gigachat")
 		}
 		if target.BaseURL != "" && !validEndpoint(target.BaseURL, "http", "https") {
 			return errors.New("invalid agents[].base_url")

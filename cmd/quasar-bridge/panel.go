@@ -239,6 +239,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /api/panel/llm/test", p.requireMutation(p.apiLLMTest))
 	mux.HandleFunc("POST /api/panel/llm/models", p.requireMutation(p.apiLLMModels))
 	mux.HandleFunc("POST /api/panel/llm/detect", p.requireMutation(p.apiLLMDetect))
+	mux.HandleFunc("POST /api/panel/llm/check", p.requireMutation(p.apiLLMCheck))
 	mux.HandleFunc("POST /api/panel/voice/test", p.requireMutation(p.apiVoiceTest))
 	mux.HandleFunc("POST /api/panel/password", p.requireMutation(p.apiPassword))
 	mux.HandleFunc("POST /api/panel/routing/test", p.requireMutation(p.apiRoutingTest))

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"quasarbridge/internal/llm"
 )
 
 // The panel fills the endpoint fields from the key the operator pastes. The
@@ -88,15 +90,29 @@ func guessLLMProvider(key string) (llmGuess, bool) {
 // fetchLLMModels asks a provider for its model list. The "Модели" button and the
 // key autodetect share it, so both accept the two documented wire shapes.
 func fetchLLMModels(ctx context.Context, baseURL, key string) ([]string, error) {
+	return fetchLLMModelsAPI(ctx, baseURL, key, "")
+}
+
+// fetchLLMModelsAPI is fetchLLMModels for a provider with its own wire format:
+// GigaChat exchanges the key for a token and trusts the Russian CA.
+func fetchLLMModelsAPI(ctx context.Context, baseURL, key, api string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models", nil)
 	if err != nil {
 		return nil, errors.New("invalid provider endpoint")
 	}
 	req.Header.Set("Accept", "application/json")
-	if key != "" {
+	client := &http.Client{Timeout: panelLLMProbeTimeout}
+	if api == llm.APIGigaChat {
+		token, err := llm.GigaAccessToken(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		client = llm.GigaHTTPClient(panelLLMProbeTimeout)
+	} else if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := (&http.Client{Timeout: panelLLMProbeTimeout}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New("provider is unreachable")
 	}
@@ -120,6 +136,11 @@ func fetchLLMModels(ctx context.Context, baseURL, key string) ([]string, error) 
 func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		APIKey string `json:"api_key"`
+		// Preset is the id of an entry of llmPresets the operator picked in the
+		// «Сервис» list. A named service is not guessed from the key.
+		Preset string `json:"preset"`
+		// Provider is the row name; the model list found is stored under it.
+		Provider string `json:"provider"`
 	}
 	decoder := stdjson.NewDecoder(http.MaxBytesReader(w, r.Body, panelLLMBodyLimit))
 	decoder.DisallowUnknownFields()
@@ -134,7 +155,12 @@ func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 		writePanelJSON(w, http.StatusBadRequest, map[string]string{"error": "api_key is required"})
 		return
 	}
-	guess, ok := guessLLMProvider(key)
+	guess, ok := llmGuess{}, false
+	if preset, found := llmPresetByID(strings.TrimSpace(body.Preset)); found {
+		guess, ok = llmGuess{name: preset.Name, baseURL: preset.BaseURL, api: preset.API}, true
+	} else {
+		guess, ok = guessLLMProvider(key)
+	}
 	if !ok {
 		// The key is never logged, and the answer is not an error the page has to
 		// shout about: an unknown key simply means "fill the row yourself".
@@ -147,7 +173,7 @@ func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), panelLLMProbeTimeout)
 	defer cancel()
-	models, err := fetchLLMModels(ctx, guess.baseURL, key)
+	models, err := fetchLLMModelsAPI(ctx, guess.baseURL, key, guess.api)
 	if err != nil {
 		// The address is still right for the recognised key, so the page fills the
 		// row and shows the reason instead of refusing the whole guess.
@@ -159,6 +185,11 @@ func (p *panelServer) apiLLMDetect(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	storeName := strings.TrimSpace(body.Provider)
+	if storeName == "" {
+		storeName = guess.name
+	}
+	_ = storeLLMModels(p.configPath, storeName, models)
 	p.audit.record("llm_detect", r, "ok", map[string]any{"provider": guess.name, "models": len(models)})
 	writePanelJSON(w, http.StatusOK, map[string]any{
 		"detected": true, "verified": true,

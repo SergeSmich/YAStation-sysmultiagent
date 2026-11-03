@@ -11,6 +11,7 @@ const WAKE_DICTIONARY_URL = '/api/panel/wake/dictionary';
 const LLM_TEST_URL = '/api/panel/llm/test';
 const LLM_MODELS_URL = '/api/panel/llm/models';
 const LLM_DETECT_URL = '/api/panel/llm/detect';
+const LLM_CHECK_URL = '/api/panel/llm/check';
 const PASSWORD_URL = '/api/panel/password';
 const ROUTING_TEST_URL = '/api/panel/routing/test';
 const UPDATE_URL = '/api/panel/update';
@@ -33,6 +34,7 @@ let providerKeysState = {};
 // name the bridge does not know or silently testing the old values.
 let savedProviders = new Map();
 let providerModels = {};
+let llmPresetsState = [];
 let wakeDictionary = [];
 let wakeDictionaryNote = '';
 let wakePage = '';
@@ -554,7 +556,7 @@ function settingsControl(tag, field, value, placeholder) {
 // PROVIDER_APIS are the two wire formats the bridge speaks. The value goes into
 // llm_providers[].api, so it is shown verbatim instead of a translated label:
 // the operator copies it from the provider's documentation.
-const PROVIDER_APIS = ['chat_completions', 'responses'];
+const PROVIDER_APIS = ['chat_completions', 'responses', 'gigachat'];
 
 // providerPayload builds the object the write path expects. It is an explicit
 // whitelist for two reasons: the transient fields the page keeps on the object
@@ -579,29 +581,131 @@ function providerPayload(provider) {
   return payload;
 }
 
-function fillModels(datalist, ids) {
-  if (!datalist) return;
-  datalist.replaceChildren();
-  for (const id of ids || []) {
-    const item = el('option');
-    item.value = id;
-    datalist.appendChild(item);
-  }
-  const pick = datalist.parentNode && datalist.parentNode.querySelector('.model-pick');
-  if (pick) {
-    pick.replaceChildren();
-    const head = el('option');
-    head.value = '';
-    head.textContent = (ids && ids.length) ? 'Выбрать из списка (' + ids.length + ')…' : 'Список пуст — нажмите «Модели»';
-    pick.appendChild(head);
-    for (const id of ids || []) {
-      const item = el('option');
-      item.value = id;
-      item.textContent = id;
-      pick.appendChild(item);
+// modelIdsFor returns the model list the page knows for a provider name. The
+// list comes from the file the bridge keeps (llm_models.json), so it survives a
+// reload; «Применить» and «Проверить» refresh it.
+function modelIdsFor(name) {
+  return (name && providerModels[name]) || [];
+}
+
+const COMBO_LIMIT = 200;
+let comboOutsideBound = false;
+
+function closeCombos() {
+  for (const menu of document.querySelectorAll('.combo-menu:not([hidden])')) menu.hidden = true;
+}
+
+// modelCombo is one control: a text field the operator can type a model into
+// and an arrow that opens the list with a filter box on top. A datalist was not
+// enough, it only shows the entries that match what is already typed.
+// getIds is read on every open, so a list refreshed meanwhile is picked up.
+function modelCombo(field, value, placeholder, getIds) {
+  const wrap = el('div', 'combo model-combo');
+  const input = settingsControl('input', field, value, placeholder);
+  input.type = 'text';
+  input.autocomplete = 'off';
+  const toggle = el('button', 'combo-toggle', '▾');
+  toggle.type = 'button';
+  toggle.title = 'Список моделей';
+  toggle.setAttribute('aria-label', 'Открыть список моделей');
+  const menu = el('div', 'combo-menu');
+  menu.hidden = true;
+  const filter = el('input', 'combo-filter');
+  filter.type = 'text';
+  filter.autocomplete = 'off';
+  const items = el('div', 'combo-items');
+  menu.append(filter, items);
+  wrap.append(input, toggle, menu);
+
+  const visible = () => {
+    const query = filter.value.trim().toLowerCase();
+    const ids = getIds() || [];
+    return { ids, found: query ? ids.filter((id) => id.toLowerCase().includes(query)) : ids };
+  };
+  const pick = (id) => {
+    input.value = id;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    menu.hidden = true;
+  };
+  const render = () => {
+    const { ids, found } = visible();
+    filter.placeholder = ids.length ? 'Фильтр, например free (' + ids.length + ')' : 'Фильтр';
+    items.replaceChildren();
+    if (!ids.length) {
+      items.appendChild(el('div', 'combo-empty', 'Список пуст — введите ключ и нажмите «Применить» или «Проверить»'));
+      return;
     }
-    pick.value = '';
+    if (!found.length) {
+      items.appendChild(el('div', 'combo-empty', 'Ничего не найдено'));
+      return;
+    }
+    for (const id of found.slice(0, COMBO_LIMIT)) {
+      const item = el('button', 'combo-item', id);
+      item.type = 'button';
+      if (id === input.value) item.classList.add('is-current');
+      item.addEventListener('click', () => pick(id));
+      items.appendChild(item);
+    }
+    if (found.length > COMBO_LIMIT) {
+      items.appendChild(el('div', 'combo-empty', 'ещё ' + (found.length - COMBO_LIMIT) + ' — уточните фильтр'));
+    }
+  };
+  toggle.addEventListener('click', () => {
+    if (!menu.hidden) {
+      menu.hidden = true;
+      return;
+    }
+    closeCombos();
+    filter.value = '';
+    render();
+    menu.hidden = false;
+    filter.focus();
+  });
+  filter.addEventListener('input', render);
+  filter.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      // Enter in a field saves its section; here it picks the first match.
+      event.preventDefault();
+      event.stopPropagation();
+      const { found } = visible();
+      if (found.length) pick(found[0]);
+    } else if (event.key === 'Escape') {
+      menu.hidden = true;
+      input.focus();
+    }
+  });
+  if (!comboOutsideBound) {
+    comboOutsideBound = true;
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('.combo')) closeCombos();
+    });
   }
+  return { wrap, input };
+}
+
+function comboField(labelText, wrap) {
+  const field = el('div', 'field');
+  field.appendChild(el('span', null, labelText));
+  field.appendChild(wrap);
+  return field;
+}
+
+// firstUsableModel picks the model to fill an empty field with: the first one
+// that is not an embedding, speech or moderation model.
+function firstUsableModel(ids) {
+  const skip = /embed|whisper|tts|guard|moderat|rerank|image|vision-preview/i;
+  return (ids || []).find((id) => !skip.test(id)) || '';
+}
+
+// setKeyNote shows the answer of the station under the key field of this very
+// row, not in the shared status line of the header.
+function setKeyNote(row, text, kind) {
+  const note = row && row.querySelector('.key-note');
+  if (!note) return;
+  note.textContent = text || '';
+  note.classList.remove('ok', 'error');
+  if (kind) note.classList.add(kind);
 }
 
 // applyProviderGuess puts what the bridge recognised from the key into the row.
@@ -613,10 +717,8 @@ function applyProviderGuess(provider, row, payload) {
   if (payload.base_url) provider.base_url = payload.base_url;
   if (payload.api) provider.api = payload.api;
   const ids = Array.isArray(payload.models) ? payload.models : [];
-  if (ids.length) {
-    provider._models = ids;
-    providerModels[provider.name] = ids;
-  }
+  if (ids.length) providerModels[provider.name] = ids;
+  if (ids.length && !String(provider.model || '').trim()) provider.model = firstUsableModel(ids);
   if (row) {
     const set = (field, value) => {
       const control = row.querySelector('[data-field="' + field + '"]');
@@ -625,7 +727,7 @@ function applyProviderGuess(provider, row, payload) {
     set('name', provider.name);
     set('base_url', provider.base_url);
     set('api', provider.api);
-    fillModels(row.querySelector('.model-select'), provider._models || []);
+    set('model', provider.model);
     if (provider.name) {
       row.dataset.syncedName = provider.name;
       syncProviderSelects();
@@ -635,17 +737,44 @@ function applyProviderGuess(provider, row, payload) {
   return true;
 }
 
-// detectProviderKey asks the station to recognise the provider from a pasted key.
-// The key is sent once per distinct value: a typo is not retried on every blur.
-async function detectProviderKey(provider, row) {
+// applyProviderKey asks the station to recognise the service from the key (or
+// from the chosen preset), fills the row and reports under the key field. The
+// key is sent once per distinct value unless the operator presses «Применить».
+async function applyProviderKey(provider, row, force) {
   const key = String(provider._key || '').trim();
-  if (key.length < 12) return null;
-  if (provider._guessedKey === key) return provider._guess || null;
-  provider._guessedKey = key;
-  const payload = await postJSON(LLM_DETECT_URL, { api_key: key });
-  provider._guess = payload;
-  applyProviderGuess(provider, row, payload);
-  return payload;
+  if (!key) {
+    setKeyNote(row, 'Введите ключ, затем нажмите «Применить»', 'error');
+    return null;
+  }
+  const signature = key + '|' + (provider._preset || '');
+  if (!force && provider._guessedKey === signature) return provider._guess || null;
+  provider._guessedKey = signature;
+  setKeyNote(row, 'Определяю сервис по ключу…', '');
+  try {
+    const payload = await postJSON(LLM_DETECT_URL, {
+      api_key: key,
+      preset: provider._preset || '',
+      provider: String(provider.name || '').trim().toLowerCase()
+    });
+    provider._guess = payload;
+    if (!payload || !payload.detected) {
+      setKeyNote(row, (payload && payload.note) || 'Сервис не распознан по ключу — выберите его в списке «Сервис» или впишите адрес вручную', 'error');
+      return payload;
+    }
+    applyProviderGuess(provider, row, payload);
+    const count = modelIdsFor(provider.name).length;
+    if (payload.verified) {
+      setKeyNote(row, 'Применено: ' + (payload.provider || provider.name) + ', моделей: ' + count + '. Нажмите «Сохранить».', 'ok');
+    } else {
+      setKeyNote(row, 'Адрес заполнен (' + (payload.provider || provider.name) + '), но сервис не ответил: ' +
+        (payload.note || 'нет ответа'), 'error');
+    }
+    return payload;
+  } catch (error) {
+    provider._guessedKey = '';
+    setKeyNote(row, error.message, 'error');
+    return null;
+  }
 }
 
 function updateKeyBadge(row, provider) {
@@ -686,6 +815,36 @@ function renderProviders(force) {
     row.dataset.index = String(index);
     row.dataset.syncedName = provider.name || '';
 
+    // A named service fills the address and the format; the key alone cannot
+    // tell Qwen from DeepSeek, so the operator picks those here.
+    const preset = el('select', 'preset-pick');
+    preset.setAttribute('aria-label', 'Сервис');
+    preset.appendChild(option('', 'выбрать сервис…'));
+    for (const item of llmPresetsState) preset.appendChild(option(item.id, item.label));
+    preset.value = provider._preset || '';
+    preset.addEventListener('change', () => {
+      const chosen = llmPresetsState.find((item) => item.id === preset.value);
+      provider._preset = preset.value;
+      provider._guessedKey = '';
+      if (!chosen) return;
+      const set = (field, value) => {
+        const control = row.querySelector('[data-field="' + field + '"]');
+        if (control) control.value = value;
+      };
+      if (!String(provider.name || '').trim()) {
+        provider.name = chosen.name;
+        set('name', chosen.name);
+      }
+      provider.base_url = chosen.base_url;
+      provider.api = chosen.api;
+      set('base_url', chosen.base_url);
+      set('api', chosen.api);
+      syncProviderSelects();
+      updateKeyBadge(row, provider);
+      setKeyNote(row, 'Адрес и формат заполнены. Введите ключ и нажмите «Применить».', '');
+    });
+    row.appendChild(settingsField('Сервис', preset, 'wide'));
+
     const name = settingsControl('input', 'name', provider.name, 'например, deepseek');
     name.type = 'text';
     name.autocomplete = 'off';
@@ -716,66 +875,33 @@ function renderProviders(force) {
     base.autocomplete = 'off';
     row.appendChild(settingsField('Адрес API', base, 'wide'));
 
-    const model = settingsControl('input', 'model', provider.model, 'например, deepseek-chat');
-    model.type = 'text';
-    model.autocomplete = 'off';
-    const models = el('datalist');
-    models.id = 'llm-models-' + index;
-    models.className = 'model-select';
-    model.setAttribute('list', models.id);
-    const modelField = settingsField('Модель', model);
-    modelField.appendChild(models);
-    // A datalist only offers the options that match the text already in the
-    // field, so with a model filled in it shows that one model. The select below
-    // always lists everything the provider returned.
-    const pick = el('select', 'model-pick');
-    pick.setAttribute('aria-label', 'Выбрать модель из списка');
-    pick.addEventListener('change', () => {
-      if (!pick.value) return;
-      model.value = pick.value;
-      model.dispatchEvent(new Event('input', { bubbles: true }));
-      model.dispatchEvent(new Event('change', { bubbles: true }));
-      pick.value = '';
-    });
-    modelField.appendChild(pick);
-    fillModels(models, provider._models || providerModels[provider.name] || []);
-    row.appendChild(modelField);
+    const combo = modelCombo('model', provider.model, 'например, deepseek-chat',
+      () => modelIdsFor(String(provider.name || '').trim()));
+    row.appendChild(comboField('Модель', combo.wrap));
 
     const key = settingsControl('input', 'api_key', provider._key, '');
     key.type = 'password';
     key.autocomplete = 'new-password';
     key.placeholder = provider._clearKey ? 'ключ будет удалён' : 'Пусто — не менять';
-    const keyField = settingsField('API-ключ', key);
+    const keyLine = el('div', 'key-line');
+    const apply = el('button', 'ghost', 'Применить');
+    apply.type = 'button';
+    apply.title = 'Определить сервис по ключу, заполнить адрес и список моделей';
+    // The key is sent to the station only here (or on Enter in the field): the
+    // answer lands under this very field instead of the shared status line.
+    apply.addEventListener('click', () => applyProviderKey(provider, row, true));
+    keyLine.append(key, apply);
+    const keyField = el('div', 'field wide');
+    keyField.appendChild(el('span', null, 'API-ключ'));
+    keyField.appendChild(keyLine);
     keyField.appendChild(el('span', 'key-state'));
-    // A pasted key is enough to fill the row: as soon as the field loses focus,
-    // the station recognises the provider and returns its address and models.
-    key.addEventListener('change', async () => {
-      if (!key.value.trim()) return;
-      const status = document.getElementById('settings-status');
-      status.classList.remove('error');
-      status.textContent = 'определяю провайдера по ключу…';
-      try {
-        const payload = await detectProviderKey(provider, row);
-        if (!payload || !payload.detected) {
-          status.textContent = (payload && payload.note) || 'провайдер не распознан по ключу — впишите адрес API вручную';
-          return;
-        }
-        status.textContent = 'провайдер: ' + (payload.provider || provider.name) +
-          (payload.verified ? '' : ' (проверка: ' + (payload.note || 'провайдер не ответил') + ')') +
-          (provider._models && provider._models.length ? ', моделей: ' + provider._models.length : '') +
-          ' — выберите модель в списке';
-      } catch (error) {
-        status.textContent = error.message;
-        status.classList.add('error');
-      }
-    });
+    keyField.appendChild(el('span', 'key-note small'));
     row.appendChild(keyField);
 
     const actions = el('div', 'row-actions');
     actions.appendChild(providerButton('Проверить', 'test'));
-    actions.appendChild(providerButton('Модели', 'models'));
     actions.appendChild(providerButton('Забыть ключ', 'forget'));
-    const remove = el('button', 'ghost', 'Удалить');
+    const remove = el('button', 'ghost danger-solid', 'Удалить');
     remove.type = 'button';
     remove.dataset.remove = 'provider';
     actions.appendChild(remove);
@@ -935,10 +1061,13 @@ function renderAgents(force) {
     voice.value = agent.voice || '';
     row.appendChild(settingsField('Голос', voice));
 
-    const model = settingsControl('input', 'model', agent.model, 'модель по умолчанию');
-    model.type = 'text';
-    model.autocomplete = 'off';
-    row.appendChild(settingsField('Модель', model));
+    // The list is the one of the chosen connection; the filter box on top of it
+    // finds a model by a part of the name (for example «free»).
+    const modelCombo1 = modelCombo('model', agent.model, 'модель по умолчанию', () => {
+      const select = row.querySelector('[data-field="provider"]');
+      return modelIdsFor(select ? select.value : agent.provider);
+    });
+    row.appendChild(comboField('Модель', modelCombo1.wrap));
 
     const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
     prompt.rows = 5;
@@ -979,9 +1108,11 @@ function renderAgents(force) {
 function updateAgentRow(row, agent) {
   const model = row.querySelector('[data-field="model"]');
   if (!model) return;
+  // A role's own model overrides the one of the connection (resolveLLM), so the
+  // field stays editable; empty means "take it from the connection".
   const linked = Boolean(agent.provider);
-  model.disabled = linked;
-  model.placeholder = linked ? 'из подключения' : 'модель по умолчанию';
+  model.disabled = false;
+  model.placeholder = linked ? 'из подключения (или выберите)' : 'модель по умолчанию';
 }
 
 // syncProviderSelects keeps the role list in step with the provider list: a role
@@ -1556,6 +1687,8 @@ function renderSettings(payload, force, scope) {
     savedProviders = new Map(providersState.map((provider) => [
       String(provider.name || ''), JSON.stringify(providerPayload(provider))
     ]));
+    llmPresetsState = Array.isArray(payload.llm_presets) ? payload.llm_presets : llmPresetsState;
+    if (payload.provider_models && typeof payload.provider_models === 'object') providerModels = payload.provider_models;
     providerKeysState = payload.provider_keys && typeof payload.provider_keys === 'object'
       ? payload.provider_keys
       : {};
@@ -1719,50 +1852,28 @@ async function providerAction(event) {
     status.textContent = 'ключ будет удалён при сохранении';
     return;
   }
-  const name = String(provider.name || '').trim().toLowerCase();
-  if (!name) {
-    status.textContent = 'укажите название подключения и сохраните его';
-    status.classList.add('error');
-    return;
-  }
-  // Both endpoints resolve the row from the file, so an unsaved row would come
-  // back as "provider is not configured". Say it in the operator's words first.
-  const stored = savedProviders.get(name);
-  if (stored === undefined) {
-    status.textContent = 'сначала нажмите «Сохранить»: проверка идёт по сохранённому подключению';
-    status.classList.add('error');
-    return;
-  }
-  if (stored !== JSON.stringify(providerPayload(provider))) {
-    status.textContent = 'в подключении есть несохранённые правки — сначала нажмите «Сохранить»';
-    status.classList.add('error');
-    return;
-  }
-  if (action === 'models') {
-    status.textContent = 'запрашиваю список моделей…';
-    try {
-      const payload = await postJSON(LLM_MODELS_URL, { provider: name });
-      const ids = Array.isArray(payload && payload.models) ? payload.models : [];
-      provider._models = ids;
-      providerModels[name] = ids;
-      fillModels(row.querySelector('.model-select'), ids);
-      status.textContent = ids.length
-        ? 'моделей: ' + ids.length + ' — выберите в поле «Модель»'
-        : 'провайдер не вернул список моделей, введите вручную';
-    } catch (error) {
-      status.textContent = error.message + ' (подключение должно быть сохранено)';
-      status.classList.add('error');
-    }
-    return;
-  }
-  status.textContent = 'проверяю подключение…';
+  // «Проверить» works on the row as it stands, saved or not: it proves the key
+  // and the address, refreshes the stored model list and asks the chosen model
+  // one tiny question. The answer goes under the key field.
+  setKeyNote(row, 'Проверяю подключение…', '');
   try {
-    const payload = await postJSON(LLM_TEST_URL, { provider: name });
-    status.textContent = 'ответ за ' + (payload && payload.latency_ms ? payload.latency_ms : 0) +
-      ' мс: ' + ((payload && payload.sample) || 'пусто');
+    const payload = await postJSON(LLM_CHECK_URL, {
+      provider: String(provider.name || '').trim().toLowerCase(),
+      base_url: String(provider.base_url || '').trim(),
+      api: provider.api || 'chat_completions',
+      model: String(provider.model || '').trim(),
+      api_key: String(provider._key || '').trim()
+    });
+    const name = String(provider.name || '').trim().toLowerCase();
+    if (Array.isArray(payload.models) && name) providerModels[name] = payload.models;
+    const parts = [];
+    if (Array.isArray(payload.models)) parts.push('доступ есть, моделей: ' + payload.models.length);
+    else if (payload.models_error) parts.push('список моделей: ' + payload.models_error);
+    if (payload.chat_ok) parts.push('ответ за ' + (payload.latency_ms || 0) + ' мс: «' + (payload.sample || 'пусто') + '»');
+    else if (payload.chat_error) parts.push('модель не ответила: ' + payload.chat_error);
+    setKeyNote(row, parts.join('; ') || 'нет данных', payload.ok ? 'ok' : 'error');
   } catch (error) {
-    status.textContent = error.message + ' (подключение должно быть сохранено)';
-    status.classList.add('error');
+    setKeyNote(row, error.message, 'error');
   }
 }
 
@@ -1820,7 +1931,7 @@ async function applySettings(scope) {
         String(providersState.indexOf(provider)) + '"]');
       status.textContent = withPrefix('определяю провайдера по ключу…');
       try {
-        await detectProviderKey(provider, row);
+        await applyProviderKey(provider, row, false);
       } catch (error) {
         // Not fatal: the row may already be complete by hand, and the checks below
         // report anything that is still missing.

@@ -37,3 +37,4 @@ __pycache__/
 /dist/
 *.jsonl
 *.jsonl.*
+!internal/llm/ru_*_ca.pem

@@ -936,10 +936,12 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
-				// A pinned turn is a start-word turn: the word itself already
-				// acknowledged the person, so a filler phrase would talk over
-				// the role's answer instead of covering a slow classifier.
-				if decision.Source != "pinned" && decision.Source != "dialogue_agent" && decision.Route != "yandex" && n.ProgressAfter > 0 {
+				// The progress stream is silent: it only keeps the cloud request
+				// alive, because Yandex gives up after 15 s with "произошла
+				// ошибка". A pinned or held role (the sysadmin) is the slow
+				// path that needs it most, so only a fast Yandex route skips it;
+				// ProgressAfter keeps quick answers from ever starting it.
+				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)

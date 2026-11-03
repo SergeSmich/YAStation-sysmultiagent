@@ -89,7 +89,11 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		"'/api/panel/llm/detect'",
 		"'/api/panel/wake/dictionary'",
 		"wake-dictionary-list",
-		"model-select",
+		"model-combo",
+		"'/api/panel/llm/check'",
+		"llm_presets",
+		"provider_models",
+		"danger-solid",
 		"agent-provider",
 		"provider_keys",
 		"providerPayload",
@@ -122,7 +126,7 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".routing-rule", ".routing-classifier", ".update-command"} {
+	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command"} {
 		if !strings.Contains(string(style), marker) {
 			t.Fatalf("panel.css lacks %s", marker)
 		}

@@ -145,12 +145,13 @@ func (p *panelServer) apiLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), panelLLMProbeTimeout)
 	defer cancel()
-	models, err := fetchLLMModels(ctx, provider.BaseURL, key)
+	models, err := fetchLLMModelsAPI(ctx, provider.BaseURL, key, provider.API)
 	if err != nil {
 		p.audit.record("llm_models", r, "failed", map[string]any{"provider": provider.Name})
 		writePanelJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = storeLLMModels(p.configPath, provider.Name, models)
 	p.audit.record("llm_models", r, "ok", map[string]any{"provider": provider.Name, "models": len(models)})
 	writePanelJSON(w, http.StatusOK, map[string]any{"provider": provider.Name, "models": models})
 }

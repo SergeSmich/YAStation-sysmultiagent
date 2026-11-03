@@ -431,3 +431,31 @@ button.danger:hover { border-color: var(--err); }
 }
 
 .field.narrow:has(input[type="range"]) { min-width: 160px; }
+
+/* Provider rows: key + «Применить», one status line under the key, the model
+   field with an arrow list and a filter on top. */
+.key-line { display: flex; gap: 8px; align-items: stretch; }
+.key-line input { flex: 1 1 auto; min-width: 0; }
+.key-line button { flex: 0 0 auto; padding: 5px 14px; }
+.key-note { display: block; min-height: 1.2em; margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
+.key-note.ok { color: var(--ok); }
+.key-note.error { color: var(--err); }
+.combo { position: relative; display: flex; align-items: stretch; }
+.combo > input { flex: 1 1 auto; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.combo-toggle { flex: 0 0 auto; padding: 0 12px; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.combo-menu {
+  position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  background: #151a2b; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 8px; display: grid; gap: 6px;
+}
+body.light .combo-menu { background: #ffffff; }
+.combo-menu[hidden] { display: none; }
+.combo-filter { width: 100%; }
+.combo-items { max-height: 260px; overflow-y: auto; display: grid; gap: 2px; }
+.combo-item { text-align: left; background: transparent; border-color: transparent; padding: 5px 8px; font-size: 13px; overflow-wrap: anywhere; }
+.combo-item:hover { background: var(--panel-2); border-color: var(--line); }
+.combo-item.is-current { color: var(--accent2); font-weight: 600; }
+.combo-empty { color: var(--muted); font-size: 12px; padding: 6px 8px; }
+/* Solid dark red: the one button that destroys a row stands out from the ghost ones. */
+button.danger-solid { background: #991b1b; border-color: #7f1d1d; color: #ffffff; font-weight: 600; }
+button.danger-solid:hover { background: #7f1d1d; border-color: #7f1d1d; }

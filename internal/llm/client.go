@@ -97,7 +97,7 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 	var m Message
 	var err error
 	switch c.API {
-	case "", "chat_completions":
+	case "", "chat_completions", APIGigaChat:
 		m, err = c.chatCompletions(ctx, messages, structured, tools)
 	case "responses":
 		if len(c.ChatParameters) > 0 {
@@ -129,6 +129,9 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 	if strings.Contains(strings.ToLower(c.BaseURL), "generativelanguage.googleapis.com") {
 		delete(request, "chat_template_kwargs")
 	}
+	if c.API == APIGigaChat {
+		delete(request, "chat_template_kwargs")
+	}
 	if structured {
 		request["response_format"] = map[string]string{"type": "json_object"}
 	}
@@ -145,7 +148,9 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 	if len(tools) > 0 {
 		request["tools"] = tools
 		request["tool_choice"] = "auto"
-		request["parallel_tool_calls"] = false
+		if c.API != APIGigaChat {
+			request["parallel_tool_calls"] = false
+		}
 	}
 	data, err := c.post(ctx, "/chat/completions", request)
 	if err != nil {
@@ -183,10 +188,17 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		return nil, errors.New("invalid LLM endpoint")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
+	hc := c.HTTP
+	if c.API == APIGigaChat {
+		token, err := GigaAccessToken(ctx, c.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		hc = GigaHTTPClient(60 * time.Second)
+	} else if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient
 	}

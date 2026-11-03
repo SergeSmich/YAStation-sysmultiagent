@@ -372,6 +372,8 @@ func (p *panelServer) apiSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload := settingsSnapshot(cfg, p.settings.Secrets)
+	payload["provider_models"] = providerModelsFor(p.configPath, cfg)
+	payload["llm_presets"] = llmPresets
 	// The training page lives on its own listener; the page opens it in a tab
 	// and falls back to the SSH tunnel when the listener is off.
 	payload["wake_page"] = p.wakePageURL(r)
@@ -409,5 +411,10 @@ func (p *panelServer) apiSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 		extra["routing_default"] = patch.Routing.DefaultRoute
 	}
 	p.audit.record("settings_update", r, panelAuditResult(status), extra)
+	if answer, ok := payload.(map[string]any); ok && status == http.StatusOK {
+		if cfg, err := readConfig(p.configPath); err == nil {
+			answer["provider_models"] = providerModelsFor(p.configPath, cfg)
+		}
+	}
 	writePanelJSON(w, status, payload)
 }
