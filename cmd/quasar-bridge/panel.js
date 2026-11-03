@@ -954,6 +954,60 @@ function providerButton(label, action) {
   return button;
 }
 
+// Every card is its own fold: closed it shows the name (and a short hint),
+// open it shows the form. Which cards are open survives a redraw of the list.
+const openCards = new Set();
+
+function cardSummaryText(kind, item, isNew) {
+  const clean = (value) => String(value || '').trim();
+  if (kind === 'provider') {
+    return { title: clean(item.name) || (isNew ? 'Новая нейросеть' : 'без названия'), sub: clean(item.model) };
+  }
+  if (kind === 'agent') {
+    return {
+      title: clean(item.name) || (isNew ? 'Новая роль' : 'без имени'),
+      sub: [clean(item.provider), clean(item.model)].filter(Boolean).join(' · ')
+    };
+  }
+  const how = ACTION_LABELS[item.action] || clean(item.action);
+  return {
+    title: clean(item.word) || (isNew ? 'Новое старт-слово' : 'без слова'),
+    sub: [how, clean(item.agent) ? '→ ' + clean(item.agent) : ''].filter(Boolean).join(' ')
+  };
+}
+
+function fillCardSummary(details, kind, item, isNew) {
+  const text = cardSummaryText(kind, item, isNew);
+  details.querySelector('.card-title').textContent = text.title;
+  details.querySelector('.card-sub').textContent = text.sub;
+}
+
+// wrapCard puts a drawn card (the grid of fields) under a <summary>. The form
+// stays the element with data-kind, so every handler keeps finding it.
+function wrapCard(kind, row, item, isNew) {
+  const details = el('details', 'fold-card');
+  const key = kind + ':' + (isNew ? 'new' : String(item.name || item.word || '#' + row.dataset.index));
+  details.dataset.cardKey = key;
+  const summary = el('summary');
+  summary.append(el('span', 'card-title'), el('span', 'card-sub muted small'));
+  details.append(summary, row);
+  fillCardSummary(details, kind, item, isNew);
+  details.open = isNew || openCards.has(key);
+  details.addEventListener('toggle', () => {
+    if (isNew) return;
+    if (details.open) openCards.add(key);
+    else openCards.delete(key);
+  });
+  return details;
+}
+
+// refreshCardSummary follows the typing: the closed card shows the new name.
+function refreshCardSummary(row) {
+  const details = row.closest('details.fold-card');
+  const item = details && itemOf(row.dataset.kind, row);
+  if (item) fillCardSummary(details, row.dataset.kind, item, row.dataset.index === 'new');
+}
+
 function renderProviders(force) {
   const list = document.getElementById('llm-providers-list');
   if (!force && list.contains(document.activeElement)) return;
@@ -1084,7 +1138,7 @@ function renderProviders(force) {
     actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
 
-    list.appendChild(row);
+    list.appendChild(wrapCard('provider', row, provider, isNew));
     updateKeyBadge(row, provider);
   });
 }
@@ -1199,7 +1253,7 @@ function renderWakeWords(force) {
     actions.appendChild(removeOrCancel('word', 'Удалить слово', isNew));
     actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
-    list.appendChild(row);
+    list.appendChild(wrapCard('word', row, word, isNew));
     updateWordRow(row, word);
   });
 }
@@ -1280,7 +1334,7 @@ function renderAgents(force) {
     actions.appendChild(removeOrCancel('agent', 'Удалить роль', isNew));
     actions.appendChild(el('span', 'row-status small'));
     row.appendChild(actions);
-    list.appendChild(row);
+    list.appendChild(wrapCard('agent', row, agent, isNew));
     updateAgentRow(row, agent);
   });
   syncAgentSelects();
@@ -1925,6 +1979,11 @@ function editSettingsField(event) {
   if (!control.dataset.field) return;
   const row = control.closest('[data-kind]');
   if (!row) return;
+  editCardField(event, control, row);
+  refreshCardSummary(row);
+}
+
+function editCardField(event, control, row) {
   if (row.dataset.kind === 'word') {
     const word = itemOf('word', row);
     if (!word) return;
@@ -1979,8 +2038,6 @@ const NEW_ITEMS = {
 
 function openNewCard(kind, button) {
   if (!newItems[kind]) newItems[kind] = NEW_ITEMS[kind]();
-  const details = button.closest('details');
-  if (details) details.open = true;
   renderKind(kind);
   const row = document.querySelector('[data-kind="' + kind + '"][data-index="new"]');
   if (row) {
@@ -2020,6 +2077,9 @@ function saveCardClick(event) {
 // redrawn by the save, so the card is found again by its place in the list.
 function finishCard(kind, index, text) {
   const row = document.querySelector('[data-kind="' + kind + '"][data-index="' + index + '"]');
+  // The answer lives in the card: show it even if the redraw closed the fold.
+  const fold = row && row.closest('details.fold-card');
+  if (fold) fold.open = true;
   setRowStatus(row, text, 'ok');
 }
 
