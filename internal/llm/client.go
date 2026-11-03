@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -152,8 +154,10 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 			request["parallel_tool_calls"] = false
 		}
 	}
+	started := time.Now()
 	data, err := c.post(ctx, "/chat/completions", request)
 	if err != nil {
+		logCall(c, started, 0, 0, err)
 		return Message{}, err
 	}
 	var result struct {
@@ -161,10 +165,16 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 			Message      Message `json:"message"`
 			FinishReason string  `json:"finish_reason"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
+		logCall(c, started, 0, 0, err)
 		return Message{}, errors.New("invalid LLM response")
 	}
+	logCall(c, started, result.Usage.PromptTokens, result.Usage.CompletionTokens, nil)
 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
 		return Message{}, errors.New("LLM returned no answer")
 	}
@@ -174,6 +184,28 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 	m := result.Choices[0].Message
 	m.Role = "assistant"
 	return m, nil
+}
+
+// logCall writes one line per model round: where the time and the tokens of a
+// slow answer went. Host and model only; the URL may carry userinfo and the
+// key never reaches a log.
+func logCall(c *Client, started time.Time, promptTokens, completionTokens int, err error) {
+	host := "?"
+	if u, perr := url.Parse(c.BaseURL); perr == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	attrs := []any{"host", host, "model", c.Model, "elapsed_ms", time.Since(started).Milliseconds(),
+		"prompt_tokens", promptTokens, "completion_tokens", completionTokens}
+	if err != nil {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			attrs = append(attrs, "status", httpErr.Status)
+		}
+		attrs = append(attrs, "error", err.Error())
+		slog.Warn("llm_call_failed", attrs...)
+		return
+	}
+	slog.Info("llm_call", attrs...)
 }
 
 func (c *Client) post(ctx context.Context, path string, request any) ([]byte, error) {
