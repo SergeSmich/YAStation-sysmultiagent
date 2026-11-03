@@ -14,6 +14,7 @@ type llmPreset struct {
 
 var llmPresets = []llmPreset{
 	{ID: "groq", Label: "Groq", Name: "groq", BaseURL: "https://api.groq.com/openai/v1", API: "chat_completions"},
+	{ID: "arena", Label: "Arena (api.arena.ai)", Name: "arena", BaseURL: "https://api.arena.ai/v1", API: "chat_completions"},
 	{ID: "qwen-intl", Label: "Qwen (Alibaba, международный)", Name: "qwen", BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", API: "chat_completions"},
 	{ID: "qwen-cn", Label: "Qwen (Alibaba, Китай)", Name: "qwen-cn", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", API: "chat_completions"},
 	{ID: "gigachat", Label: "GigaChat (Сбер)", Name: "gigachat", BaseURL: "https://gigachat.devices.sberbank.ru/api/v1", API: "gigachat"},

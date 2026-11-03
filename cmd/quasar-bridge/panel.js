@@ -1107,8 +1107,19 @@ function renderProviders(force) {
     row.appendChild(modelField);
 
     const key = settingsControl('input', 'api_key', provider._key, '');
-    key.type = 'password';
-    key.autocomplete = 'new-password';
+    // Not type=password on purpose: browsers offer to save any password field and
+    // ignore autocomplete="off" on it. A text field drawn as dots (see .secret-input)
+    // looks the same and never triggers the password manager.
+    key.type = 'text';
+    key.autocomplete = 'off';
+    key.spellcheck = false;
+    key.classList.add('secret-input');
+    key.setAttribute('autocapitalize', 'off');
+    key.setAttribute('autocorrect', 'off');
+    key.setAttribute('data-lpignore', 'true');
+    key.setAttribute('data-1p-ignore', 'true');
+    key.setAttribute('data-bwignore', 'true');
+    key.setAttribute('data-form-type', 'other');
     key.placeholder = provider._clearKey ? 'ключ будет удалён' : 'Пусто — не менять';
     const keyLine = el('div', 'key-line');
     const apply = el('button', 'ghost', 'Применить');

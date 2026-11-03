@@ -42,7 +42,7 @@
 
       <form id="settings-form" class="settings-form">
         <section id="section-providers" class="settings-card" data-group="agents" data-sub="llm">
-          <div class="section-head"><h2>Нейросети</h2><button type="button" id="add-llm-provider" class="ghost add-item">+ нейросеть</button></div>
+          <div class="list-head"><h2>Нейросети</h2><button type="button" id="add-llm-provider" class="ghost add-item">+ нейросеть</button></div>
           <p class="muted small">Ключ хранится на станции в secrets.json и в страницу не возвращается. Пустое поле = не менять ключ. У каждой карточки своя кнопка «Сохранить».</p>
           <div id="llm-providers-list" class="settings-list"></div>
         </section>
@@ -53,7 +53,7 @@
         </section>
 
         <section id="section-words" class="settings-card" data-group="agents" data-sub="voice">
-          <div class="section-head"><h2>Старт-слова</h2><button type="button" id="add-wake-word" class="ghost add-item">+ слово</button></div>
+          <div class="list-head"><h2>Старт-слова</h2><button type="button" id="add-wake-word" class="ghost add-item">+ слово</button></div>
           <label class="check"><input type="checkbox" id="settings-dry-run"> Пробный режим (dry-run)</label>
           <span id="dry-run-status" class="row-status small" aria-live="polite"></span>
           <p class="muted small">При пробном режиме слово только логируется, а микрофон открывается как обычно. Переключатель применяется сразу.</p>
@@ -62,7 +62,7 @@
         </section>
 
         <section id="section-roles" class="settings-card" data-group="agents" data-sub="roles">
-          <div class="section-head"><h2>Роли</h2><button type="button" id="add-agent" class="ghost add-item">+ роль</button></div>
+          <div class="list-head"><h2>Роли</h2><button type="button" id="add-agent" class="ghost add-item">+ роль</button></div>
           <div id="agents-list" class="settings-list"></div>
         </section>
 
@@ -285,7 +285,7 @@
       </section>
 
       <section id="section-voice" data-group="agents" data-sub="voice">
-        <div class="section-head"><h2>Голос</h2></div>
+        <div class="list-head"><h2>Голос</h2></div>
         <div id="voice" class="panel">—</div>
         <form id="voice-form" class="panel form">
           <div class="field">
