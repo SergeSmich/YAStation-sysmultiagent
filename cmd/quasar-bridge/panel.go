@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"embed"
+	"encoding/hex"
 	stdjson "encoding/json"
 	"encoding/pem"
 	"errors"
@@ -299,7 +301,23 @@ func (p *panelServer) index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(page)
+	_, _ = w.Write(versionedAssets(page))
+}
+
+// versionedAssets adds ?v=<hash of the file> to the script and style links. The
+// files are cached for an hour, so without it a browser keeps the old script
+// next to a new page after an update (the page itself is never cached).
+func versionedAssets(page []byte) []byte {
+	out := string(page)
+	for _, name := range []string{"panel.js", "panel.css"} {
+		data, err := panelAssets.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		out = strings.ReplaceAll(out, `"/`+name+`"`, `"/`+name+`?v=`+hex.EncodeToString(sum[:4])+`"`)
+	}
+	return []byte(out)
 }
 
 func (p *panelServer) asset(name, contentType string) http.HandlerFunc {
