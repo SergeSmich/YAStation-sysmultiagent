@@ -1,0 +1,12 @@
+{
+  "task": "Issues-шина: триггер по заголовку (Arena не может метить), lock для --once, allow-лимиты, запрет .. в пакетах",
+  "kind": "task",
+  "path": "collab/opencode/L-0004-issues-shina-trigger-po-zagolovku-arena.md",
+  "ping": "[L-0004] Задача: Issues-шина: триггер по заголовку (Arena не может метить), lock для --once, allow-лимиты, запрет .. в пакетах. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0004-*.md из origin/local/opencode @ 673d7c4; ответь коммитом A-0004 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "1940b6e",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0004",
+  "updated": "2026-11-10T08:21:26+00:00",
+  "created": "2026-11-10T08:21:26+00:00"
+}
