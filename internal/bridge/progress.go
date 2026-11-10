@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,6 +17,23 @@ import (
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/wire"
 )
+
+// gateKeepAlive is the keep-alive a voice gate asks for before its first wait.
+// One request must not start the stream twice, and a stopped stream must not be
+// stopped again: both are guarded here rather than in every gate.
+func (n *Native) gateKeepAlive(p *nativeRequest) func() func() {
+	// Without local_progress there is no silent stream to start, so the gate has
+	// to answer within the turn budget on its own.
+	if n.ProgressAfter <= 0 {
+		return func() func() { return func() {} }
+	}
+	var start, stop sync.Once
+	cancel := func() {}
+	return func() func() {
+		start.Do(func() { cancel = n.progress(p) })
+		return func() { stop.Do(cancel) }
+	}
+}
 
 // progress starts only after the executor is known. Stop joins the pump so no
 // partial can race with the final answer or continue after cancellation.

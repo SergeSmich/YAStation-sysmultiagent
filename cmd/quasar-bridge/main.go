@@ -273,6 +273,11 @@ func main() {
 	slog.Info("agents_ready", "agents", engine.AgentNames(), "providers", providerNames(cfg))
 	tgRunner := newTelegramRunner(sysHub, engine, "https://api.telegram.org")
 	sysHub.OnTelegramChange(tgRunner.Reload)
+	// An approved request reports its outcome exactly once: Telegram in the chat
+	// (the bot polls the queue itself), the speaker through the role that asked.
+	// The queue calls this for every request it executes, so the two paths must
+	// not overlap; VoiceReport drops the chat ones.
+	sysHub.Queue().OnFinish(sysHub.VoiceReport(engine))
 	wake := new(wakeState)
 	applyWake := func(next config) error {
 		wake.set(next.WakeWords)
@@ -361,7 +366,7 @@ func main() {
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
-			n.VoiceGate = sysHub.VoiceGate(engine)
+			n.VoiceGate = sysHub.VoiceGate()
 			n.DialogueEnd = sysHub.DialogueEnd(engine)
 			n.OnRoleReleased = sysHub.OnRoleReleased(engine)
 			n.ShouldListen = cfg.ListenAfterReply
