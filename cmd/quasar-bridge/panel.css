@@ -514,3 +514,18 @@ details.fold-card[open] > .settings-row { border-top-left-radius: 0; border-top-
 .row-status.error, #dry-run-status.error { color: var(--err); }
 .service-fixed { padding: 7px 0; font-weight: 600; }
 .provider-model[hidden] { display: none; }
+/* The main-model card names one of the roles, so it sits above the role cards
+   with a divider instead of looking like another row. */
+.main-agent-box {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  display: grid;
+  gap: 8px;
+}
+.main-agent-box .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.main-agent-box .actions button { padding: 5px 11px; font-size: 13px; }
+.main-agent-box .error { color: #ff8a8a; }
+/* A role model that differs from its connection: a hint, not an error. */
+.model-mismatch { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.model-mismatch button { padding: 3px 9px; font-size: 12px; }

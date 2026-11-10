@@ -31,9 +31,15 @@ type MusicStarter interface {
 	CanStartMusic(string) bool
 	StartMusic(context.Context, string) (string, error)
 }
+
+// Engine answers one station. LLM is the deployment client from llm_*: it is set
+// once at start and stays the fallback for an empty main_agent, the home planner
+// and Guard. Guard vets untrusted tool payloads and is deliberately not the role
+// that answers the person, so a smaller role model cannot weaken a safety check.
 type Engine struct {
 	AirPlay      AirPlayController
 	LLM          Completer
+	Guard        Completer
 	Assistant    Completer
 	Home         HomeHandler
 	Playback     PlaybackController
@@ -42,6 +48,69 @@ type Engine struct {
 	dialogueOnce sync.Once
 	routing      atomic.Pointer[RoutingPolicy]
 	agents       atomic.Pointer[map[string]*Agent]
+	main         atomic.Pointer[mainClients]
+}
+
+// mainClients is the answerer of route llm, replaced as a whole by SetMain. A
+// request therefore reads either the previous pair or the new one, never half of
+// each; the pair is immutable once stored.
+type mainClients struct {
+	llm      Completer
+	answerer Completer
+	prompt   string
+}
+
+// SetMain replaces the llm answerer without a restart. llm thinks (classifier and
+// replay), answerer speaks to the person and may carry the assistant tools, and
+// prompt replaces the shared assistant prompt when non-empty. A nil answerer
+// means the same client answers.
+func (e *Engine) SetMain(llm, answerer Completer, prompt string) {
+	if answerer == nil {
+		answerer = llm
+	}
+	if llm == nil && answerer == nil {
+		e.main.Store(nil)
+		return
+	}
+	e.main.Store(&mainClients{llm: llm, answerer: answerer, prompt: prompt})
+}
+
+// llmClient is the client that thinks: classifier, replay and retry.
+func (e *Engine) llmClient() Completer {
+	if pair := e.main.Load(); pair != nil && pair.llm != nil {
+		return pair.llm
+	}
+	return e.LLM
+}
+
+// answerer is who answers the person: the main pair, then the tool-carrying
+// assistant, then the deployment client.
+func (e *Engine) answerer() Completer {
+	if pair := e.main.Load(); pair != nil && pair.answerer != nil {
+		return pair.answerer
+	}
+	if e.Assistant != nil {
+		return e.Assistant
+	}
+	return e.LLM
+}
+
+// mainPrompt is the role prompt of the main answerer; empty keeps the shared
+// assistant prompt.
+func (e *Engine) mainPrompt() string {
+	if pair := e.main.Load(); pair != nil {
+		return pair.prompt
+	}
+	return ""
+}
+
+// guard is the model that vets tool payloads: the deployment client, whatever
+// role answers the person.
+func (e *Engine) guard() Completer {
+	if e.Guard != nil {
+		return e.Guard
+	}
+	return e.LLM
 }
 
 func (e *Engine) dialogue() *dialogue.Store {
@@ -202,14 +271,11 @@ func answerPrompt(role string) string {
 }
 
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
-	answerer := e.LLM
-	if e.Assistant != nil {
-		answerer = e.Assistant
-	}
+	answerer := e.answerer()
 	if answerer == nil {
 		return Resolution{Route: "llm"}, errNoAnswerer
 	}
-	return e.answer(ctx, "llm", text, answerer, "")
+	return e.answer(ctx, "llm", text, answerer, e.mainPrompt())
 }
 
 // answer runs one local turn with the given model client. An empty prompt means
@@ -323,7 +389,8 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
 	}
 	failed := RouteDecision{Route: p.classifier.OnError, Source: "classifier_error"}
-	if e.LLM == nil {
+	client := e.llmClient()
+	if client == nil {
 		return failed
 	}
 	classCtx, cancel := context.WithTimeout(ctx, time.Duration(p.classifier.TimeoutMS)*time.Millisecond)
@@ -331,7 +398,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	messages := []llm.Message{{Role: "system", Content: p.classifier.Prompt}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
-	answer, err := e.LLM.Complete(classCtx, messages, true)
+	answer, err := client.Complete(classCtx, messages, true)
 	if err != nil {
 		return failed
 	}

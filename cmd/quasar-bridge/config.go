@@ -143,6 +143,7 @@ type config struct {
 	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
 	LLMHostedTools     []string             `json:"llm_hosted_tools"`
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
+	MainAgent          string               `json:"main_agent"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
@@ -307,6 +308,9 @@ func readConfig(path string) (config, error) {
 		return cfg, err
 	}
 	if err := cfg.validateAgents(); err != nil {
+		return cfg, err
+	}
+	if err := cfg.validateMainAgent(); err != nil {
 		return cfg, err
 	}
 	if err := cfg.validateWakeWords(); err != nil {
@@ -528,6 +532,35 @@ func (c *config) resolveLLM(a agentConfig) (llmTarget, error) {
 		target.HostedTools = a.HostedTools
 	}
 	return target, nil
+}
+
+// validateMainAgent checks the role the llm route answers with. An empty value
+// keeps the root llm_* client. A named role has to exist and resolve to a model:
+// silently falling back to llm_* would hide that the operator's choice was
+// ignored, which is exactly what main_agent exists to make visible.
+func (c *config) validateMainAgent() error {
+	name := strings.TrimSpace(c.MainAgent)
+	c.MainAgent = name
+	if name == "" {
+		return nil
+	}
+	if !bridge.ValidAgentName(name) {
+		return errors.New("main_agent must be 1..32 lowercase letters (a-z, а-я), digits, '-' or '_'")
+	}
+	for i := range c.Agents {
+		if c.Agents[i].Name != name {
+			continue
+		}
+		target, err := c.resolveLLM(c.Agents[i])
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(target.Model) == "" {
+			return fmt.Errorf("main_agent %q: the role has no model", name)
+		}
+		return nil
+	}
+	return fmt.Errorf("main_agent %q is not a configured role", name)
 }
 
 // validateAgents checks every role against its resolved endpoint and folds its

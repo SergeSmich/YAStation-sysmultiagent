@@ -69,7 +69,11 @@ func (e *Engine) retryQuestion(ctx context.Context, ticket dialogue.Ticket) (Res
 	messages := []llm.Message{{Role: "system", Content: retryAnswerPrompt}}
 	messages = append(messages, replay.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: replay.Question})
-	answer, err := e.LLM.Complete(llm.WithoutHostedTools(ctx), messages, false)
+	client := e.llmClient()
+	if client == nil {
+		return result, errors.New("LLM is not configured")
+	}
+	answer, err := client.Complete(llm.WithoutHostedTools(ctx), messages, false)
 	if !e.dialogue().Current(ctx, ticket) {
 		return result, context.Canceled
 	}

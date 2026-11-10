@@ -77,3 +77,19 @@ routing and rejects changed deployment fields. Failed reads/validation retain
 the last good snapshot. Existing sessions share the Engine; in-flight classifier
 calls retain their snapshot, while later decisions and refusal checks use the
 current policy. Health reports a consistent revision/active-rule count.
+
+Ruling: route llm is a pointer to a role, not a fourth entity. `main_agent`
+names a role from `agents`; empty keeps the deployment client from `llm_*`, so an
+install without the field behaves exactly as before. The role contributes its
+resolved endpoint, model, key, generation parameters and system prompt; the
+classifier and the replay path use the same client but their own instruction, so
+a smaller main model cannot rewrite the routing policy. Role toolsets are not
+inherited: sysadmin and peer tools are an invariant of the role that owns them,
+while `assistant_tools` stay a deployment switch and wrap the role client. The
+safety guard keeps the `llm_*` client, because it must not weaken with the model
+that answers the person. The pair (thinking client, answering client, prompt) is
+published through an atomic pointer, so a settings save replaces all three at
+once and an in-flight turn sees either the old pair or the new one. Unknown roles
+and roles without a model are rejected at save (`400`) and at start (refusal to
+serve): a silent fall back to `llm_*` would hide that the operator's choice was
+ignored.

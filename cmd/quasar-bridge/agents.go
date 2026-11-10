@@ -44,6 +44,90 @@ func providerNames(cfg config) []string {
 	return names
 }
 
+// storedKeys reads the provider credentials once per build. A broken file is
+// reported and treated as empty: every role falls back to its environment
+// variable, exactly as before the file existed.
+func storedKeys(secrets *secretStore) map[string]string {
+	if secrets == nil {
+		return map[string]string{}
+	}
+	file, err := secrets.load()
+	if err != nil {
+		slog.Warn("secrets_unreadable", "error", err)
+		return map[string]string{}
+	}
+	return file.Providers
+}
+
+// chatParametersFor picks the chat tuning of one target: a role that speaks a
+// different API gets no chat-only parameters, and a role that brings its own
+// table replaces the shared one.
+func chatParametersFor(cfg config, target llmTarget) map[string]any {
+	if target.API != "chat_completions" {
+		return nil
+	}
+	if target.ChatParameters != nil {
+		return target.ChatParameters
+	}
+	return cfg.LLMChatParameters
+}
+
+// mainAnswerer is the pair that answers route llm.
+type mainAnswerer struct {
+	// LLM thinks: the classifier and the replay path.
+	LLM bridge.Completer
+	// Answerer speaks to the person; it may carry the assistant tools.
+	Answerer bridge.Completer
+	// Prompt is the role prompt, empty for the shared assistant prompt.
+	Prompt string
+	// Role is the configured role name, empty when llm_* answers.
+	Role     string
+	Provider string
+	Model    string
+}
+
+// buildMainAnswerer resolves main_agent. An empty value keeps the deployment
+// client; a role contributes its provider, model, tuning and prompt. A role
+// never contributes its sysadmin or peers toolset: route llm catches every
+// phrase the rules did not, so it must not be able to act. The assistant tools
+// stay a deployment switch, so they wrap the role's client when they are on.
+func buildMainAnswerer(cfg config, tools *assistant.Tools, secrets *secretStore, root *llm.Client, rootAnswerer bridge.Completer) (mainAnswerer, error) {
+	name := strings.TrimSpace(cfg.MainAgent)
+	if name == "" {
+		main := mainAnswerer{LLM: root, Answerer: rootAnswerer, Model: cfg.LLMModel}
+		if main.Answerer == nil {
+			main.Answerer = root
+		}
+		return main, nil
+	}
+	for i := range cfg.Agents {
+		a := cfg.Agents[i]
+		if a.Name != name {
+			continue
+		}
+		target, err := cfg.resolveLLM(a)
+		if err != nil {
+			return mainAnswerer{}, err
+		}
+		client := &llm.Client{
+			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(storedKeys(secrets), target),
+			API: target.API, ReasoningEffort: target.ReasoningEffort,
+			MaxOutputTokens: target.MaxOutputTokens, HostedTools: target.HostedTools,
+			ChatParameters: chatParametersFor(cfg, target),
+		}
+		main := mainAnswerer{
+			LLM: client, Answerer: client, Prompt: a.SystemPrompt,
+			Role: a.Name, Provider: target.Provider, Model: target.Model,
+		}
+		if cfg.AssistantTools.Enabled && tools != nil {
+			main.Answerer = &assistant.Agent{Client: client, Tools: tools,
+				MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+		}
+		return main, nil
+	}
+	return mainAnswerer{}, fmt.Errorf("main_agent %q is not a configured role", name)
+}
+
 // buildAgents creates the configured roles. Every role owns its model client, so
 // a reload replaces the whole registry instead of mutating a shared client. The
 // endpoint comes from the provider the role names, from the role's own fields
@@ -52,17 +136,7 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 	if len(cfg.Agents) == 0 {
 		return nil, nil
 	}
-	stored := map[string]string{}
-	if secrets != nil {
-		file, err := secrets.load()
-		if err != nil {
-			// A broken secrets file must not take the bridge down: every role
-			// falls back to its environment variable, exactly as before the file
-			// existed, and the panel still reports the key as unset.
-			slog.Warn("secrets_unreadable", "error", err)
-		}
-		stored = file.Providers
-	}
+	stored := storedKeys(secrets)
 	agents := make(map[string]*bridge.Agent, len(cfg.Agents))
 	hub := &peerHub{}
 	for _, a := range cfg.Agents {
@@ -72,13 +146,7 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 		}
 		// Chat tuning is shared with the default client unless the role speaks a
 		// different API, where the bridge refuses chat-only parameters.
-		var chatParameters map[string]any
-		if target.API == "chat_completions" {
-			chatParameters = cfg.LLMChatParameters
-			if target.ChatParameters != nil {
-				chatParameters = target.ChatParameters
-			}
-		}
+		chatParameters := chatParametersFor(cfg, target)
 		client := &llm.Client{
 			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(stored, target),
 			API: target.API, ReasoningEffort: target.ReasoningEffort,

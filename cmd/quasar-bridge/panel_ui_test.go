@@ -137,7 +137,7 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command"} {
+	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command", ".main-agent-box", ".model-mismatch"} {
 		if !strings.Contains(string(style), marker) {
 			t.Fatalf("panel.css lacks %s", marker)
 		}
