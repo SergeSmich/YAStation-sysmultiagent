@@ -1,0 +1,12 @@
+{
+  "task": "Шина команд через GitHub Issues: архитектура, watcher, протокол, откат",
+  "kind": "task",
+  "path": "collab/opencode/L-0003-shina-komand-cherez-github-issues-arhite.md",
+  "ping": "[L-0003] Задача: Шина команд через GitHub Issues: архитектура, watcher, протокол, откат. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0003-*.md из origin/local/opencode @ ab61284; ответь коммитом A-0003 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "ab61284",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0003",
+  "updated": "2026-11-10T08:04:12+00:00",
+  "created": "2026-11-10T08:04:12+00:00"
+}
