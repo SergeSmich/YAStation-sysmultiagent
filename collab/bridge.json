@@ -4,8 +4,8 @@
   "src_dir": "collab/opencode",
   "dst_dir": "collab/arena",
   "runs_dir": "collab/runs",
-  "arena_ref": "mine/arena/opencode",
-  "peer_ref": "mine/local/opencode",
+  "arena_ref": "origin/arena/opencode",
+  "peer_ref": "origin/local/opencode",
   "governor": {
     "min_interval_s": 180,
     "max_per_hour": 4,
