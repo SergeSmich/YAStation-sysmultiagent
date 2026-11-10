@@ -1,0 +1,12 @@
+{
+  "task": "Реализация main_agent: основная модель как указатель на роль",
+  "kind": "task",
+  "path": "collab/opencode/L-0006-realizaciya-main-agent-osnovnaya-model-kak-ukazatel-na-rol.md",
+  "ping": "[L-0006] Задача: Реализация main_agent: основная модель как указатель на роль. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0006-*.md из origin/local/opencode @ 7db7456; ответь коммитом A-0006 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "7db7456",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0006",
+  "updated": "2026-11-10T17:49:37+00:00",
+  "created": "2026-11-10T17:49:37+00:00"
+}

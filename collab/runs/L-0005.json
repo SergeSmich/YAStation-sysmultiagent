@@ -7,6 +7,21 @@
   "base": "112aa50",
   "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
   "id": "L-0005",
-  "updated": "2026-11-10T17:42:21+00:00",
-  "created": "2026-11-10T17:42:21+00:00"
+  "updated": "2026-11-10T17:47:37+00:00",
+  "created": "2026-11-10T17:42:21+00:00",
+  "answer": "A-0005",
+  "answer_commit": "5c4ec51",
+  "status": "done",
+  "decisions": [
+    "main_agent в корне config.json = указатель на роль",
+    "без тихого отката на llm_*",
+    "sysadmin-роль как основная — без инструментов",
+    "резолвер role_call в Engine.Decide до правил",
+    "callable:false по умолчанию + dry_run"
+  ],
+  "followups": [
+    "L-0006 main_agent",
+    "L-0007 role_call"
+  ],
+  "notes": "Код в круге не менялся; сборка/race-тесты на машине оператора"
 }
