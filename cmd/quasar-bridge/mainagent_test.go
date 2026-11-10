@@ -253,6 +253,17 @@ func TestMainTargetViewNeverCarriesTheKey(t *testing.T) {
 	if view["key_set"] != true {
 		t.Fatalf("key_set=%v, want a boolean true", view["key_set"])
 	}
+	// The address is not a secret: the panel needs it to probe the model from the
+	// main-model card, and the connection cards already show it. A role that
+	// inherits llm_* publishes the deployment endpoint, a linked role its own.
+	cfg.LLMBaseURL = "https://llm.example.invalid/v1"
+	if view = mainTargetView(cfg, nil); view["base_url"] != cfg.LLMBaseURL {
+		t.Fatalf("an inheriting role published %v, want %v", view["base_url"], cfg.LLMBaseURL)
+	}
+	cfg.MainAgent = "helper"
+	if view = mainTargetView(cfg, nil); view["base_url"] != cfg.LLMProviders[0].BaseURL {
+		t.Fatalf("a linked role published %v, want its own endpoint", view["base_url"])
+	}
 	for field, value := range view {
 		if text, ok := value.(string); ok && strings.Contains(text, "fixture-key-value") {
 			t.Fatalf("%s leaks the credential", field)

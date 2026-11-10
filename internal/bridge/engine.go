@@ -48,7 +48,11 @@ type Engine struct {
 	dialogueOnce sync.Once
 	routing      atomic.Pointer[RoutingPolicy]
 	agents       atomic.Pointer[map[string]*Agent]
-	main         atomic.Pointer[mainClients]
+	// roles is the spoken-name directory of the callable roles, rebuilt by
+	// SetAgents; roleCall is the operator switch of the feature.
+	roles    atomic.Pointer[RoleDirectory]
+	roleCall atomic.Pointer[RoleCallConfig]
+	main     atomic.Pointer[mainClients]
 }
 
 // mainClients is the answerer of route llm, replaced as a whole by SetMain. A
@@ -158,6 +162,11 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 			return Resolution{Route: route}, context.Canceled
 		}
 		return Resolution{Route: "llm", Answer: "Начинаем новый разговор."}, nil
+	}
+	if decision.Answer != "" {
+		// The decision already knows what to say: a role greeting needs neither a
+		// model nor the cloud, exactly like the dialogue reset above.
+		return Resolution{Route: route, Answer: decision.Answer}, nil
 	}
 	if route != "llm" && !isAgentRoute(route) && !e.dialogue().Clear(ctx, ticket) {
 		return Resolution{Route: route}, context.Canceled
@@ -375,6 +384,17 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	}
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
+	}
+	// A role call sits after the operational intercepts (a playing station still
+	// obeys "хватит") and before the rules: the phrase names its own handler.
+	if call, ok := e.spokenRoleCall(text); ok {
+		spoken := RouteDecision{Route: AgentRoute(call.Role), Source: "role_call"}
+		if call.Kind == RoleCallGreeting {
+			// A bare call is answered from the configuration: the model is not
+			// asked anything, which is what makes it instant and free.
+			spoken.Answer = e.RoleGreeting(call.Role)
+		}
+		return spoken
 	}
 	if d, ok := p.match(text); ok {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {

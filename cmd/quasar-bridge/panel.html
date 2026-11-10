@@ -80,6 +80,19 @@
               Голос остаётся тем, что задан маршруту <code>llm</code>.
             </p>
           </div>
+          <div id="role-call-box" class="role-call-box">
+            <label class="check"><input type="checkbox" id="role-call-enabled"> голосовой вызов ролей по имени</label>
+            <label class="check"><input type="checkbox" id="role-call-dry-run"> пробный режим: только запись в журнал, без действия</label>
+            <div class="actions">
+              <button type="button" id="role-call-save" class="ghost">Сохранить голосовой вызов</button>
+              <span id="role-call-status" class="small"></span>
+            </div>
+            <p class="muted small">
+              Работают три формы: «Алиса, позови <i>роль</i>», «<i>роль</i>, ты здесь?» и
+              «<i>роль</i>, который час». Имя в середине фразы роль не вызывает. Отвечает только роль
+              с включённым «Голосовым вызовом» в своей карточке.
+            </p>
+          </div>
           <div id="agents-list" class="settings-list"></div>
         </section>
 

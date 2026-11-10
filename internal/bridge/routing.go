@@ -46,6 +46,9 @@ type RouteDecision struct {
 	Route    string `json:"route"`
 	Rule     string `json:"rule,omitempty"`
 	Source   string `json:"source"`
+	// Answer is set when the decision already knows what to say: a bare role
+	// call answers with the role greeting and never reaches a model.
+	Answer string `json:"answer,omitempty"`
 }
 type compiledRule struct {
 	name, route       string

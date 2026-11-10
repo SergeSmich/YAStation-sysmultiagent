@@ -32,6 +32,8 @@ let agentsState = [];
 let mainAgentState = '';
 let mainTargetState = null;
 let settingsWarningsState = [];
+// roleCallState mirrors config.role_call: the switch the spoken call obeys.
+let roleCallState = { enabled: false, dry_run: false };
 let savedAgentNames = [];
 let providersState = [];
 let providerKeysState = {};
@@ -1294,6 +1296,43 @@ function renderWakeWords(force) {
   });
 }
 
+// renderRoleCall draws the switch of the spoken call. Both boxes live above the
+// role cards because they talk about the roles as a group.
+function renderRoleCall(force) {
+  const box = document.getElementById('role-call-box');
+  if (!box) return;
+  if (!force && box.contains(document.activeElement)) return;
+  const enabled = document.getElementById('role-call-enabled');
+  const dryRun = document.getElementById('role-call-dry-run');
+  enabled.checked = Boolean(roleCallState.enabled);
+  dryRun.checked = Boolean(roleCallState.dry_run);
+  dryRun.disabled = !enabled.checked;
+}
+
+// saveRoleCall writes one partial patch; the roles themselves are untouched, so
+// a switch flip cannot overwrite an unsaved card.
+async function saveRoleCall() {
+  const enabled = document.getElementById('role-call-enabled');
+  const dryRun = document.getElementById('role-call-dry-run');
+  const status = document.getElementById('role-call-status');
+  if (!enabled || !status) return;
+  const body = { role_call: { enabled: enabled.checked, dry_run: dryRun.checked } };
+  status.classList.remove('error');
+  status.textContent = 'сохраняю…';
+  try {
+    const payload = await postJSON(SETTINGS_URL, body);
+    const call = payload && payload.role_call ? payload.role_call : body.role_call;
+    roleCallState = { enabled: Boolean(call.enabled), dry_run: Boolean(call.dry_run) };
+    renderRoleCall(true);
+    status.textContent = roleCallState.enabled
+      ? (roleCallState.dry_run ? 'включено, пробный режим' : 'включено')
+      : 'выключено';
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
 // renderMainAgent draws the one control that decides who answers route llm. It
 // sits above the role cards because it names one of them.
 function renderMainAgent(force) {
@@ -1367,19 +1406,22 @@ async function checkMainModel() {
     status.classList.add('error');
     return;
   }
-  const provider = savedProviderObjs.find((item) => item && item.name === target.provider);
-  if (!provider) {
-    status.textContent = 'роль наследует llm_*: адрес в панель не попадает — проверьте нейросеть во вкладке «Нейросети»';
-    status.classList.remove('error');
+  // The snapshot publishes the resolved address, so a role that inherits llm_* is
+  // probed through the deployment endpoint instead of sending the operator to
+  // another tab.
+  const baseURL = String(target.base_url || '').trim();
+  if (!baseURL) {
+    status.textContent = 'у основной модели нет адреса — сохраните нейросеть во вкладке «Нейросети»';
+    status.classList.add('error');
     return;
   }
   status.classList.remove('error');
   status.textContent = 'спрашиваю модель…';
   try {
     const payload = await postJSON(LLM_CHECK_URL, {
-      provider: String(provider.name || '').trim().toLowerCase(),
-      base_url: String(provider.base_url || '').trim(),
-      api: provider.api || 'chat_completions',
+      provider: String(target.provider || '').trim().toLowerCase(),
+      base_url: baseURL,
+      api: target.api || 'chat_completions',
       model: String(target.model || '').trim(),
       api_key: ''
     });
@@ -1484,6 +1526,8 @@ function renderAgents(force) {
     sysadmin.checked = Boolean(agent.sysadmin);
     row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin));
 
+    row.appendChild(roleCallField(row, agent));
+
     const actions = el('div', 'row-actions');
     actions.appendChild(saveButton('agent'));
     const testModel = el('button', 'ghost', 'Проверить модель');
@@ -1499,6 +1543,224 @@ function renderAgents(force) {
   });
   syncAgentSelects();
   syncProviderSelects();
+}
+
+// GREETING_LIMIT mirrors bridge.MaxAgentGreetingRunes: the field counts runes,
+// because the limit is about how long the station speaks, not how many bytes.
+const GREETING_LIMIT = 300;
+const ALIAS_LIMIT = 4;
+
+// roleCallField builds the «Голосовой вызов» spoiler of one role: the callable
+// switch, the extra names and the greeting a bare call says. Everything here is
+// part of the role, so it is saved by the card's own «Сохранить».
+function roleCallField(row, agent) {
+  const box = el('details', 'role-call');
+  box.appendChild(el('summary', null, 'Голосовой вызов'));
+
+  const callable = settingsControl('input', 'callable', '');
+  callable.type = 'checkbox';
+  callable.checked = Boolean(agent.callable);
+  box.appendChild(settingsField('Отвечать, когда называют по имени', callable));
+
+  // The alias editor keeps its own input outside the chip list, so typing is not
+  // lost when a chip is added or removed.
+  const aliases = el('div', 'alias-box');
+  const chips = el('div', 'alias-chips');
+  const addRow = el('div', 'alias-add');
+  const aliasInput = el('input', 'alias-input');
+  aliasInput.type = 'text';
+  aliasInput.autocomplete = 'off';
+  aliasInput.placeholder = 'ещё одно имя';
+  const aliasAdd = el('button', 'ghost', '+ имя');
+  aliasAdd.type = 'button';
+  aliasAdd.dataset.callAlias = '1';
+  addRow.append(aliasInput, aliasAdd);
+  aliases.append(chips, addRow);
+  box.appendChild(settingsField('Другие имена', aliases, 'wide'));
+
+  const greeting = settingsControl('textarea', 'greeting', agent.greeting, 'например: Я здесь. Слушаю.');
+  greeting.rows = 2;
+  greeting.maxLength = GREETING_LIMIT;
+  const counter = el('span', 'muted small alias-note');
+  const greetingField = settingsField('Что сказать на голый вызов', greeting, 'wide');
+  greetingField.appendChild(counter);
+  box.appendChild(greetingField);
+
+  const status = el('p', 'muted small', '');
+  box.appendChild(status);
+
+  const check = el('button', 'ghost', 'Проверить нейросеть');
+  check.type = 'button';
+  check.dataset.callCheck = '1';
+  check.title = 'Спрашивает сохранённую нейросеть этой роли и её модель';
+  box.appendChild(check);
+
+  const probe = el('div', 'alias-add');
+  const phrase = el('input', 'alias-input');
+  phrase.type = 'text';
+  phrase.autocomplete = 'off';
+  phrase.placeholder = 'фраза, например «helper, ты здесь?»';
+  phrase.dataset.callPhrase = '1';
+  const run = el('button', 'ghost', 'Прогнать фразу');
+  run.type = 'button';
+  run.dataset.callProbe = '1';
+  probe.append(phrase, run);
+  box.appendChild(probe);
+  const probeResult = el('p', 'muted small', '');
+  probeResult.dataset.callResult = '1';
+  box.appendChild(probeResult);
+
+  const paint = () => {
+    const count = Array.from(String(agent.greeting || '')).length;
+    counter.textContent = count + ' / ' + GREETING_LIMIT;
+    counter.classList.toggle('error', count > GREETING_LIMIT);
+    paintRoleReadiness(status, agent);
+    paintAliases(agent, chips, addRow, aliasInput, aliasAdd, paint);
+  };
+  greeting.addEventListener('input', () => {
+    agent.greeting = greeting.value;
+    paint();
+  });
+  callable.addEventListener('change', () => {
+    agent.callable = callable.checked;
+    paint();
+  });
+  aliasAdd.addEventListener('click', (event) => {
+    event.preventDefault();
+    const value = String(aliasInput.value || '').trim().toLowerCase();
+    if (!value) return;
+    if (!/^[a-zа-я0-9][a-zа-я0-9_-]{0,31}$/.test(value)) {
+      setRowStatus(row, 'имя: строчные буквы, цифры, «-», «_», до 32 символов', 'error');
+      return;
+    }
+    if (value === String(agent.name || '') || agent.aliases.includes(value)) {
+      setRowStatus(row, 'такое имя у роли уже есть', 'error');
+      return;
+    }
+    agent.aliases.push(value);
+    aliasInput.value = '';
+    paint();
+  });
+  paint();
+  return box;
+}
+
+// paintAliases redraws the chips of one role and hides the add form once the
+// limit is reached. The list is the role's own array, so saving the card saves it.
+function paintAliases(agent, chips, addRow, aliasInput, aliasAdd, repaint) {
+  if (!Array.isArray(agent.aliases)) agent.aliases = [];
+  chips.replaceChildren();
+  agent.aliases.forEach((alias, index) => {
+    const chip = el('span', 'alias-chip', alias);
+    const drop = el('button', 'alias-drop', '×');
+    drop.type = 'button';
+    drop.title = 'убрать имя';
+    drop.addEventListener('click', (event) => {
+      event.preventDefault();
+      agent.aliases.splice(index, 1);
+      repaint();
+    });
+    chip.appendChild(drop);
+    chips.appendChild(chip);
+  });
+  const full = agent.aliases.length >= ALIAS_LIMIT;
+  addRow.hidden = full;
+  aliasInput.disabled = full;
+  aliasAdd.disabled = full;
+}
+
+// paintRoleReadiness says in one line whether this role can answer a question:
+// a model, a saved connection and a stored key are what a turn needs.
+function paintRoleReadiness(node, agent) {
+  if (!node) return;
+  const provider = String(agent.provider || '');
+  const saved = provider ? savedProviderObjs.find((item) => item && item.name === provider) : null;
+  const model = String(agent.model || (saved ? saved.model : '') || '').trim();
+  const problems = [];
+  if (!model) problems.push('нет модели');
+  if (provider && !saved) problems.push('нейросеть «' + provider + '» не сохранена');
+  if (provider && saved && !providerKeysState[provider]) problems.push('ключ «' + provider + '» не сохранён');
+  if (!provider) problems.push('наследует llm_*');
+  const head = 'готов отвечать: ' + (provider || 'llm_*') + ' · ' + (model || 'модель по умолчанию');
+  node.textContent = problems.length ? 'не готов: ' + problems.join(', ') + ' · ' + head : head;
+  node.classList.toggle('error', !model || (provider && !saved));
+}
+
+// checkRoleModel proves the connection the role would use: the address and the
+// key come from the saved provider, the model from the role or from it.
+async function checkRoleModel(event) {
+  const button = event.target.closest('[data-call-check]');
+  if (!button) return;
+  const row = button.closest('[data-kind="agent"]');
+  if (!row) return;
+  const agent = itemOf('agent', row);
+  if (!agent) return;
+  const provider = String(agent.provider || '').trim();
+  const saved = provider ? savedProviderObjs.find((item) => item && item.name === provider) : null;
+  const baseURL = String((saved && saved.base_url) || '').trim();
+  const model = String(agent.model || (saved ? saved.model : '') || '').trim();
+  if (!baseURL) {
+    setRowStatus(row, 'у роли нет сохранённой нейросети: выберите её или сохраните во вкладке «Нейросети»', 'error');
+    return;
+  }
+  button.disabled = true;
+  setRowStatus(row, 'спрашиваю нейросеть…', '');
+  try {
+    const payload = await postJSON(LLM_CHECK_URL, {
+      provider: provider.toLowerCase(),
+      base_url: baseURL,
+      api: (saved && saved.api) || 'chat_completions',
+      model: model,
+      api_key: ''
+    });
+    const parts = [];
+    if (payload.chat_ok) {
+      parts.push('модель «' + (payload.model || model) + '» ответила за ' + ((payload.latency_ms || 0) / 1000).toFixed(1) + ' с: «' + (payload.sample || 'пусто') + '»');
+    } else if (payload.chat_error) {
+      parts.push('модель не ответила. ' + payload.chat_error);
+    } else if (payload.models_error) {
+      parts.push('адрес ответил ошибкой. ' + payload.models_error);
+    }
+    setRowStatus(row, parts.join('; ') || 'нет данных', payload.ok ? 'ok' : 'error');
+  } catch (error) {
+    setRowStatus(row, error.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// probeRoleCall runs one phrase through the live router and shows what it would
+// do. It is the same endpoint the routing section uses, so the answer is the
+// bridge's own verdict rather than the page's guess.
+async function probeRoleCall(event) {
+  const button = event.target.closest('[data-call-probe]');
+  if (!button) return;
+  const row = button.closest('[data-kind="agent"]');
+  if (!row) return;
+  const input = row.querySelector('[data-call-phrase]');
+  const result = row.querySelector('[data-call-result]');
+  const text = String((input && input.value) || '').trim();
+  if (!result) return;
+  result.classList.remove('error');
+  if (!text) {
+    result.textContent = 'введите фразу';
+    result.classList.add('error');
+    return;
+  }
+  result.textContent = 'спрашиваю…';
+  button.disabled = true;
+  try {
+    const payload = await postJSON(ROUTING_TEST_URL, { text: text });
+    const parts = ['маршрут: ' + routeLabel(payload && payload.route)];
+    if (payload && payload.source) parts.push('источник: ' + (SOURCE_LABELS[payload.source] || payload.source));
+    if (payload && payload.answer) parts.push('ответ без модели: «' + payload.answer + '»');
+    result.textContent = parts.join(' · ') + ' (по сохранённой конфигурации)';
+  } catch (error) {
+    result.textContent = error.message;
+    result.classList.add('error');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // updateAgentRow shows which fields a linked role actually uses. A role with a
@@ -1586,7 +1848,8 @@ const SOURCE_LABELS = {
   dialogue_retry: 'просьба о нейросети',
   dialogue_reset: 'сброс диалога',
   dialogue_agent: 'роль в диалоге',
-  pinned: 'закреплённая роль'
+  pinned: 'закреплённая роль',
+  role_call: 'вызов роли'
 };
 
 function routeLabel(route) {
@@ -2113,6 +2376,8 @@ function renderSettings(payload, force, scope) {
   // the bridge actually runs, which the server fills in when the file is old.
   if (touchingRouting) routingState = normalizeRouting(payload.routing);
   if (touchingRoles) {
+    const call = payload.role_call && typeof payload.role_call === 'object' ? payload.role_call : {};
+    roleCallState = { enabled: Boolean(call.enabled), dry_run: Boolean(call.dry_run) };
     mainAgentState = typeof payload.main_agent === 'string' ? payload.main_agent : '';
     mainTargetState = payload.main_target && typeof payload.main_target === 'object' ? payload.main_target : null;
     settingsWarningsState = Array.isArray(payload.warnings) ? payload.warnings : [];
@@ -2127,6 +2392,7 @@ function renderSettings(payload, force, scope) {
   if (touchingProviders) renderProviders(force);
   if (touchingWords) renderWakeWords(force);
   if (touchingRoles) renderMainAgent(force);
+  if (touchingRoles) renderRoleCall(force);
   if (touchingRoles || touchingProviders) renderAgents(force);
   if (touchingRouting) renderRouting(force);
   renderWakeDictionary();
@@ -2798,6 +3064,15 @@ document.addEventListener('DOMContentLoaded', () => {
   settingsForm.addEventListener('click', testRoleModel);
   settingsForm.addEventListener('click', saveCardClick);
   settingsForm.addEventListener('click', cancelNewCard);
+  document.getElementById('role-call-save').addEventListener('click', saveRoleCall);
+  // Ticking the switch must not repaint from the saved state: that would undo the
+  // click. Only the dry-run box follows it, until the operator saves.
+  document.getElementById('role-call-enabled').addEventListener('change', (event) => {
+    const dryRun = document.getElementById('role-call-dry-run');
+    if (dryRun) dryRun.disabled = !event.target.checked;
+  });
+  settingsForm.addEventListener('click', probeRoleCall);
+  settingsForm.addEventListener('click', checkRoleModel);
   document.getElementById('main-agent-save').addEventListener('click', saveMainAgent);
   document.getElementById('main-agent-check').addEventListener('click', checkMainModel);
   document.getElementById('settings-dry-run').addEventListener('change', applyDryRun);
