@@ -70,6 +70,11 @@ type nativeRequest struct {
 	text                string
 	route               string
 
+	// startedAt is when the frame arrived. The voice gate budgets the whole turn
+	// from here: the cloud gives up about 15 s after the request, whatever the
+	// bridge is still waiting for.
+	startedAt time.Time
+
 	// pin is a route chosen by the bridge before the turn started: a start word
 	// carries a preset phrase, so its text is not classified again.
 	pin string
@@ -117,6 +122,26 @@ type nativeRequest struct {
 	cloudWatchdogFired              bool
 	cloudFallbackSent               bool
 }
+
+// VoiceGateCall carries what a gate needs to answer inside the cloud window.
+type VoiceGateCall struct {
+	// Started is when the frame of this turn arrived. The gate works to a budget
+	// counted from here, because a station stops waiting for the first answer
+	// after about 15 s and plays "произошла ошибка" instead.
+	Started time.Time
+	// KeepAlive starts the silent progress stream that keeps the cloud request
+	// alive, and returns the function that stops it. Call it only when the gate
+	// is going to answer with ok=true: the stream cancels the cloud's own answer
+	// for this request. With local_progress disabled it does nothing, and the
+	// gate must then fit the turn budget on its own.
+	KeepAlive func() (stop func())
+}
+
+// VoiceGate answers a spoken phrase the bridge itself is already waiting on (a
+// pending permission request). ok=false means the phrase is an ordinary request
+// and must be routed as usual.
+type VoiceGate func(ctx context.Context, text string, call VoiceGateCall) (answer, route string, ok bool)
+
 type Native struct {
 	connectionScope string
 	ctx             context.Context
@@ -144,7 +169,7 @@ type Native struct {
 	// VoiceGate may answer a spoken phrase before routing. It reports the answer,
 	// the route that speaks it (empty: the held role, else "llm") and whether it
 	// handled the phrase. It must be set before the session starts.
-	VoiceGate func(ctx context.Context, text string) (answer, route string, ok bool)
+	VoiceGate VoiceGate
 	// DialogueEnd lets the bridge take part when a held role's conversation
 	// ends or continues: it may answer instead of the role (say, ask whether to
 	// save the session) and may release the role with that answer.
@@ -268,7 +293,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		// and the public descriptors, never the identifiers themselves.
 		app := req.GetApplication()
 		slog.Info("native_request_client", "request", requestTag(id), "kind", f.Kind(), "has_application", app != nil, "has_device", app.GetDeviceId() != "", "has_uuid", app.GetUuid() != "", "has_timezone", app.GetTimezone() != "", "lang", app.GetLang(), "app_id", app.GetAppId(), "client_time_bytes", len(app.GetClientTime()))
-		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
+		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel, startedAt: time.Now()}
 		// A pinned route is read from the caller's context, not from p.ctx: p.ctx
 		// is bound to the session and would leak the pin onto later turns.
 		p.pin, _ = PinnedRoute(ctx)
@@ -899,8 +924,12 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		} else if gate := n.VoiceGate; gate != nil && spoken == nil && pin == "" && !p.isText {
 			// A spoken answer to a question the bridge itself is waiting on
 			// (a permission request) is not a new request: it is handled here
-			// and never reaches the router or the cloud.
-			if answer, route, ok := gate(p.ctx, text); ok {
+			// and never reaches the router or the cloud. The gate is told when
+			// the turn began and may ask for the keep-alive before it waits:
+			// without it the cloud gives up at 15 s and the station says
+			// "произошла ошибка" while the bridge is still working.
+			call := VoiceGateCall{Started: p.startedAt, KeepAlive: n.gateKeepAlive(p)}
+			if answer, route, ok := gate(p.ctx, text, call); ok {
 				if route == "" {
 					route = held
 				}

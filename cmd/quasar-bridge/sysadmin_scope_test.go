@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/sysadmin"
 )
 
@@ -167,26 +168,26 @@ func TestScopeForbiddenStaysForbidden(t *testing.T) {
 func TestVoiceGateDecidesOnlyVoiceRequests(t *testing.T) {
 	var runs atomic.Int32
 	ts, h := newToolset(t, execServer(t, &runs), "pi")
-	gate := h.VoiceGate(nil)
+	gate := h.VoiceGate()
 	ctx := context.Background()
 
-	if _, _, ok := gate(ctx, "да"); ok {
+	if _, _, ok := gate(ctx, "да", bridge.VoiceGateCall{Started: time.Now()}); ok {
 		t.Fatal("nothing is pending: the phrase is an ordinary request")
 	}
 	first := callExec(t, ts, ctx, "systemctl restart klipper")
 	id := first["id"].(string)
 
-	if _, _, ok := gate(ctx, "давай включи свет в большой комнате и ещё музыку"); ok {
+	if _, _, ok := gate(ctx, "давай включи свет в большой комнате и ещё музыку", bridge.VoiceGateCall{Started: time.Now()}); ok {
 		t.Fatal("a long phrase must not decide a request")
 	}
-	if _, _, ok := gate(ctx, "какая погода"); ok {
+	if _, _, ok := gate(ctx, "какая погода", bridge.VoiceGateCall{Started: time.Now()}); ok {
 		t.Fatal("an unrelated phrase must not decide a request")
 	}
 	if it, _ := h.Queue().Result(id); it.Status != "pending" {
 		t.Fatalf("request decided by a foreign phrase: %s", it.Status)
 	}
 
-	answer, route, ok := gate(ctx, "да, в этой сессии")
+	answer, route, ok := gate(ctx, "да, в этой сессии", bridge.VoiceGateCall{Started: time.Now()})
 	if !ok || answer == "" {
 		t.Fatalf("gate did not handle the answer: %q %v", answer, ok)
 	}
@@ -206,7 +207,7 @@ func TestVoiceGateDeny(t *testing.T) {
 	var runs atomic.Int32
 	ts, h := newToolset(t, execServer(t, &runs), "pi")
 	id := callExec(t, ts, context.Background(), "systemctl restart klipper")["id"].(string)
-	answer, _, ok := h.VoiceGate(nil)(context.Background(), "нет, не надо")
+	answer, _, ok := h.VoiceGate()(context.Background(), "нет, не надо", bridge.VoiceGateCall{Started: time.Now()})
 	if !ok || answer == "" {
 		t.Fatal("deny must be handled")
 	}
@@ -226,7 +227,7 @@ func TestVoiceGateIgnoresTelegramRequests(t *testing.T) {
 	if it, _ := h.Queue().Result(id); it.ChatID != 4242 {
 		t.Fatalf("chat id lost: %d", it.ChatID)
 	}
-	if _, _, ok := h.VoiceGate(nil)(context.Background(), "да"); ok {
+	if _, _, ok := h.VoiceGate()(context.Background(), "да", bridge.VoiceGateCall{Started: time.Now()}); ok {
 		t.Fatal("a request made in Telegram must be decided in Telegram")
 	}
 	if it, _ := h.Queue().Result(id); it.Status != "pending" {
@@ -254,7 +255,7 @@ func TestVoiceGateRefusesWhenSeveralRequestsWait(t *testing.T) {
 	ctx := context.Background()
 	a := callExec(t, ts, ctx, "systemctl restart klipper")["id"].(string)
 	b := callExec(t, ts, ctx, "systemctl restart moonraker")["id"].(string)
-	answer, _, ok := h.VoiceGate(nil)(ctx, "да")
+	answer, _, ok := h.VoiceGate()(ctx, "да", bridge.VoiceGateCall{Started: time.Now()})
 	if !ok || answer == "" {
 		t.Fatal("the gate must answer that it is ambiguous")
 	}
@@ -277,22 +278,22 @@ func TestVoiceGateSeveralRequests(t *testing.T) {
 	b := callExec(t, ts, ctx, "systemctl restart moonraker")["id"].(string)
 	time.Sleep(2 * time.Millisecond)
 	c := callExec(t, ts, ctx, "systemctl restart nginx")["id"].(string)
-	gate := h.VoiceGate(nil)
+	gate := h.VoiceGate()
 	status := func(id string) string { it, _ := h.Queue().Result(id); return it.Status }
 
 	// Bare «да» lists the requests and decides none.
-	answer, _, ok := gate(ctx, "да")
+	answer, _, ok := gate(ctx, "да", bridge.VoiceGateCall{Started: time.Now()})
 	if !ok || !strings.Contains(answer, "Ждут разрешения: 3") || strings.Contains(answer, "klipper") {
 		t.Fatalf("no list: %q %v", answer, ok)
 	}
 	// A lasting grant for everything at once is refused.
-	if answer, _, ok = gate(ctx, "всегда для всех"); !ok || !strings.Contains(answer, "по одной") {
+	if answer, _, ok = gate(ctx, "всегда для всех", bridge.VoiceGateCall{Started: time.Now()}); !ok || !strings.Contains(answer, "по одной") {
 		t.Fatalf("always+all must be refused: %q", answer)
 	}
-	if answer, _, ok = gate(ctx, "разрешить все первую"); !ok || strings.Contains(answer, "Готово") {
+	if answer, _, ok = gate(ctx, "разрешить все первую", bridge.VoiceGateCall{Started: time.Now()}); !ok || strings.Contains(answer, "Готово") {
 		t.Fatalf("contradiction must not decide: %q", answer)
 	}
-	if answer, _, ok = gate(ctx, "разрешить пятую"); !ok || !strings.Contains(answer, "нет") {
+	if answer, _, ok = gate(ctx, "разрешить пятую", bridge.VoiceGateCall{Started: time.Now()}); !ok || !strings.Contains(answer, "нет") {
 		t.Fatalf("out of range: %q", answer)
 	}
 	for _, id := range []string{a, b, c} {
@@ -301,14 +302,14 @@ func TestVoiceGateSeveralRequests(t *testing.T) {
 		}
 	}
 	// An ordinal decides one: «вторую» is the second oldest.
-	if _, _, ok = gate(ctx, "отклони вторую"); !ok || status(b) != "denied" {
+	if _, _, ok = gate(ctx, "отклони вторую", bridge.VoiceGateCall{Started: time.Now()}); !ok || status(b) != "denied" {
 		t.Fatalf("second: %s", status(b))
 	}
 	if status(a) != "pending" || status(c) != "pending" {
 		t.Fatal("ordinal touched a neighbour")
 	}
 	// «Все» decides the rest at once.
-	if answer, _, ok = gate(ctx, "разрешить все"); !ok || !strings.Contains(answer, "Готово") {
+	if answer, _, ok = gate(ctx, "разрешить все", bridge.VoiceGateCall{Started: time.Now()}); !ok || !strings.Contains(answer, "Готово") {
 		t.Fatalf("all: %q", answer)
 	}
 	if status(a) != "done" || status(c) != "done" {
@@ -325,7 +326,7 @@ func TestVoiceGateDenyAll(t *testing.T) {
 	ctx := context.Background()
 	a := callExec(t, ts, ctx, "systemctl restart klipper")["id"].(string)
 	b := callExec(t, ts, ctx, "systemctl restart moonraker")["id"].(string)
-	if answer, _, ok := h.VoiceGate(nil)(ctx, "отклони все"); !ok || !strings.Contains(answer, "2") {
+	if answer, _, ok := h.VoiceGate()(ctx, "отклони все", bridge.VoiceGateCall{Started: time.Now()}); !ok || !strings.Contains(answer, "2") {
 		t.Fatalf("answer=%q", answer)
 	}
 	for _, id := range []string{a, b} {
