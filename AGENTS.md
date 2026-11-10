@@ -7,8 +7,12 @@
 
 | Сторона | Пишет | Ветка |
 | --- | --- | --- |
-| opencode | `collab/opencode/L-NNNN-*.md`, `collab/runs/*.json` | `mine/local/opencode` |
-| Arena | `collab/arena/A-NNNN-*.md` | `mine/arena/opencode` |
+| opencode | `collab/opencode/L-NNNN-*.md`, `collab/runs/*.json` | `origin/local/opencode` |
+| Arena | `collab/arena/A-NNNN-*.md` | `origin/arena/<сессия>` |
+
+`origin` — наш репозиторий (`SergeSmich/YAStation-sysmultiagent`), `upstream` —
+`skrashevich/YAStation`. Ветка Arena на сессию одна: имя вида
+`arena/9fc2baa0-yastation-sysmultiagent`, его печатает пинг `[L-NNNN]`.
 
 Конфигурация моста — `collab/bridge.json`. Квоты governor — там же, состояние в
 `.arena/governor.json` (не коммитится).
@@ -16,7 +20,7 @@
 ## Один круг
 
 1. `arena_round({ title, body, needs })` → файл `L-NNNN` + runlog + пинг.
-2. `git add/commit/push mine local/opencode`.
+2. `git add/commit/push origin local/opencode`.
 3. Отправить пинг в чат Arena одной строкой.
 4. `arena_guard({ kind: "send", task: "L-NNNN", record: true })`.
 5. `arena_wait({ id: "A-NNNN", timeout: 900 })` — ждать коммит, не опрашивать браузер.
@@ -53,14 +57,18 @@ Arena отвечает файлом `A-NNNN` с тем же `id` в `needs`, с�
 
 ## Commands via Issues
 
-Дополнительный канал (не замена мосту): команда приезжает как issue с меткой `oc:run`,
-локальный `scripts/arena_watcher.py` исполняет её из закрытого whitelist и отвечает
-комментарием, ставя `oc:done`/`oc:failed`. Git-мост `L-*`/`A-*` остаётся основным путём
-для задач и переписки; шина выключена, пока watcher не запущен.
+Дополнительный канал (не замена мосту): команда приезжает как issue с заголовком
+`[CMD] ...` (или `oc: CMD-NNNN ...`), локальный `scripts/arena_watcher.py` исполняет её
+из закрытого whitelist, отвечает комментарием и закрывает issue. Метки `oc:running` →
+`oc:done`/`oc:failed` ставит только watcher: у токена Arena нет `Issues: write`, метку,
+комментарий и закрытие она не делает. Git-мост `L-*`/`A-*` остаётся основным путём для
+задач и переписки; шина выключена, пока watcher не запущен.
 
 - Только действия из whitelist (`git_status`, `git_log`, `run_tests`, `build`,
   `read_log`, `grep`, `deploy_check`); произвольных команд, `push`, деплоя и правки
   файлов там нет.
+- Результат читается как `gh issue view <n> --comments`; метку `oc:run` вручную ставит
+  оператор, Arena её не трогает (и `gh issue create --label` у неё молча не сработает).
 - Доверие: `author_association` ∈ {OWNER, MEMBER, COLLABORATOR} **и** логин в
   `allowed_logins`; чужой issue не исполняется и не комментируется.
 - В теле issue — никаких секретов, адресов и серийников: issue публичен навсегда.

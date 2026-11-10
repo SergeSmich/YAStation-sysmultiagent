@@ -12,6 +12,7 @@
   "default_timeout_s": 120,
   "max_timeout_s": 600,
   "stale_running_min": 15,
+  "close_after_result": true,
   "max_body_bytes": 16384,
   "max_result_bytes": 8000,
   "max_result_lines": 60,
