@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -36,7 +37,21 @@ type Agent struct {
 	// PromptExtra, when set, is appended to Prompt on every turn, so an
 	// editable block (the sysadmin charter) takes effect without a reload.
 	PromptExtra func() string
+	// Callable marks a role a person may address by name. A role that is not
+	// callable stays silent even if its name is spoken.
+	Callable bool
+	// Aliases are extra spoken names, already validated by the writer.
+	Aliases []string
+	// Greeting is what a bare call answers, without asking any model.
+	Greeting string
 }
+
+// MaxAgentGreetingRunes bounds the spoken greeting: it is one short sentence.
+const MaxAgentGreetingRunes = 300
+
+// DefaultRoleGreeting answers a bare call of a role that has no greeting of its
+// own. It is deliberately about presence, not about the model.
+const DefaultRoleGreeting = "Я здесь. Слушаю."
 
 // FullPrompt is the role prompt with its live extra block.
 func (a *Agent) FullPrompt() string {
@@ -103,12 +118,116 @@ func (e *Engine) SetAgents(agents map[string]*Agent) error {
 		if !ValidAgentDescription(agent.Description) {
 			return fmt.Errorf("agent %q description is too long", name)
 		}
+		if utf8.RuneCountInString(agent.Greeting) > MaxAgentGreetingRunes {
+			return fmt.Errorf("agent %q greeting is too long", name)
+		}
+		if len(agent.Aliases) > MaxRoleAliases {
+			return fmt.Errorf("agent %q has more than %d aliases", name, MaxRoleAliases)
+		}
+	}
+	if err := validateRoleNames(agents); err != nil {
+		return err
 	}
 	if len(agents) == 0 {
 		agents = nil
 	}
 	e.agents.Store(&agents)
+	e.roles.Store(roleDirectoryOf(agents))
 	return nil
+}
+
+// validateRoleNames keeps the spoken names unique across the registry: a name and
+// an alias are the same thing to a person, so one word may not mean two roles.
+func validateRoleNames(agents map[string]*Agent) error {
+	owner := make(map[string]string, len(agents))
+	for name, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		for _, word := range append([]string{name}, agent.Aliases...) {
+			if !ValidAgentName(word) {
+				return fmt.Errorf("agent %q: alias %q is not a valid name", name, word)
+			}
+			if other, taken := owner[word]; taken && other != name {
+				return fmt.Errorf("agent %q: name or alias %q is already used by %q", name, word, other)
+			}
+			owner[word] = name
+		}
+	}
+	return nil
+}
+
+// roleDirectoryOf builds the spoken-name directory from the callable roles only.
+func roleDirectoryOf(agents map[string]*Agent) *RoleDirectory {
+	entries := make([]RoleDirEntry, 0, len(agents))
+	for name, agent := range agents {
+		if agent == nil || !agent.Callable {
+			continue
+		}
+		entries = append(entries, RoleDirEntry{Role: name, Aliases: agent.Aliases})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	dir := BuildRoleDirectory(entries)
+	return &dir
+}
+
+// RoleCallConfig is the operator switch of the spoken call. Off by default: an
+// upgrade must not start answering to names that were never announced.
+type RoleCallConfig struct {
+	Enabled bool `json:"enabled"`
+	DryRun  bool `json:"dry_run"`
+}
+
+// SetRoleCall publishes the switch; the zero value is "off".
+func (e *Engine) SetRoleCall(cfg RoleCallConfig) {
+	e.roleCall.Store(&cfg)
+}
+
+func (e *Engine) roleCallSettings() RoleCallConfig {
+	if p := e.roleCall.Load(); p != nil {
+		return *p
+	}
+	return RoleCallConfig{}
+}
+
+// MatchRoleCall resolves a phrase against the callable roles without acting on it:
+// the phrase probe and the tests need to know what the directory holds, while the
+// decision itself goes through spokenRoleCall and the operator switch.
+func (e *Engine) MatchRoleCall(text string) (RoleCall, bool) {
+	dir := e.roles.Load()
+	if dir == nil || dir.empty() {
+		return RoleCall{}, false
+	}
+	return ParseRoleCall(text, *dir)
+}
+
+// spokenRoleCall resolves a call and honours the operator switch. A dry run only
+// writes its journal line: the phrase falls through to the normal routing, so the
+// operator can hear that the resolver fires without the station reacting to names.
+func (e *Engine) spokenRoleCall(text string) (RoleCall, bool) {
+	cfg := e.roleCallSettings()
+	if !cfg.Enabled {
+		return RoleCall{}, false
+	}
+	call, ok := e.MatchRoleCall(text)
+	if !ok {
+		return RoleCall{}, false
+	}
+	if cfg.DryRun {
+		slog.Info("role_call", "role", call.Role, "kind", call.Kind, "dry_run", true)
+		return RoleCall{}, false
+	}
+	return call, true
+}
+
+// RoleGreeting is what a bare call answers: the role's own line, or the default.
+func (e *Engine) RoleGreeting(name string) string {
+	if agent, ok := e.Agent(name); ok && strings.TrimSpace(agent.Greeting) != "" {
+		return agent.Greeting
+	}
+	return DefaultRoleGreeting
 }
 
 // Agent resolves a configured role by name.

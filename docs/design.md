@@ -93,3 +93,20 @@ once and an in-flight turn sees either the old pair or the new one. Unknown role
 and roles without a model are rejected at save (`400`) and at start (refusal to
 serve): a silent fall back to `llm_*` would hide that the operator's choice was
 ignored.
+
+Ruling: a spoken role call is a structural phrase, not a search for a name. Only
+three shapes resolve — a calling verb followed by the name, the name opening the
+phrase with an acknowledgement, and the name opening the phrase with a separator
+and a question — so a name buried in a sentence never hijacks a home command or a
+question. Names are matched as forms: a Cyrillic name declines by its final vowel
+and a fixed ending list, a Latin one is used as written; nothing is stemmed and
+nothing fuzzy-matches. The directory is built from callable roles only and swapped
+with the registry, so a role that is not announced stays silent. A bare call is
+answered from configuration (no model request, no cost) and travels as
+`RouteDecision.Answer`, which ResolveDecision returns before any backend; a call
+with a question is an ordinary `agent:<role>` turn with that role's model, prompt
+and voice. The feature is off by default, and its dry run only writes a `role_call`
+journal line: an upgrade must never start answering names that were never
+announced. Aliases and the greeting are validated where roles are validated, so a
+collision is an error at save and at start rather than a silent resolution to
+whichever role was read first.

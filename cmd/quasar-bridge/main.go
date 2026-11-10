@@ -264,25 +264,32 @@ func main() {
 	buildMain := func(next config) (mainAnswerer, error) {
 		return buildMainAnswerer(next, tools, secrets, lc, rootAnswerer)
 	}
+	// Logged on every swap and even when empty: an operator has to see which
+	// model answers route llm, and that the choice was read at all.
+	logMain := func(resolved mainAnswerer) {
+		role := resolved.Role
+		if role == "" {
+			role = "llm_*"
+		}
+		slog.Info("main_agent_ready", "role", role, "provider", resolved.Provider,
+			"model", resolved.Model, "key_set", resolved.KeySet)
+	}
 	applyMain := func(next config) error {
 		resolved, err := buildMain(next)
 		if err != nil {
 			return err
 		}
 		engine.SetMain(resolved.LLM, resolved.Answerer, resolved.Prompt)
+		logMain(resolved)
 		return nil
 	}
 	if err := applyMain(cfg); err != nil {
 		slog.Error("main_agent rejected", "error", err)
 		os.Exit(1)
 	}
-	// Logged even when empty: an operator has to see which model answers route
-	// llm, and that the choice was read at all.
-	mainRole := cfg.MainAgent
-	if mainRole == "" {
-		mainRole = "llm_*"
-	}
-	slog.Info("main_agent_ready", "role", mainRole)
+	// The spoken call is off unless the file turns it on: an upgrade must not
+	// start answering names that were never announced.
+	engine.SetRoleCall(bridge.RoleCallConfig{Enabled: cfg.RoleCall.Enabled, DryRun: cfg.RoleCall.DryRun})
 	if err := engine.SetRouting(cfg.Routing); err != nil {
 		slog.Error("routing rejected", "error", err)
 		os.Exit(1)
@@ -335,6 +342,8 @@ func main() {
 			return err
 		}
 		engine.SetMain(resolved.LLM, resolved.Answerer, resolved.Prompt)
+		logMain(resolved)
+		engine.SetRoleCall(bridge.RoleCallConfig{Enabled: next.RoleCall.Enabled, DryRun: next.RoleCall.DryRun})
 		if err := engine.SetAgents(built); err != nil {
 			return err
 		}

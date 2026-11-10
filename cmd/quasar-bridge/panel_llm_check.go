@@ -4,6 +4,7 @@ import (
 	"context"
 	stdjson "encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -46,6 +47,14 @@ func (p *panelServer) apiLLMCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSpace(body.APIKey)
+	// A role that inherits llm_* has no connection entry to look the credential up
+	// by, so the deployment key is used — but only for the configured address, so
+	// a probe cannot carry the key to a host the operator never saved.
+	if key == "" && name == "" {
+		if cfg, err := readConfig(p.configPath); err == nil && strings.TrimRight(cfg.LLMBaseURL, "/") == baseURL {
+			key = strings.TrimSpace(os.Getenv(defaultLLMAPIKeyEnv))
+		}
+	}
 	if key == "" && name != "" {
 		saved, storedKey, err := p.panelProvider(name)
 		if err == nil {

@@ -23,6 +23,12 @@ func TestPanelUIWiresTheSettingsSections(t *testing.T) {
 		"add-llm-provider",
 		"agents-list",
 		"add-agent",
+		// The spoken call: the switch above the roles and the main model card.
+		"role-call-box",
+		"role-call-enabled",
+		"role-call-dry-run",
+		"role-call-save",
+		"main-agent-box",
 		"wake-words-list",
 		"wake-dictionary-hint",
 		"wake-train",
@@ -118,6 +124,11 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		// the payload builder keys off it.
 		"event.submitter",
 		"settingsScopeLabels",
+		// The spoken call: the phrase probe and the per-role checks.
+		"data-call-probe",
+		"data-call-check",
+		"role_call",
+		"aliases",
 	} {
 		if !strings.Contains(string(script), marker) {
 			t.Fatalf("panel.js lacks %s", marker)
@@ -137,7 +148,7 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command", ".main-agent-box", ".model-mismatch"} {
+	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command", ".main-agent-box", ".model-mismatch", ".role-call-box", ".alias-chip"} {
 		if !strings.Contains(string(style), marker) {
 			t.Fatalf("panel.css lacks %s", marker)
 		}

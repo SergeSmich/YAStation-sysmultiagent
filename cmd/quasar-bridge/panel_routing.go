@@ -43,10 +43,16 @@ func (p *panelServer) apiRoutingTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), panelRoutingTestTimeout)
 	defer cancel()
 	decision := p.decide(ctx, text)
-	writePanelJSON(w, http.StatusOK, map[string]any{
+	answer := map[string]any{
 		"text":   text,
 		"route":  decision.Route,
 		"rule":   decision.Rule,
 		"source": decision.Source,
-	})
+	}
+	// A bare role call already knows its line: the probe shows it, so the
+	// operator hears the greeting before the station does.
+	if decision.Answer != "" {
+		answer["answer"] = decision.Answer
+	}
+	writePanelJSON(w, http.StatusOK, answer)
 }

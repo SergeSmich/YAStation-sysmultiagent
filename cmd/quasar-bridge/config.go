@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"quasarbridge/internal/assistant"
@@ -55,6 +56,18 @@ type agentConfig struct {
 	Description string `json:"description"`
 	Peers       bool   `json:"peers"`
 	Sysadmin    bool   `json:"sysadmin"`
+	// Callable lets a person address the role by name; Aliases are the extra
+	// names it answers to; Greeting is what a bare call says, without a model.
+	Greeting string   `json:"greeting"`
+	Aliases  []string `json:"aliases"`
+	Callable bool     `json:"callable"`
+}
+
+// roleCallConfig is the operator switch of the spoken role call. Off by default:
+// an upgrade must not start answering to names that were never announced.
+type roleCallConfig struct {
+	Enabled bool `json:"enabled"`
+	DryRun  bool `json:"dry_run"`
 }
 
 // llmProviderConfig declares one model endpoint a role may use: a cloud API or
@@ -152,6 +165,7 @@ type config struct {
 	UpstreamPing       upstreamPingConfig   `json:"upstream_ping"`
 	Panel              panelConfig          `json:"panel"`
 	Agents             []agentConfig        `json:"agents"`
+	RoleCall           roleCallConfig       `json:"role_call"`
 	LLMProviders       []llmProviderConfig  `json:"llm_providers"`
 	WakeWords          wakeWordsConfig      `json:"wake_words"`
 }
@@ -572,6 +586,9 @@ func (c *config) validateAgents() error {
 		return nil
 	}
 	seen := make(map[string]bool, len(c.Agents))
+	// A name and an alias are the same thing to a person, so one spoken word may
+	// not mean two roles.
+	spoken := make(map[string]string, len(c.Agents))
 	for i := range c.Agents {
 		a := &c.Agents[i]
 		if !bridge.ValidAgentName(a.Name) {
@@ -625,6 +642,29 @@ func (c *config) validateAgents() error {
 		if !bridge.ValidAgentDescription(a.Description) {
 			return errors.New("agents[].description is too long")
 		}
+		if err := validateRoleGreeting(a.Greeting); err != nil {
+			return err
+		}
+		if len(a.Aliases) > bridge.MaxRoleAliases {
+			return fmt.Errorf("agents[].aliases: no more than %d per role", bridge.MaxRoleAliases)
+		}
+		if len(a.Aliases) == 0 {
+			a.Aliases = nil
+		}
+		for _, alias := range a.Aliases {
+			if !bridge.ValidAgentName(alias) {
+				return errors.New("agents[].aliases: each alias is 1..32 lowercase letters (a-z, а-я), digits, '-' or '_'")
+			}
+			if alias == a.Name {
+				return errors.New("agents[].aliases: an alias repeats the role name")
+			}
+		}
+		for _, word := range append([]string{a.Name}, a.Aliases...) {
+			if other, taken := spoken[word]; taken && other != a.Name {
+				return fmt.Errorf("agents[]: the spoken name %q is already used by role %q", word, other)
+			}
+			spoken[word] = a.Name
+		}
 		if a.AssistantTools && !c.AssistantTools.Enabled {
 			return errors.New("agents[].assistant_tools requires assistant_tools.enabled")
 		}
@@ -642,6 +682,27 @@ func (c *config) validateAgents() error {
 			return errors.New("agents[].voice conflicts with local_voice.routes")
 		}
 		c.LocalVoice.Routes[route] = a.Voice
+	}
+	return nil
+}
+
+// validateRoleGreeting keeps the spoken line speakable: it is read aloud, so a
+// link would be spelled out and a control character would break the voice.
+func validateRoleGreeting(greeting string) error {
+	if strings.TrimSpace(greeting) == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(greeting) > bridge.MaxAgentGreetingRunes {
+		return fmt.Errorf("agents[].greeting is longer than %d runes", bridge.MaxAgentGreetingRunes)
+	}
+	lower := strings.ToLower(greeting)
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "www.") {
+		return errors.New("agents[].greeting must not contain a link")
+	}
+	for _, r := range greeting {
+		if unicode.IsControl(r) {
+			return errors.New("agents[].greeting must not contain control characters")
+		}
 	}
 	return nil
 }

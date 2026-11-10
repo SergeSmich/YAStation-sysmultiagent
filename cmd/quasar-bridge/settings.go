@@ -31,6 +31,8 @@ type settingsPatch struct {
 	Routing      *bridge.RoutingConfig `json:"routing"`
 	// MainAgent points route llm at a role; an empty string goes back to llm_*.
 	MainAgent *string `json:"main_agent"`
+	// RoleCall is the spoken-call switch, saved with the roles it applies to.
+	RoleCall *roleCallConfig `json:"role_call"`
 }
 
 // llmProviderPatch is one provider as the panel sends it back: the stored
@@ -96,6 +98,7 @@ func settingsSnapshot(cfg config, secrets *secretStore) map[string]any {
 		"agents":          agents,
 		"main_agent":      cfg.MainAgent,
 		"main_target":     mainTargetView(cfg, secrets),
+		"role_call":       cfg.RoleCall,
 		"wake_words":      wakeWords,
 		"routing":         routing,
 		"routing_presets": bridge.RoutingPresets(),
@@ -121,6 +124,7 @@ func mainTargetView(cfg config, secrets *secretStore) map[string]any {
 		"provider": "",
 		"model":    cfg.LLMModel,
 		"api":      cfg.LLMAPI,
+		"base_url": cfg.LLMBaseURL,
 		"prompt":   "default",
 		"key_set":  strings.TrimSpace(os.Getenv(defaultLLMAPIKeyEnv)) != "",
 		"sysadmin": false,
@@ -148,7 +152,8 @@ func mainTargetView(cfg config, secrets *secretStore) map[string]any {
 		view["provider"] = target.Provider
 		view["model"] = target.Model
 		view["api"] = target.API
-		view["key_set"] = strings.TrimSpace(apiKey(storedKeys(secrets), target)) != ""
+		view["base_url"] = target.BaseURL
+		view["key_set"] = strings.TrimSpace(apiKey(secretKeys(secrets), target)) != ""
 		return view
 	}
 	return view
@@ -180,8 +185,8 @@ func settingsWarnings(cfg config) []map[string]string {
 // write, then applies the result to the live bridge. It returns the HTTP status
 // and the body of the answer.
 func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (int, any) {
-	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil && patch.Routing == nil && patch.MainAgent == nil {
-		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words, routing, main_agent or all of them"}
+	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil && patch.Routing == nil && patch.MainAgent == nil && patch.RoleCall == nil {
+		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words, routing, main_agent, role_call or all of them"}
 	}
 	if deps.Voice != nil {
 		deps.Voice.applyMu.Lock()
@@ -225,6 +230,9 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	}
 	if patch.MainAgent != nil {
 		next.MainAgent = strings.TrimSpace(*patch.MainAgent)
+	}
+	if patch.RoleCall != nil {
+		next.RoleCall = *patch.RoleCall
 	}
 	// The same validation a restart runs, on the combination before it reaches
 	// the disk: this also fills the defaults a legacy role inherits from llm_*.
@@ -292,12 +300,16 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	if patch.MainAgent != nil {
 		members["main_agent"] = next.MainAgent
 	}
+	if patch.RoleCall != nil {
+		members["role_call"] = next.RoleCall
+	}
 	if !keysChanged &&
 		reflect.DeepEqual(before.LLMProviders, next.LLMProviders) &&
 		reflect.DeepEqual(before.Agents, next.Agents) &&
 		reflect.DeepEqual(before.WakeWords, next.WakeWords) &&
 		reflect.DeepEqual(before.Routing, next.Routing) &&
 		before.MainAgent == next.MainAgent &&
+		before.RoleCall == next.RoleCall &&
 		reflect.DeepEqual(before.LocalVoice, next.LocalVoice) {
 		return http.StatusOK, settingsPayload(next, deps, true)
 	}

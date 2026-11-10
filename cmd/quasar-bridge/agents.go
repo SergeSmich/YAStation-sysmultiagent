@@ -44,10 +44,10 @@ func providerNames(cfg config) []string {
 	return names
 }
 
-// storedKeys reads the provider credentials once per build. A broken file is
+// secretKeys reads the provider credentials once per build. A broken file is
 // reported and treated as empty: every role falls back to its environment
 // variable, exactly as before the file existed.
-func storedKeys(secrets *secretStore) map[string]string {
+func secretKeys(secrets *secretStore) map[string]string {
 	if secrets == nil {
 		return map[string]string{}
 	}
@@ -84,6 +84,9 @@ type mainAnswerer struct {
 	Role     string
 	Provider string
 	Model    string
+	// KeySet reports that a credential was found; the credential itself stays
+	// out of every log and snapshot.
+	KeySet bool
 }
 
 // buildMainAnswerer resolves main_agent. An empty value keeps the deployment
@@ -94,7 +97,8 @@ type mainAnswerer struct {
 func buildMainAnswerer(cfg config, tools *assistant.Tools, secrets *secretStore, root *llm.Client, rootAnswerer bridge.Completer) (mainAnswerer, error) {
 	name := strings.TrimSpace(cfg.MainAgent)
 	if name == "" {
-		main := mainAnswerer{LLM: root, Answerer: rootAnswerer, Model: cfg.LLMModel}
+		main := mainAnswerer{LLM: root, Answerer: rootAnswerer, Model: cfg.LLMModel,
+			KeySet: strings.TrimSpace(os.Getenv(defaultLLMAPIKeyEnv)) != ""}
 		if main.Answerer == nil {
 			main.Answerer = root
 		}
@@ -109,8 +113,9 @@ func buildMainAnswerer(cfg config, tools *assistant.Tools, secrets *secretStore,
 		if err != nil {
 			return mainAnswerer{}, err
 		}
+		key := apiKey(secretKeys(secrets), target)
 		client := &llm.Client{
-			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(storedKeys(secrets), target),
+			BaseURL: target.BaseURL, Model: target.Model, APIKey: key,
 			API: target.API, ReasoningEffort: target.ReasoningEffort,
 			MaxOutputTokens: target.MaxOutputTokens, HostedTools: target.HostedTools,
 			ChatParameters: chatParametersFor(cfg, target),
@@ -118,6 +123,7 @@ func buildMainAnswerer(cfg config, tools *assistant.Tools, secrets *secretStore,
 		main := mainAnswerer{
 			LLM: client, Answerer: client, Prompt: a.SystemPrompt,
 			Role: a.Name, Provider: target.Provider, Model: target.Model,
+			KeySet: strings.TrimSpace(key) != "",
 		}
 		if cfg.AssistantTools.Enabled && tools != nil {
 			main.Answerer = &assistant.Agent{Client: client, Tools: tools,
@@ -136,7 +142,7 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 	if len(cfg.Agents) == 0 {
 		return nil, nil
 	}
-	stored := storedKeys(secrets)
+	stored := secretKeys(secrets)
 	agents := make(map[string]*bridge.Agent, len(cfg.Agents))
 	hub := &peerHub{}
 	for _, a := range cfg.Agents {
@@ -175,7 +181,8 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 		if toolset != nil {
 			answerer = &assistant.Agent{Client: client, Tools: toolset, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 		}
-		ba := &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: prompt, Description: a.Description, Peers: a.Peers, Sysadmin: a.Sysadmin}
+		ba := &bridge.Agent{Name: a.Name, Answerer: answerer, Prompt: prompt, Description: a.Description, Peers: a.Peers, Sysadmin: a.Sysadmin,
+			Callable: a.Callable, Aliases: a.Aliases, Greeting: a.Greeting}
 		if a.Sysadmin {
 			ba.PromptExtra = sysHub.CharterPrompt
 		}
