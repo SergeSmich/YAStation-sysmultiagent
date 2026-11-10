@@ -1,0 +1,12 @@
+{
+  "task": "Ревью голосовой ветки: таймаут 25 с против лимита Яндекса 15 с, зависание adb, запись результата exec",
+  "kind": "task",
+  "path": "collab/opencode/L-0001-revyu-golosovoy-vetki-taymaut-25-s-proti.md",
+  "ping": "[L-0001] Задача: Ревью голосовой ветки: таймаут 25 с против лимита Яндекса 15 с, зависание adb, запись результата exec. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0001-*.md из origin/local/opencode @ {base}; ответь коммитом A-0001 в origin/arena/opencode.",
+  "state": "pending_send",
+  "base": "3aafcf5",
+  "arena_ref": "origin/arena/opencode",
+  "id": "L-0001",
+  "updated": "2026-11-10T07:20:11+00:00",
+  "created": "2026-11-10T07:20:11+00:00"
+}
