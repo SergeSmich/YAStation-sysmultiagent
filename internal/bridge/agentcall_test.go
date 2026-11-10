@@ -19,7 +19,9 @@ func callableEngine(t *testing.T, answerer Completer, callable bool, greeting st
 	})}
 	// The default route without classification keeps these tests about the call,
 	// not about the classifier.
-	if err := e.SetRouting(RoutingConfig{DefaultRoute: "yandex"}); err != nil {
+	routing := DefaultRoutingConfig()
+	routing.DefaultRoute = "yandex"
+	if err := e.SetRouting(routing); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.SetAgents(map[string]*Agent{"helper": {
@@ -82,7 +84,9 @@ func TestRoleCallQuestionUsesTheRoleClient(t *testing.T) {
 	})
 	// No deployment client at all: the question must not need one.
 	e := &Engine{}
-	if err := e.SetRouting(RoutingConfig{DefaultRoute: "yandex"}); err != nil {
+	routing := DefaultRoutingConfig()
+	routing.DefaultRoute = "yandex"
+	if err := e.SetRouting(routing); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.SetAgents(map[string]*Agent{"helper": {

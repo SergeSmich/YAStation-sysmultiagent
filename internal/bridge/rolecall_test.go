@@ -76,7 +76,7 @@ func TestRoleCallEmptyDirectory(t *testing.T) {
 // vowel, a Latin one is used as written.
 func TestSpokenForms(t *testing.T) {
 	forms := spokenForms("умка")
-	want := map[string]bool{"умка": true, "умку": true, "умке": true, "умки": true, "умкой": true}
+	want := []string{"умка", "умку", "умке", "умки", "умкой"}
 	for _, form := range want {
 		found := false
 		for _, have := range forms {

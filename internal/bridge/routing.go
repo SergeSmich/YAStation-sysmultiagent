@@ -103,6 +103,7 @@ func DefaultRoutingConfig() RoutingConfig {
 		Refusal:      RefusalConfig{Enabled: true, Prefixes: []string{"не могу", "я не могу", "я не буду", "не буду", "не поняла", "я не поняла", "не понял", "я не понял", "извините", "простите", "к сожалению", "не знаю", "я не знаю", "я пока не умею", "пока не умею", "увы"}, ContainsAny: []string{"не могу помочь", "не могу обсуждать", "не могу выполнить", "не могу понять", "не могу ответить", "не буду отвечать", "не поняла", "не понял", "не понимаю", "не удалось понять", "не знаю", "не умею", "не отвечу"}},
 	}
 }
+
 // RoutingPreset is one named policy the panel offers as a starting point. The
 // page copies Config into its form, so nothing is applied until the operator
 // presses «Сохранить» and sees the whole section that would be written.
@@ -143,6 +144,7 @@ func RoutingPresets() []RoutingPreset {
 		},
 	}
 }
+
 // legacyRuleNames maps the English names of the built-in rules, which older
 // configs still carry, to their Russian names. Rule names are shown in the
 // panel and the journal, so both read the same whichever config is loaded.

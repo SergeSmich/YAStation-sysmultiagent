@@ -79,6 +79,7 @@ func ValidAgentName(name string) bool {
 	}
 	return true
 }
+
 // AgentRoute builds the route string for a role.
 func AgentRoute(name string) string { return AgentRoutePrefix + name }
 
