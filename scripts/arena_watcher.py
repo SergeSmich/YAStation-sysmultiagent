@@ -1009,29 +1009,52 @@ class Watcher:
 class SingleInstance:
     """One watcher per state directory. Uses an OS lock, not a PID guess."""
 
+    # Windows locks are per-process, so a second SingleInstance in the same
+    # process gets past locking() and fails later at flush().
+    _held: set[Path] = set()
+
     def __init__(self, path: Path):
         self.path = Path(path)
+        self.key = self.path.resolve()
         self.handle: Any = None
 
     def __enter__(self) -> "SingleInstance":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("a+")
+        if self.key in self._held:
+            raise ConfigError(f"another watcher holds {self.path}")
+        try:
+            self.handle = self.path.open("a+")
+        except OSError as exc:
+            # Windows refuses to open a file another process has locked, so the
+            # failure arrives at open() rather than at locking().
+            raise ConfigError(f"another watcher holds {self.path} ({exc})") from exc
         try:
             if os.name == "nt":  # pragma: no cover - Windows only
                 import msvcrt
 
+                # "a+" leaves the offset at the end, and locking() locks at the
+                # current offset. A stale pid file would move the lock past the
+                # byte unlocked in __exit__, so always lock byte 0.
+                self.handle.seek(0)
                 msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
 
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            self.handle.close()
-            raise ConfigError(f"another watcher holds {self.path}")
-        self.handle.seek(0)
-        self.handle.truncate()
-        self.handle.write(str(os.getpid()))
-        self.handle.flush()
+            self.handle.seek(0)
+            self.handle.truncate()
+            self.handle.write(str(os.getpid()))
+            self.handle.flush()
+        except OSError as exc:
+            # Closing a locked handle can fail on Windows and would hide the
+            # real reason, so close best-effort.
+            try:
+                self.handle.close()
+            except OSError:
+                pass
+            self.handle = None
+            raise ConfigError(f"another watcher holds {self.path} ({exc})") from exc
+        self._held.add(self.key)
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -1048,8 +1071,12 @@ class SingleInstance:
 
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
         finally:
-            self.handle.close()
+            try:
+                self.handle.close()
+            except OSError:
+                pass
             self.handle = None
+            self._held.discard(self.key)
 
 
 def file_logger(path: Path) -> Callable[[str, dict[str, Any]], None]:

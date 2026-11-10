@@ -7,6 +7,7 @@
 import contextlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -653,6 +654,31 @@ class OnceLockTest(unittest.TestCase):
         self.assertIn("dry-run: CMD-0001", out)
         self.assertEqual(code, 0)
         self.assertEqual(self.gh.calls, [])
+
+    def test_stale_pid_in_the_lock_file_does_not_break_locking(self):
+        # Windows locks at the current offset; "a+" leaves it after the stale
+        # pid, so the next unlock would hit a different byte and fail.
+        lock = self.tmp / ".arena" / "watcher.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("999999", encoding="utf-8")
+        with aw.SingleInstance(lock):
+            pass
+        # The pid replaces the stale bytes, and the lock still covers byte 0,
+        # so the next acquire is refused while the handle is held and works
+        # after release (Windows cannot reopen a locked file, hence the order).
+        self.assertEqual(lock.read_text(encoding="utf-8"), str(os.getpid()))
+        with aw.SingleInstance(lock):
+            pass
+
+    def test_second_lock_in_the_same_process_is_refused(self):
+        # Windows locks are per-process: the second handle gets past locking()
+        # and would fail later, so the guard has to be explicit.
+        lock = self.tmp / ".arena" / "watcher.lock"
+        with aw.SingleInstance(lock):
+            with self.assertRaises(aw.ConfigError):
+                aw.SingleInstance(lock).__enter__()
+        with aw.SingleInstance(lock):  # released properly after the refusal
+            pass
 
 
 if __name__ == "__main__":
