@@ -38,3 +38,6 @@ __pycache__/
 *.jsonl
 *.jsonl.*
 !internal/llm/ru_*_ca.pem
+
+# Arena bridge: локальное состояние governor и lock
+/.arena/

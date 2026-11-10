@@ -1,0 +1,21 @@
+{
+  "id_prefix": "L",
+  "chat_dir": "collab",
+  "src_dir": "collab/opencode",
+  "dst_dir": "collab/arena",
+  "runs_dir": "collab/runs",
+  "arena_ref": "mine/arena/opencode",
+  "peer_ref": "mine/local/opencode",
+  "governor": {
+    "min_interval_s": 180,
+    "max_per_hour": 4,
+    "max_per_day": 8,
+    "continue_interval_s": 300,
+    "continue_window_s": 3600,
+    "max_continue_per_task": 3,
+    "reload_interval_s": 300,
+    "max_reload_per_hour": 4,
+    "error_cooldown_s": 1800,
+    "file": ".arena/governor.json"
+  }
+}
