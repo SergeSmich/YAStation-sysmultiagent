@@ -29,6 +29,8 @@ type settingsPatch struct {
 	Agents       *[]agentConfig        `json:"agents"`
 	WakeWords    *wakeWordsConfig      `json:"wake_words"`
 	Routing      *bridge.RoutingConfig `json:"routing"`
+	// MainAgent points route llm at a role; an empty string goes back to llm_*.
+	MainAgent *string `json:"main_agent"`
 }
 
 // llmProviderPatch is one provider as the panel sends it back: the stored
@@ -92,6 +94,8 @@ func settingsSnapshot(cfg config, secrets *secretStore) map[string]any {
 		"llm_providers":   providers,
 		"provider_keys":   keys,
 		"agents":          agents,
+		"main_agent":      cfg.MainAgent,
+		"main_target":     mainTargetView(cfg, secrets),
 		"wake_words":      wakeWords,
 		"routing":         routing,
 		"routing_presets": bridge.RoutingPresets(),
@@ -100,13 +104,84 @@ func settingsSnapshot(cfg config, secrets *secretStore) map[string]any {
 	}
 }
 
+func orDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+// mainTargetView describes what answers route llm right now: the role, or the
+// deployment client when main_agent is empty. It publishes the endpoint name, the
+// model, whether a credential is present and where the prompt comes from — never
+// the credential itself.
+func mainTargetView(cfg config, secrets *secretStore) map[string]any {
+	view := map[string]any{
+		"role":     "",
+		"provider": "",
+		"model":    cfg.LLMModel,
+		"api":      cfg.LLMAPI,
+		"prompt":   "default",
+		"key_set":  strings.TrimSpace(os.Getenv(defaultLLMAPIKeyEnv)) != "",
+		"sysadmin": false,
+	}
+	name := strings.TrimSpace(cfg.MainAgent)
+	if name == "" {
+		return view
+	}
+	for i := range cfg.Agents {
+		a := cfg.Agents[i]
+		if a.Name != name {
+			continue
+		}
+		view["role"] = a.Name
+		view["sysadmin"] = a.Sysadmin
+		if strings.TrimSpace(a.SystemPrompt) != "" {
+			view["prompt"] = "role"
+		}
+		target, err := cfg.resolveLLM(a)
+		if err != nil {
+			// Validation rejects such a role before it is saved; a hand-edited file
+			// that slipped through is described by what it did not resolve to.
+			return view
+		}
+		view["provider"] = target.Provider
+		view["model"] = target.Model
+		view["api"] = target.API
+		view["key_set"] = strings.TrimSpace(apiKey(storedKeys(secrets), target)) != ""
+		return view
+	}
+	return view
+}
+
+// settingsWarnings names what the write path accepted but the operator should
+// see: a role whose explicit model is not the model of its connection. It is a
+// warning, not an error: an explicit model is a documented override, so nothing
+// is cleared behind the operator's back.
+func settingsWarnings(cfg config) []map[string]string {
+	warnings := make([]map[string]string, 0)
+	for _, a := range cfg.Agents {
+		if a.Provider == "" || strings.TrimSpace(a.Model) == "" {
+			continue
+		}
+		provider, ok := cfg.providerByName(a.Provider)
+		if !ok || strings.TrimSpace(provider.Model) == "" || provider.Model == a.Model {
+			continue
+		}
+		warnings = append(warnings, map[string]string{
+			"agent": a.Name, "model": a.Model, "provider_model": provider.Model,
+		})
+	}
+	return warnings
+}
+
 // applySettingsPatch performs the read-modify-write of config.json and, when the
 // patch carries credentials, of secrets.json under the same lock as the voice
 // write, then applies the result to the live bridge. It returns the HTTP status
 // and the body of the answer.
 func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (int, any) {
-	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil && patch.Routing == nil {
-		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words, routing or all of them"}
+	if patch.Agents == nil && patch.WakeWords == nil && patch.LLMProviders == nil && patch.Routing == nil && patch.MainAgent == nil {
+		return http.StatusBadRequest, map[string]string{"error": "nothing to change: send llm_providers, agents, wake_words, routing, main_agent or all of them"}
 	}
 	if deps.Voice != nil {
 		deps.Voice.applyMu.Lock()
@@ -148,12 +223,18 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	if patch.Routing != nil {
 		next.Routing = *patch.Routing
 	}
+	if patch.MainAgent != nil {
+		next.MainAgent = strings.TrimSpace(*patch.MainAgent)
+	}
 	// The same validation a restart runs, on the combination before it reaches
 	// the disk: this also fills the defaults a legacy role inherits from llm_*.
 	if err := next.validateProviders(); err != nil {
 		return http.StatusBadRequest, map[string]string{"error": err.Error()}
 	}
 	if err := next.validateAgents(); err != nil {
+		return http.StatusBadRequest, map[string]string{"error": err.Error()}
+	}
+	if err := next.validateMainAgent(); err != nil {
 		return http.StatusBadRequest, map[string]string{"error": err.Error()}
 	}
 	if err := next.validateWakeWords(); err != nil {
@@ -208,11 +289,15 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	if patch.Routing != nil {
 		members["routing"] = next.Routing
 	}
+	if patch.MainAgent != nil {
+		members["main_agent"] = next.MainAgent
+	}
 	if !keysChanged &&
 		reflect.DeepEqual(before.LLMProviders, next.LLMProviders) &&
 		reflect.DeepEqual(before.Agents, next.Agents) &&
 		reflect.DeepEqual(before.WakeWords, next.WakeWords) &&
 		reflect.DeepEqual(before.Routing, next.Routing) &&
+		before.MainAgent == next.MainAgent &&
 		reflect.DeepEqual(before.LocalVoice, next.LocalVoice) {
 		return http.StatusOK, settingsPayload(next, deps, true)
 	}
@@ -255,7 +340,10 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 		}
 		return http.StatusInternalServerError, map[string]string{"error": err.Error()}
 	}
-	slog.Info("settings_applied", "providers", len(confirmed.LLMProviders), "agents", len(confirmed.Agents), "wake_words", len(confirmed.WakeWords.Words), "dry_run", confirmed.WakeWords.DryRun, "routing_rules", len(confirmed.Routing.Rules), "routing_default", confirmed.Routing.DefaultRoute)
+	slog.Info("settings_applied", "providers", len(confirmed.LLMProviders), "agents", len(confirmed.Agents), "wake_words", len(confirmed.WakeWords.Words), "dry_run", confirmed.WakeWords.DryRun, "routing_rules", len(confirmed.Routing.Rules), "routing_default", confirmed.Routing.DefaultRoute, "main_agent", orDefault(confirmed.MainAgent, "llm_*"))
+	for _, warning := range settingsWarnings(confirmed) {
+		slog.Info("agent_model_mismatch", "agent", warning["agent"], "model", warning["model"], "provider_model", warning["provider_model"])
+	}
 	return http.StatusOK, settingsPayload(confirmed, deps, false)
 }
 
@@ -343,6 +431,7 @@ func applySettings(deps settingsDeps, cfg config) error {
 
 func settingsPayload(cfg config, deps settingsDeps, unchanged bool) map[string]any {
 	payload := settingsSnapshot(cfg, deps.Secrets)
+	payload["warnings"] = settingsWarnings(cfg)
 	payload["wake_words_count"] = len(cfg.WakeWords.Words)
 	if deps.Voice != nil {
 		payload["local_voice_revision"] = deps.Voice.Revision()

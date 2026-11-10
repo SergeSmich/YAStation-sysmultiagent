@@ -198,7 +198,9 @@ func main() {
 		MaxOutputTokens: cfg.LLMMaxOutputTokens, HostedTools: cfg.LLMHostedTools,
 		ChatParameters: cfg.LLMChatParameters,
 	}
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	// Guard is the deployment client on purpose: it vets untrusted tool payloads
+	// and must not follow whichever role answers the person.
+	engine := &bridge.Engine{LLM: lc, Guard: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
 	var airPlay *airPlayControl
 	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })
 	defer cleanupAirPlay()
@@ -252,13 +254,45 @@ func main() {
 		engine.Music = tools
 		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
+	// Route llm answers with the role named by main_agent, or with the deployment
+	// client when it is empty. The root client stays in place for the guard, the
+	// home planner and the tools the deployment switched on.
+	rootAnswerer := bridge.Completer(lc)
+	if engine.Assistant != nil {
+		rootAnswerer = engine.Assistant
+	}
+	buildMain := func(next config) (mainAnswerer, error) {
+		return buildMainAnswerer(next, tools, secrets, lc, rootAnswerer)
+	}
+	applyMain := func(next config) error {
+		resolved, err := buildMain(next)
+		if err != nil {
+			return err
+		}
+		engine.SetMain(resolved.LLM, resolved.Answerer, resolved.Prompt)
+		return nil
+	}
+	if err := applyMain(cfg); err != nil {
+		slog.Error("main_agent rejected", "error", err)
+		os.Exit(1)
+	}
+	// Logged even when empty: an operator has to see which model answers route
+	// llm, and that the choice was read at all.
+	mainRole := cfg.MainAgent
+	if mainRole == "" {
+		mainRole = "llm_*"
+	}
+	slog.Info("main_agent_ready", "role", mainRole)
 	if err := engine.SetRouting(cfg.Routing); err != nil {
 		slog.Error("routing rejected", "error", err)
 		os.Exit(1)
 	}
 	sysHub := NewSysadminHub(filepath.Dir(*path), nil)
+	buildRoles := func(next config) (map[string]*bridge.Agent, error) {
+		return buildAgents(next, tools, secrets, sysHub)
+	}
 	applyAgents := func(next config) error {
-		built, err := buildAgents(next, tools, secrets, sysHub)
+		built, err := buildRoles(next)
 		if err != nil {
 			return err
 		}
@@ -289,7 +323,19 @@ func main() {
 	// together, so the roles and the words that name them are replaced the same
 	// way a restart would read them.
 	applySettingsConfig := func(next config) error {
-		if err := applyAgents(next); err != nil {
+		// Both are built before either is published: the edited role may be the
+		// one route llm answers with, and a rejected build of either must leave
+		// the previous answerer and the previous registry live.
+		resolved, err := buildMain(next)
+		if err != nil {
+			return err
+		}
+		built, err := buildRoles(next)
+		if err != nil {
+			return err
+		}
+		engine.SetMain(resolved.LLM, resolved.Answerer, resolved.Prompt)
+		if err := engine.SetAgents(built); err != nil {
 			return err
 		}
 		applyWake(next)

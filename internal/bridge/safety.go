@@ -32,7 +32,7 @@ func (e *Engine) CheckQuestionSafety(ctx context.Context, input QuestionSafetyIn
 		if strings.TrimSpace(input.Question) == "" {
 			return false, errors.New("question safety input is empty")
 		}
-		if e.LLM == nil {
+		if e.guard() == nil {
 			return false, errors.New("question safety LLM is not configured")
 		}
 		payload, err := json.Marshal(input)
@@ -45,7 +45,7 @@ func (e *Engine) CheckQuestionSafety(ctx context.Context, input QuestionSafetyIn
 		}
 		guardCtx, cancel := context.WithTimeout(ctx, time.Duration(min(e.policy().classifier.TimeoutMS, 8000))*time.Millisecond)
 		defer cancel()
-		guard, err := e.LLM.Complete(llm.WithoutHostedTools(guardCtx), []llm.Message{{Role: "system", Content: questionSafetyPrompt}, {Role: "user", Content: string(payload)}}, true)
+		guard, err := e.guard().Complete(llm.WithoutHostedTools(guardCtx), []llm.Message{{Role: "system", Content: questionSafetyPrompt}, {Role: "user", Content: string(payload)}}, true)
 		if err == nil {
 			err = guardCtx.Err()
 		}

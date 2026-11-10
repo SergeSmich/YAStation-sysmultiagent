@@ -26,6 +26,12 @@ let csrfToken = '';
 let voiceFormDirty = false;
 let metricsRange = 3600;
 let agentsState = [];
+// mainAgentState is what answers route llm: '' means the llm_* client, otherwise
+// the name of a role. mainTargetState is the bridge's own reading of that value,
+// so the page never guesses how inheritance resolved.
+let mainAgentState = '';
+let mainTargetState = null;
+let settingsWarningsState = [];
 let savedAgentNames = [];
 let providersState = [];
 let providerKeysState = {};
@@ -1288,6 +1294,128 @@ function renderWakeWords(force) {
   });
 }
 
+// renderMainAgent draws the one control that decides who answers route llm. It
+// sits above the role cards because it names one of them.
+function renderMainAgent(force) {
+  const box = document.getElementById('main-agent-box');
+  const select = document.getElementById('main-agent-select');
+  if (!box || !select) return;
+  if (!force && box.contains(document.activeElement)) return;
+  const names = savedAgentNames.slice();
+  if (mainAgentState && !names.includes(mainAgentState)) names.push(mainAgentState);
+  select.replaceChildren();
+  select.appendChild(option('', 'Как llm_* (по умолчанию)'));
+  for (const name of names) {
+    const saved = savedAgentObjs.find((item) => item && item.name === name) || {};
+    select.appendChild(option(name, saved.model ? name + ' — ' + saved.model : name));
+  }
+  select.value = mainAgentState;
+  paintMainTarget();
+}
+
+// paintMainTarget shows what the bridge resolved: the connection, the model,
+// whether a key is stored and where the prompt comes from. The key itself never
+// reaches the page, only the fact that one exists.
+function paintMainTarget() {
+  const line = document.getElementById('main-agent-target');
+  if (!line) return;
+  const target = mainTargetState;
+  if (!target) {
+    line.textContent = '';
+    return;
+  }
+  const parts = [];
+  parts.push('нейросеть: ' + (target.provider || 'llm_*'));
+  parts.push('модель: ' + (target.model || 'не задана'));
+  parts.push('ключ: ' + (target.key_set ? 'есть' : 'нет'));
+  parts.push('промпт: ' + (target.prompt === 'role' ? 'роли' : 'общий'));
+  if (target.sysadmin) parts.push('роль сисадмина — инструменты не наследуются');
+  line.textContent = parts.join(' · ');
+  line.classList.toggle('error', !target.model);
+}
+
+// saveMainAgent writes one partial patch: the roles themselves are not sent, so
+// unsaved edits in the cards below survive.
+async function saveMainAgent() {
+  const select = document.getElementById('main-agent-select');
+  const status = document.getElementById('main-agent-status');
+  if (!select || !status) return;
+  const value = String(select.value || '');
+  status.classList.remove('error');
+  status.textContent = 'сохраняю…';
+  try {
+    const payload = await postJSON(SETTINGS_URL, { main_agent: value });
+    mainAgentState = String((payload && payload.main_agent) || '');
+    mainTargetState = payload && payload.main_target ? payload.main_target : null;
+    settingsWarningsState = Array.isArray(payload && payload.warnings) ? payload.warnings : [];
+    renderMainAgent(true);
+    status.textContent = 'основная модель: ' + (mainAgentState || 'llm_*');
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
+// checkMainModel asks the connection of the resolved role one question. A role
+// that inherits llm_* has no address in the page, so the card says where to check.
+async function checkMainModel() {
+  const status = document.getElementById('main-agent-status');
+  if (!status) return;
+  const target = mainTargetState;
+  if (!target || !String(target.model || '').trim()) {
+    status.textContent = 'модель не задана';
+    status.classList.add('error');
+    return;
+  }
+  const provider = savedProviderObjs.find((item) => item && item.name === target.provider);
+  if (!provider) {
+    status.textContent = 'роль наследует llm_*: адрес в панель не попадает — проверьте нейросеть во вкладке «Нейросети»';
+    status.classList.remove('error');
+    return;
+  }
+  status.classList.remove('error');
+  status.textContent = 'спрашиваю модель…';
+  try {
+    const payload = await postJSON(LLM_CHECK_URL, {
+      provider: String(provider.name || '').trim().toLowerCase(),
+      base_url: String(provider.base_url || '').trim(),
+      api: provider.api || 'chat_completions',
+      model: String(target.model || '').trim(),
+      api_key: ''
+    });
+    const parts = [];
+    if (payload.chat_ok) parts.push('модель ответила за ' + ((payload.latency_ms || 0) / 1000).toFixed(1) + ' с: «' + (payload.sample || 'пусто') + '»');
+    else if (payload.chat_error) parts.push('модель не ответила. ' + payload.chat_error);
+    status.textContent = parts.join('; ') || 'нет данных';
+    status.classList.toggle('error', !payload.ok);
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+
+// mismatchWarning names a role whose own model is not the model of its
+// connection: resolveLLM lets the role win, so the difference is shown instead of
+// being cleared silently, and one click takes the connection's model.
+function mismatchWarning(row, agent) {
+  const warning = settingsWarningsState.find((item) => item && item.agent === agent.name);
+  if (!warning) return null;
+  const chip = el('div', 'muted small model-mismatch',
+    'модель роли ' + warning.model + ' ≠ модель нейросети ' + warning.provider_model + '. ');
+  const useProvider = el('button', 'ghost', 'взять модель нейросети');
+  useProvider.type = 'button';
+  useProvider.addEventListener('click', (event) => {
+    event.preventDefault();
+    const model = row.querySelector('[data-field="model"]');
+    if (!model) return;
+    model.value = warning.provider_model;
+    agent.model = warning.provider_model;
+    chip.remove();
+  });
+  chip.appendChild(useProvider);
+  return chip;
+}
+
 function renderAgents(force) {
   const list = document.getElementById('agents-list');
   if (!force && list.contains(document.activeElement)) return;
@@ -1333,6 +1461,8 @@ function renderAgents(force) {
       return modelIdsFor(select ? select.value : agent.provider);
     });
     row.appendChild(comboField('Модель', modelCombo1.wrap));
+    const mismatch = mismatchWarning(row, agent);
+    if (mismatch) row.appendChild(mismatch);
 
     const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
     prompt.rows = 5;
@@ -1670,6 +1800,12 @@ function renderRouting(force) {
   document.getElementById('routing-prompt').value = routingState.classifier.prompt;
   renderRoutingPresets();
   renderRoutingRules();
+  const mainHint = document.getElementById('routing-main-model');
+  if (mainHint) {
+    mainHint.textContent = 'Маршрут «нейросеть» отвечает: ' +
+      (mainAgentState ? 'роль ' + mainAgentState : 'клиент llm_*') +
+      '. Выбирается в «Агенты → Роли», основная модель.';
+  }
 }
 
 // editRoutingRule writes one field of one rule. It never re-renders the list:
@@ -1976,6 +2112,11 @@ function renderSettings(payload, force, scope) {
   // The section follows the file; a first load after an upgrade gets the policy
   // the bridge actually runs, which the server fills in when the file is old.
   if (touchingRouting) routingState = normalizeRouting(payload.routing);
+  if (touchingRoles) {
+    mainAgentState = typeof payload.main_agent === 'string' ? payload.main_agent : '';
+    mainTargetState = payload.main_target && typeof payload.main_target === 'object' ? payload.main_target : null;
+    settingsWarningsState = Array.isArray(payload.warnings) ? payload.warnings : [];
+  }
 
   const form = document.getElementById('settings-form');
   if (touchingWords && (force || !form.contains(document.activeElement))) {
@@ -1985,6 +2126,7 @@ function renderSettings(payload, force, scope) {
   // provider save redraws both lists.
   if (touchingProviders) renderProviders(force);
   if (touchingWords) renderWakeWords(force);
+  if (touchingRoles) renderMainAgent(force);
   if (touchingRoles || touchingProviders) renderAgents(force);
   if (touchingRouting) renderRouting(force);
   renderWakeDictionary();
@@ -2656,6 +2798,8 @@ document.addEventListener('DOMContentLoaded', () => {
   settingsForm.addEventListener('click', testRoleModel);
   settingsForm.addEventListener('click', saveCardClick);
   settingsForm.addEventListener('click', cancelNewCard);
+  document.getElementById('main-agent-save').addEventListener('click', saveMainAgent);
+  document.getElementById('main-agent-check').addEventListener('click', checkMainModel);
   document.getElementById('settings-dry-run').addEventListener('change', applyDryRun);
   // The «+» buttons live inside <summary>: stop the click from folding the section.
   for (const [id, kind] of [['add-llm-provider', 'provider'], ['add-wake-word', 'word'], ['add-agent', 'agent']]) {
