@@ -1,0 +1,12 @@
+{
+  "task": "Патч D1-D4: бюджет голосового хода, прогресс в гейте, асинхронный follow-up для колонки",
+  "kind": "task",
+  "path": "collab/opencode/L-0002-patch-d1-d4-byudzhet-golosovogo-hoda-pro.md",
+  "ping": "[L-0002] Задача: Патч D1-D4: бюджет голосового хода, прогресс в гейте, асинхронный follow-up для колонки. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0002-*.md из origin/local/opencode @ 1628007; ответь коммитом A-0002 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "1628007",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0002",
+  "updated": "2026-11-10T07:36:25+00:00",
+  "created": "2026-11-10T07:36:25+00:00"
+}
