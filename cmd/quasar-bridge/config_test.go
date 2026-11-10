@@ -154,6 +154,45 @@ func TestProviderNamesAreCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestValidateAgentsDropsStaleAddressOfLinkedRole: an earlier build baked the
+// address and the wire format into every role. A role that names a connection
+// must not keep such a pair: resolveLLM ignores it, and the write path drops it
+// so config.json stops carrying a value the panel does not show.
+func TestValidateAgentsDropsStaleAddressOfLinkedRole(t *testing.T) {
+	cfg := config{
+		LLMModel: "root-model",
+		LLMProviders: []llmProviderConfig{{
+			Name: "groq", API: "chat_completions", BaseURL: "https://api.groq.com/openai/v1",
+			Model: "openai/gpt-oss-20b", MaxOutputTokens: 512,
+		}},
+		Agents: []agentConfig{{
+			Name: "helper", Provider: "groq", SystemPrompt: "роль",
+			API: "responses", BaseURL: "https://api.deepseek.com/v1",
+			Model: "own-model", MaxOutputTokens: 256,
+		}},
+	}
+	if err := cfg.validateProviders(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.validateAgents(); err != nil {
+		t.Fatal(err)
+	}
+	role := cfg.Agents[0]
+	if role.API != "" || role.BaseURL != "" {
+		t.Fatalf("a linked role kept %q %q", role.API, role.BaseURL)
+	}
+	// The model is still the role's own choice.
+	if role.Model != "own-model" {
+		t.Fatalf("role model = %q", role.Model)
+	}
+	// The panel probe of the main-model card takes the published address and the
+	// saved key together, so they have to be the connection's pair.
+	cfg.MainAgent = "helper"
+	if view := mainTargetView(cfg, nil); view["base_url"] != "https://api.groq.com/openai/v1" {
+		t.Fatalf("main target published %v", view["base_url"])
+	}
+}
+
 func TestReadConfigAcceptsListenAfterReply(t *testing.T) {
 	for _, tc := range []struct {
 		body string

@@ -152,3 +152,70 @@ func TestPanelLLMProbeUsesTheStoredKey(t *testing.T) {
 		t.Fatal("the key reached the audit log")
 	}
 }
+
+// TestPanelLLMCheckLinkedRoleMatchesTheKey: «Проверить» on the main-model card
+// asks with the connection of the role and the address the role publishes. An
+// address an earlier build had baked into the role used to differ from the
+// connection, so the guard refused the stored key with «адрес изменён» for a
+// role the operator had not touched.
+func TestPanelLLMCheckLinkedRoleMatchesTheKey(t *testing.T) {
+	panel, _, dir := panelTestServer(t)
+	const key = "secret-provider-key"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			http.Error(w, "no key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-chat"}]}`))
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pong"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	body := `{
+		"llm_model":"root-model","main_agent":"helper",
+		"llm_providers":[{"name":"deepseek","api":"chat_completions",
+			"base_url":"` + server.URL + `/v1","model":"deepseek-chat","max_output_tokens":512}],
+		"agents":[{"name":"helper","provider":"deepseek","api":"responses",
+			"base_url":"https://api.deepseek.com/v1","model":"deepseek-chat","system_prompt":"role"}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.json"), []byte(`{"providers":{"deepseek":"`+key+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfig(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := mainTargetView(cfg, nil)
+	if target["provider"] != "deepseek" || target["base_url"] != server.URL+"/v1" {
+		t.Fatalf("main target = %v", target)
+	}
+
+	cookie, csrf := panelLogin(t, panel)
+	recorder := httptest.NewRecorder()
+	panel.ServeHTTP(recorder, panelMutation(t, "/api/panel/llm/check", map[string]any{
+		"provider": target["provider"],
+		"base_url": target["base_url"],
+		"api":      target["api"],
+		"model":    target["model"],
+		"api_key":  "",
+	}, cookie, csrf))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("probe = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"chat_ok":true`) {
+		t.Fatalf("probe did not reach the model: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), key) {
+		t.Fatal("the key leaked into the probe answer")
+	}
+}

@@ -271,6 +271,31 @@ func TestMainTargetViewNeverCarriesTheKey(t *testing.T) {
 	}
 }
 
+// TestLinkedRoleIgnoresItsOwnAddress: the address and the wire format belong to
+// the connection. A role that names one used to win with a pair baked in by an
+// earlier build, so the panel probe paired the connection's key with another
+// host and the bridge refused it («адрес изменён»). The role keeps only its
+// model and tuning.
+func TestLinkedRoleIgnoresItsOwnAddress(t *testing.T) {
+	cfg := mainAgentConfig()
+	cfg.Agents[0].API = "responses"
+	cfg.Agents[0].BaseURL = "https://api.deepseek.com/v1"
+	cfg.Agents[0].Model = "own-model"
+	target, err := cfg.resolveLLM(cfg.Agents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.BaseURL != cfg.LLMProviders[0].BaseURL {
+		t.Fatalf("address = %q, want the connection's %q", target.BaseURL, cfg.LLMProviders[0].BaseURL)
+	}
+	if target.API != cfg.LLMProviders[0].API {
+		t.Fatalf("api = %q, want the connection's %q", target.API, cfg.LLMProviders[0].API)
+	}
+	if target.Model != "own-model" {
+		t.Fatalf("model = %q, want the role's own", target.Model)
+	}
+}
+
 // TestSettingsWarningsOnProviderModelMismatch: an explicit role model that its
 // connection does not serve is a warning, not a silent clear and not an error.
 func TestSettingsWarningsOnProviderModelMismatch(t *testing.T) {

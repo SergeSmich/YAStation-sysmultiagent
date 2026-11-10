@@ -509,8 +509,9 @@ type llmTarget struct {
 }
 
 // resolveLLM applies the inheritance order: top-level llm_* → the named
-// provider → the role's own explicit fields. An empty role field inherits, so
-// only the values the operator typed stand out.
+// provider → the role's own explicit model and tuning. An empty role field
+// inherits, so only the values the operator typed stand out. The address and the
+// wire format come from the connection when the role names one.
 func (c *config) resolveLLM(a agentConfig) (llmTarget, error) {
 	target := llmTarget{
 		API: c.LLMAPI, BaseURL: c.LLMBaseURL, Model: c.LLMModel,
@@ -527,11 +528,18 @@ func (c *config) resolveLLM(a agentConfig) (llmTarget, error) {
 		target.ReasoningEffort, target.MaxOutputTokens, target.HostedTools = p.ReasoningEffort, p.MaxOutputTokens, p.HostedTools
 		target.ChatParameters = p.ChatParameters
 	}
-	if a.API != "" {
-		target.API = a.API
-	}
-	if a.BaseURL != "" {
-		target.BaseURL = a.BaseURL
+	// The address and the wire format belong to the connection. A role that names
+	// a provider takes them from it: an old pair baked into the role by an earlier
+	// build must not send the key of one service to the endpoint of another (a
+	// linked role has those fields hidden in the panel, so nobody could fix the
+	// drift by hand). Only the model and the chat tuning stay a per-role choice.
+	if a.Provider == "" {
+		if a.API != "" {
+			target.API = a.API
+		}
+		if a.BaseURL != "" {
+			target.BaseURL = a.BaseURL
+		}
 	}
 	if a.Model != "" {
 		target.Model = a.Model
@@ -633,7 +641,12 @@ func (c *config) validateAgents() error {
 			a.HostedTools = target.HostedTools
 		} else {
 			// One spelling in the file: the role may name the provider the way
-			// the operator typed it, the config keeps the canonical name.
+			// the operator typed it, the config keeps the canonical name. The
+			// address and the format of a linked role are the ones of its
+			// connection, so a pair an earlier build baked into the role is
+			// dropped: it drifts from the provider, and the panel does not show
+			// the field, so it would be a mismatch nobody can see.
+			a.API, a.BaseURL = "", ""
 			a.Provider = target.Provider
 		}
 		if utf8.RuneCountInString(a.SystemPrompt) > bridge.MaxAgentPromptRunes {
