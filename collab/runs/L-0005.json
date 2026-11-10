@@ -1,0 +1,12 @@
+{
+  "task": "Основная нейросеть как роль и голосовой вызов агентов",
+  "kind": "question",
+  "path": "collab/opencode/L-0005-osnovnaya-neyroset-kak-rol-i-golosovoy-vyzov-agentov.md",
+  "ping": "[L-0005] Вопрос: Основная нейросеть как роль и голосовой вызов агентов. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0005-*.md из origin/local/opencode @ 80e46ed; ответь коммитом A-0005 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "112aa50",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0005",
+  "updated": "2026-11-10T17:42:21+00:00",
+  "created": "2026-11-10T17:42:21+00:00"
+}
