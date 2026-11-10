@@ -148,7 +148,7 @@ func mainTargetView(cfg config, secrets *secretStore) map[string]any {
 		view["provider"] = target.Provider
 		view["model"] = target.Model
 		view["api"] = target.API
-		view["key_set"] = strings.TrimSpace(apiKey(storedKeys(secrets), target)) != ""
+		view["key_set"] = strings.TrimSpace(apiKey(secretKeys(secrets), target)) != ""
 		return view
 	}
 	return view

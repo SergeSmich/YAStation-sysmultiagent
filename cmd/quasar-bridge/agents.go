@@ -44,10 +44,10 @@ func providerNames(cfg config) []string {
 	return names
 }
 
-// storedKeys reads the provider credentials once per build. A broken file is
+// secretKeys reads the provider credentials once per build. A broken file is
 // reported and treated as empty: every role falls back to its environment
 // variable, exactly as before the file existed.
-func storedKeys(secrets *secretStore) map[string]string {
+func secretKeys(secrets *secretStore) map[string]string {
 	if secrets == nil {
 		return map[string]string{}
 	}
@@ -110,7 +110,7 @@ func buildMainAnswerer(cfg config, tools *assistant.Tools, secrets *secretStore,
 			return mainAnswerer{}, err
 		}
 		client := &llm.Client{
-			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(storedKeys(secrets), target),
+			BaseURL: target.BaseURL, Model: target.Model, APIKey: apiKey(secretKeys(secrets), target),
 			API: target.API, ReasoningEffort: target.ReasoningEffort,
 			MaxOutputTokens: target.MaxOutputTokens, HostedTools: target.HostedTools,
 			ChatParameters: chatParametersFor(cfg, target),
@@ -136,7 +136,7 @@ func buildAgents(cfg config, tools *assistant.Tools, secrets *secretStore, sysHu
 	if len(cfg.Agents) == 0 {
 		return nil, nil
 	}
-	stored := storedKeys(secrets)
+	stored := secretKeys(secrets)
 	agents := make(map[string]*bridge.Agent, len(cfg.Agents))
 	hub := &peerHub{}
 	for _, a := range cfg.Agents {

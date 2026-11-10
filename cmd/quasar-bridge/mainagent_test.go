@@ -34,21 +34,28 @@ func TestValidateMainAgent(t *testing.T) {
 		name    string
 		value   string
 		wantErr string
+		// noModel also clears the root model, because a role without a model of
+		// its own is legal: it inherits llm_model, as every role does.
+		noModel bool
 	}{
-		{"empty keeps llm_*", "", ""},
-		{"known role", "helper", ""},
-		{"unknown role", "ghost", "not a configured role"},
-		{"role without a model", "bare", "has no model"},
-		{"uppercase name", "Helper", "main_agent must be"},
-		{"spaces around the name", "  helper  ", ""},
+		{"empty keeps llm_*", "", "", false},
+		{"known role", "helper", "", false},
+		{"unknown role", "ghost", "not a configured role", false},
+		{"role inherits the root model", "bare", "", false},
+		{"role without any model", "bare", "has no model", true},
+		{"uppercase name", "Helper", "main_agent must be", false},
+		{"spaces around the name", "  helper  ", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := mainAgentConfig()
 			cfg.MainAgent = tc.value
-			// validateAgents runs first in readConfig and would already reject a
-			// role without a model, so the check is exercised on its own: it is the
-			// last line of defence for a hand-edited file.
+			if tc.noModel {
+				cfg.LLMModel = ""
+				cfg.LLMProviders[0].Model = ""
+			}
+			// The check runs on its own, as it does in readConfig after
+			// validateAgents: it is the last line of defence for a hand-edited file.
 			err := cfg.validateMainAgent()
 			if tc.wantErr == "" {
 				if err != nil {
