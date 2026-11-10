@@ -185,19 +185,25 @@ func TestVoiceGateWithoutProgressAnswersInstead(t *testing.T) {
 	if err := n.Server(ctx, websocket.MessageBinary, asrFinalFrame("gate-noprogress", "да")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case f := <-down:
-		r := f.Server.GetEvent().GetAliceResponse()
-		if r == nil {
-			t.Fatalf("unexpected first frame %s", f.Kind())
+	// The session mirrors AsrResult downstream before the answer, so read past
+	// the mirrored frames instead of assuming the answer comes first.
+	answered := false
+	for !answered {
+		select {
+		case f := <-down:
+			r := f.Server.GetEvent().GetAliceResponse()
+			if r == nil {
+				continue
+			}
+			if r.GetResponse().GetIsStreaming() {
+				t.Fatal("the progress stream started without local_progress")
+			}
+			if r.GetVoiceResponse().GetOutputSpeech().GetText() != "Хорошо, делаю." {
+				t.Fatalf("answer=%q", r.GetVoiceResponse().GetOutputSpeech().GetText())
+			}
+			answered = true
+		case <-ctx.Done():
+			t.Fatal("no answer")
 		}
-		if r.GetResponse().GetIsStreaming() {
-			t.Fatal("the progress stream started without local_progress")
-		}
-		if r.GetVoiceResponse().GetOutputSpeech().GetText() != "Хорошо, делаю." {
-			t.Fatalf("answer=%q", r.GetVoiceResponse().GetOutputSpeech().GetText())
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no answer")
 	}
 }
