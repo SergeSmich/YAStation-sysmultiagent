@@ -33,12 +33,6 @@ func (h Host) IsWindows() bool { return strings.EqualFold(h.OS, "windows") }
 // chcp switches native programs (ipconfig, ping) to UTF-8 as well.
 const powershellUTF8 = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; chcp 65001 > $null; $ProgressPreference='SilentlyContinue'; "
 
-// cleanText makes command output safe for a JSON request: invalid UTF-8
-// (a legacy code page, or a cut in the middle of a rune) is replaced.
-func cleanText(s string) string {
-	return strings.ToValidUTF8(s, "\uFFFD")
-}
-
 // truncateRunes cuts s to at most n bytes without splitting a rune.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
@@ -54,6 +48,63 @@ type ExecResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// TimedOut says the command was stopped at the deadline and the host never
+	// reported an exit status (ExitCode is -1). What the command printed before
+	// the deadline is kept: it is the only diagnosis of a hang, and «timeout»
+	// alone made a stuck adb undebuggable.
+	TimedOut bool
+}
+
+// outputLimit is how much of a command's output is kept in total. It also caps
+// the buffer at run time, so a chatty or hung command cannot grow the bridge's
+// memory while the deadline is not yet reached.
+const outputLimit = 16384
+
+// cappedBuffer is the writer for command output. The timeout path reads it while
+// the copy goroutines may still be writing, so every access is locked, and the
+// buffer stops growing past its limit.
+type cappedBuffer struct {
+	mu    sync.Mutex
+	b     strings.Builder
+	limit int
+	cut   bool
+}
+
+func newCappedBuffer(limit int) *cappedBuffer {
+	if limit <= 0 {
+		limit = outputLimit
+	}
+	return &cappedBuffer{limit: limit}
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if left := c.limit - c.b.Len(); left > 0 {
+		if len(p) > left {
+			c.b.Write(p[:left])
+			c.cut = true
+		} else {
+			c.b.Write(p)
+		}
+	} else if len(p) > 0 {
+		c.cut = true
+	}
+	return len(p), nil
+}
+
+// String returns the collected text without splitting a rune, with a marker when
+// the limit was reached.
+func (c *cappedBuffer) String() string {
+	c.mu.Lock()
+	raw := c.b.String()
+	cut := c.cut
+	c.mu.Unlock()
+	out := string([]rune(strings.ToValidUTF8(raw, "\uFFFD")))
+	if cut {
+		out += "…усечено"
+	}
+	return out
 }
 
 type KnownHosts struct {
@@ -171,9 +222,10 @@ func (e *Executor) Exec(ctx context.Context, hostName, command string, timeout t
 		return ExecResult{}, err
 	}
 	defer session.Close()
-	var stdout, stderr strings.Builder
-	session.Stdout = &stdout
-	session.Stderr = &stderr
+	var stdout = newCappedBuffer(outputLimit)
+	var stderr = newCappedBuffer(outputLimit)
+	session.Stdout = stdout
+	session.Stderr = stderr
 	done := make(chan error, 1)
 	runCmd := command
 	if h.IsWindows() {
@@ -183,29 +235,32 @@ func (e *Executor) Exec(ctx context.Context, hostName, command string, timeout t
 	select {
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGKILL)
-		return ExecResult{}, ctx.Err()
+		return collectExec(stdout, stderr, -1, true), fmt.Errorf("timeout: %w", ctx.Err())
 	case <-time.After(timeout):
 		_ = session.Signal(ssh.SIGKILL)
-		return ExecResult{}, fmt.Errorf("timeout")
+		return collectExec(stdout, stderr, -1, true), fmt.Errorf("timeout: команда не ответила за %s", timeout)
 	case err := <-done:
-		out := cleanText(stdout.String())
-		errs := cleanText(stderr.String())
-		if len(out)+len(errs) > 16384 {
-			total := out + errs
-			total = truncateRunes(total, 16384) + "…усечено"
-			out = total
-			errs = ""
-		}
 		code := 0
 		if err != nil {
 			if exitErr, ok := err.(*ssh.ExitError); ok {
 				code = exitErr.ExitStatus()
 			} else {
-				return ExecResult{Stdout: out, Stderr: errs}, err
+				return collectExec(stdout, stderr, -1, false), err
 			}
 		}
-		return ExecResult{Stdout: out, Stderr: errs, ExitCode: code}, nil
+		return collectExec(stdout, stderr, code, false), nil
 	}
+}
+
+// collectExec turns the collected output into a result. The output is copied at
+// most once, and the combined text keeps the size limit of a tool answer.
+func collectExec(out, errs *cappedBuffer, code int, timedOut bool) ExecResult {
+	o, e := out.String(), errs.String()
+	if len(o)+len(e) > outputLimit {
+		total := truncateRunes(o+e, outputLimit) + "…усечено"
+		o, e = total, ""
+	}
+	return ExecResult{Stdout: o, Stderr: e, ExitCode: code, TimedOut: timedOut}
 }
 
 func authMethods(h Host) []ssh.AuthMethod {

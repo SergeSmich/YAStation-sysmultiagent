@@ -247,6 +247,7 @@ func TestSSHBadPassword(t *testing.T) {
 
 func TestSSHTimeout(t *testing.T) {
 	srv := startSSHServer(t, "secret", func(cmd string, ch ssh.Channel) {
+		ch.Write([]byte("error: no devices/emulators found\n"))
 		time.Sleep(5 * time.Second)
 		ch.Close()
 	})
@@ -257,12 +258,20 @@ func TestSSHTimeout(t *testing.T) {
 		return map[string]Host{"h": {Addr: host, Port: port, User: "u", Password: "secret"}}
 	}, kh)
 	start := time.Now()
-	_, err := ex.Exec(context.Background(), "h", "x", 1*time.Second)
+	res, err := ex.Exec(context.Background(), "h", "x", 1*time.Second)
 	if err == nil {
 		t.Fatal("expected timeout")
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Fatalf("took too long")
+	}
+	// A timeout is not an empty answer: what the host printed before the
+	// deadline and the missing exit code are the whole diagnosis.
+	if !res.TimedOut || res.ExitCode != -1 {
+		t.Fatalf("timed_out=%v exit=%d", res.TimedOut, res.ExitCode)
+	}
+	if !strings.Contains(res.Stdout, "no devices") {
+		t.Fatalf("the output before the deadline was lost: %q", res.Stdout)
 	}
 }
 

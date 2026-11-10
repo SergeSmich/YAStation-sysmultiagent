@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -390,5 +391,118 @@ func TestToolsPasswordNotInResults(t *testing.T) {
 	b, _ := json.Marshal(res)
 	if strings.Contains(string(b), "supersecretpw") {
 		t.Fatal("password leaked")
+	}
+}
+
+type captureAudit struct {
+	mu     sync.Mutex
+	events []struct {
+		name   string
+		fields map[string]any
+	}
+}
+
+func (c *captureAudit) Audit(event string, fields map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, struct {
+		name   string
+		fields map[string]any
+	}{event, fields})
+}
+
+func (c *captureAudit) find(name string) map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.events {
+		if e.name == name {
+			return e.fields
+		}
+	}
+	return nil
+}
+
+// TestToolsExecJournalKeepsRCAndHead is the diagnosis contract for a command
+// that ends badly: the journal must name the exit code and the first lines. A
+// bare «timeout» is what made the stuck adb impossible to read afterwards.
+func TestToolsExecJournalKeepsRCAndHead(t *testing.T) {
+	srv := startSSHServer2(t, "secret", func(cmd string, ch ssh.Channel) {
+		ch.Write([]byte("error: no devices/emulators found\nsecond line\n"))
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{3}))
+		ch.Close()
+	})
+	defer srv.close()
+	ts, h := newToolset(t, srv, "pi")
+	aud := new(captureAudit)
+	h.SetAuditor(aud)
+	if _, err := ts.runExec(context.Background(), "role:тест", "pi", "adb devices", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	f := aud.find("sysadmin_exec_result")
+	if f == nil {
+		t.Fatal("no result event in the journal")
+	}
+	if rc, _ := f["rc"].(int); rc != 3 {
+		t.Fatalf("rc=%v", f["rc"])
+	}
+	if head, _ := f["head"].(string); !strings.Contains(head, "no devices") || !strings.Contains(head, "exit=3") {
+		t.Fatalf("head=%q", f["head"])
+	}
+	if ms, _ := f["elapsed_ms"].(int64); ms < 0 {
+		t.Fatalf("elapsed_ms=%v", f["elapsed_ms"])
+	}
+}
+
+// TestToolsExecJournalHidesSensitiveOutput keeps a secret command's output out
+// of the journal while the exit code still goes in.
+func TestToolsExecJournalHidesSensitiveOutput(t *testing.T) {
+	srv := startSSHServer2(t, "secret", func(cmd string, ch ssh.Channel) {
+		ch.Write([]byte("root:$6$hash\n"))
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{0}))
+		ch.Close()
+	})
+	defer srv.close()
+	ts, h := newToolset(t, srv, "pi")
+	aud := new(captureAudit)
+	h.SetAuditor(aud)
+	if _, err := ts.runExec(context.Background(), "role:тест", "pi", "cat /etc/shadow", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	f := aud.find("sysadmin_exec_result")
+	if f == nil {
+		t.Fatal("no result event in the journal")
+	}
+	if _, ok := f["head"]; ok {
+		t.Fatalf("sensitive output reached the journal: %v", f["head"])
+	}
+	if rc, _ := f["rc"].(int); rc != 0 {
+		t.Fatalf("rc=%v", f["rc"])
+	}
+}
+
+// TestToolsExecTimeoutReportsDiagnosis is the adb case: a command that hangs must
+// be cut at the deadline and still answer with the code marker and what the host
+// managed to print.
+func TestToolsExecTimeoutReportsDiagnosis(t *testing.T) {
+	srv := startSSHServer2(t, "secret", func(cmd string, ch ssh.Channel) {
+		ch.Write([]byte("error: no devices/emulators found\n"))
+		time.Sleep(4 * time.Second)
+		ch.Close()
+	})
+	defer srv.close()
+	ts, _ := newToolset(t, srv, "pi")
+	start := time.Now()
+	_, err := ts.Call(context.Background(), toolSysExec, `{"host":"pi","command":"df -h","timeout_sec":1}`)
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if time.Since(start) > 4*time.Second {
+		t.Fatalf("the deadline did not cut the command: %v", time.Since(start))
+	}
+	msg := err.Error()
+	for _, want := range []string{"timeout", "exit=-1", "no devices"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("%q is missing from the error: %q", want, msg)
+		}
 	}
 }
