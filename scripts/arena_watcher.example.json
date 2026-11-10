@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "Example config for scripts/arena_watcher.py. Copy it OUTSIDE the tracked tree,",
+    "for example to .arena/watcher.json (that directory is git-ignored), and edit:",
+    "the live file names this machine and may carry home addresses.",
+    "Placeholders only: replace owner/name, the login and the health entries."
+  ],
+  "repo": "owner/name",
+  "workdir": "C:/src/YAStation-sysmultiagent",
+  "allowed_logins": ["your-login"],
+  "poll_s": 60,
+  "default_timeout_s": 120,
+  "max_timeout_s": 600,
+  "stale_running_min": 15,
+  "max_body_bytes": 16384,
+  "max_result_bytes": 8000,
+  "max_result_lines": 60,
+  "state_dir": ".arena",
+  "gh": "gh",
+  "git": "git",
+  "go": "go",
+  "allow": {
+    "log_dirs": ["logs"],
+    "test_package_re": "^\\./(?:internal|cmd)/[A-Za-z0-9_./-]*$",
+    "default_test_packages": ["./internal/bridge", "./cmd/quasar-bridge"],
+    "grep_globs": ["*.go", "*.md", "*.py", "*.json"],
+    "log_max_lines": 200,
+    "git_log_max": 30,
+    "grep_max_matches": 200,
+    "grep_max_files": 2000
+  },
+  "health": [
+    {"label": "station", "url": "http://bridge.example:8080/healthz"},
+    {"label": "panel", "url": "http://panel.example:8090/"}
+  ],
+  "env": {
+    "GOFLAGS": "-mod=mod"
+  }
+}
