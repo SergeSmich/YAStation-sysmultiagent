@@ -274,6 +274,16 @@ issue без метки и возвращает `exit 0`. Issue есть, мет
 
 6. Поставить в автозапуск. Windows (Планировщик) или Linux (systemd, пример юнита):
 
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\arena_watcher_task.ps1 -Action register
+   powershell -ExecutionPolicy Bypass -File scripts\arena_watcher_task.ps1 -Action status
+   powershell -ExecutionPolicy Bypass -File scripts\arena_watcher_task.ps1 -Action unregister
+   ```
+
+   Задача `ArenaWatcher` запускается при входе пользователя: `gh` берёт токен из
+   его keyring, поэтому задача от SYSTEM не аутентифицируется. Переменные
+   `-Python`, `-Config`, `-Force` — в самом скрипте.
+
    ```ini
    [Service]
    ExecStart=/usr/bin/python3 scripts/arena_watcher.py --config .arena/watcher.json
