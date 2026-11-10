@@ -1,0 +1,12 @@
+{
+  "task": "Голосовой вызов агентов: role_call, aliases, greeting",
+  "kind": "task",
+  "path": "collab/opencode/L-0007-golosovoy-vyzov-agentov-role-call-aliases-greeting.md",
+  "ping": "[L-0007] Задача: Голосовой вызов агентов: role_call, aliases, greeting. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0007-*.md из origin/local/opencode @ a3da69e; ответь коммитом A-0007 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "a3da69e",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0007",
+  "updated": "2026-11-10T18:07:14+00:00",
+  "created": "2026-11-10T18:07:14+00:00"
+}
