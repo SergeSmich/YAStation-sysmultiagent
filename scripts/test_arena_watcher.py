@@ -4,12 +4,15 @@
     python -m unittest discover -s scripts -p "test_arena_watcher.py"
 """
 
+import contextlib
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import arena_watcher as aw
@@ -30,15 +33,16 @@ def command_body(**over):
 
 
 def make_issue(number=1, body="", labels=(aw.LABEL_RUN,), login="owner",
-               association="OWNER", updated="2026-11-10T08:00:00Z"):
+               association="OWNER", updated=None, title="[CMD] CMD-0001 git_status"):
     return {
         "number": number,
+        "title": title,
         "body": body,
         "labels": [{"name": name} for name in labels],
         "user": {"login": login},
         "author_association": association,
-        "created_at": updated,
-        "updated_at": updated,
+        "created_at": updated or aw.utcnow().isoformat().replace("+00:00", "Z"),
+        "updated_at": updated or aw.utcnow().isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -50,10 +54,9 @@ class FakeGh:
         self.calls = []
         self.get_hook = None
 
-    def list_issues(self, labels):
-        wanted = set(labels)
+    def list_open_issues(self):
         return [json.loads(json.dumps(item)) for item in self.issues.values()
-                if wanted & aw.label_names(item)]
+                if item.get("state", "open") == "open"]
 
     def get_issue(self, number):
         if self.get_hook is not None:
@@ -74,6 +77,10 @@ class FakeGh:
         names = aw.label_names(self.issues[int(number)])
         names.discard(label)
         self.issues[int(number)]["labels"] = [{"name": name} for name in sorted(names)]
+
+    def close_issue(self, number):
+        self.calls.append(("close_issue", int(number)))
+        self.issues[int(number)]["state"] = "closed"
 
     def create_labels(self):
         self.calls.append(("create_labels",))
@@ -201,6 +208,18 @@ class ArgsTest(WatcherCase):
         self.assertEqual(error, "")
         self.assertEqual(cmd.args["lines"], 20)
 
+class ArgsTestLimits(WatcherCase):
+    def test_allow_limits_reach_the_validator(self):
+        self.cfg = config(self.tmp, allow={"log_max_lines": 5, "git_log_max": 5})
+        cmd, error = aw.parse_command(command_body(action="read_log",
+                                                  args={"path": "logs/bridge.log", "lines": 6}), self.cfg)
+        self.assertIsNone(cmd)
+        self.assertIn("1..5", error)
+        cmd, error = aw.parse_command(command_body(action="git_log", args={"n": 6}), self.cfg)
+        self.assertIsNone(cmd)
+        self.assertIn("1..5", error)
+
+
 class GrepTest(WatcherCase):
     def test_glob_must_be_configured(self):
         cmd, error = aw.parse_command(command_body(action="grep", args={"pattern": "TODO", "glob": "*.pem"}),
@@ -226,6 +245,19 @@ class GrepTest(WatcherCase):
 
 
 class TestsAndBuildTest(WatcherCase):
+    def test_dotdot_inside_a_matching_package_is_refused(self):
+        for package in ("./internal/../../cmd/quasar-bridge", "./internal/bridge/../../..",
+                        "./internal/../cmd/quasar-bridge"):
+            cmd, error = aw.parse_command(command_body(action="run_tests", args={"packages": [package]}),
+                                          self.cfg)
+            self.assertIsNone(cmd, package)
+            self.assertIn("..", error)
+
+    def test_absolute_package_is_refused(self):
+        cmd, error = aw.parse_command(command_body(action="run_tests",
+                                                  args={"packages": ["/usr/bin"]}), self.cfg)
+        self.assertIsNone(cmd)
+
     def test_package_must_match_allowlist(self):
         for package in ("all", "./etc/passwd", "../../internal/bridge", "./internal/bridge; rm -rf /"):
             cmd, error = aw.parse_command(command_body(action="run_tests", args={"packages": [package]}),
@@ -292,6 +324,99 @@ class TrustTest(WatcherCase):
         gh = FakeGh([make_issue(body=command_body(), login="owner")])
         outcomes = self.watcher(gh).poll_once()
         self.assertEqual(outcomes[0].kind, "done")
+
+
+class TitleTriggerTest(WatcherCase):
+    """Arena cannot label anything: the title has to be enough."""
+
+    def test_bracket_title_runs_without_any_label(self):
+        gh = FakeGh([make_issue(labels=(), body=command_body(), title="[CMD] git_status")])
+        runner = FakeRunner(stdout=" M bridge.go")
+        outcomes = self.watcher(gh, runner).poll_once()
+        self.assertEqual(outcomes[0].kind, "done")
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(aw.label_names(gh.issues[1]), {aw.LABEL_DONE})
+        self.assertIn("close_issue", gh.kinds())
+        # no phantom label removal: the issue never had oc:run
+        self.assertNotIn(("remove_label", 1, aw.LABEL_RUN), gh.calls)
+
+    def test_oc_title_with_command_id_runs(self):
+        gh = FakeGh([make_issue(labels=(), body=command_body(),
+                                title="oc: CMD-0002 git_log n=3 (arena smoke)")])
+        outcomes = self.watcher(gh).poll_once()
+        self.assertEqual(outcomes[0].kind, "done")
+
+    def test_plain_title_is_ignored(self):
+        gh = FakeGh([make_issue(labels=(), title="feat: add a thing")])
+        runner = FakeRunner()
+        self.assertEqual(self.watcher(gh, runner).poll_once(), [])
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(gh.calls, [])
+
+    def test_run_label_still_triggers_regardless_of_title(self):
+        gh = FakeGh([make_issue(labels=(aw.LABEL_RUN,), body=command_body(), title="что угодно")])
+        outcomes = self.watcher(gh).poll_once()
+        self.assertEqual(outcomes[0].kind, "done")
+
+    def test_finished_title_issue_is_not_run_again(self):
+        gh = FakeGh([make_issue(labels=(aw.LABEL_DONE,), title="[CMD] git_status")])
+        runner = FakeRunner()
+        self.assertEqual(self.watcher(gh, runner).poll_once(), [])
+        self.assertEqual(runner.calls, [])
+
+    def test_title_issue_with_foreign_author_is_silent(self):
+        gh = FakeGh([make_issue(labels=(), login="stranger", title="[CMD] git_status")])
+        runner = FakeRunner()
+        outcomes = self.watcher(gh, runner).poll_once()
+        self.assertEqual(outcomes[0].kind, "untrusted")
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(gh.calls, [])
+        self.assertEqual(aw.label_names(gh.issues[1]), set())
+
+    def test_untrusted_reported_once(self):
+        gh = FakeGh([make_issue(labels=(), login="stranger", title="[CMD] git_status")])
+        watcher = self.watcher(gh)
+        watcher.poll_once()
+        watcher.poll_once()
+        self.assertEqual([event for event, _ in self.log], ["untrusted"])
+
+    def test_bad_body_on_title_issue_is_reported_and_closed(self):
+        gh = FakeGh([make_issue(labels=(), body="нет блока", title="[CMD] CMD-0009 broken")])
+        outcomes = self.watcher(gh).poll_once()
+        self.assertEqual(outcomes[0].kind, "rejected")
+        self.assertIn("close_issue", gh.kinds())
+        self.assertIn(aw.LABEL_FAILED, aw.label_names(gh.issues[1]))
+
+
+class CloseAfterResultTest(WatcherCase):
+    def test_close_by_default(self):
+        gh = FakeGh([make_issue(body=command_body())])
+        self.watcher(gh).poll_once()
+        self.assertIn(("close_issue", 1), gh.calls)
+        self.assertEqual(gh.issues[1]["state"], "closed")
+
+    def test_close_can_be_switched_off(self):
+        self.cfg = config(self.tmp, close_after_result=False)
+        gh = FakeGh([make_issue(body=command_body())])
+        self.watcher(gh).poll_once()
+        self.assertNotIn("close_issue", gh.kinds())
+        self.assertEqual(aw.label_names(gh.issues[1]), {aw.LABEL_DONE})
+
+    def test_close_is_skipped_in_dry_run(self):
+        gh = FakeGh([make_issue(body=command_body())])
+        self.watcher(gh, dry_run=True).poll_once()
+        self.assertNotIn("close_issue", gh.kinds())
+
+    def test_failed_close_does_not_break_the_round(self):
+        gh = FakeGh([make_issue(body=command_body())])
+
+        def boom(number):
+            raise RuntimeError("gh api failed: Resource not accessible by integration")
+
+        gh.close_issue = boom
+        outcomes = self.watcher(gh).poll_once()
+        self.assertEqual(outcomes[0].kind, "done")
+        self.assertIn("close_failed", [event for event, _ in self.log])
 
 
 class DedupTest(WatcherCase):
@@ -458,6 +583,22 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(len(cfg.health), 2)
         self.assertTrue(all(entry["label"] for entry in cfg.health))
 
+    def test_allow_limits_are_honoured(self):
+        cfg = aw.Config.from_dict({
+            "repo": "o/n", "workdir": "/tmp", "allowed_logins": ["x"],
+            "allow": {"log_max_lines": 5, "git_log_max": 7,
+                      "grep_max_matches": 11, "grep_max_files": 13},
+        })
+        self.assertEqual((cfg.log_max_lines, cfg.git_log_max, cfg.grep_max_matches,
+                          cfg.grep_max_files), (5, 7, 11, 13))
+
+    def test_limits_at_the_root_still_work(self):
+        cfg = aw.Config.from_dict({
+            "repo": "o/n", "workdir": "/tmp", "allowed_logins": ["x"],
+            "log_max_lines": 9, "allow": {},
+        })
+        self.assertEqual(cfg.log_max_lines, 9)
+
     def test_login_allowlist_is_required(self):
         with self.assertRaises(aw.ConfigError):
             aw.Config.from_dict({"repo": "owner/name", "workdir": ".", "allowed_logins": []})
@@ -470,6 +611,48 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(aw.ConfigError):
             aw.Config.from_dict({"repo": "o/n", "workdir": ".", "allowed_logins": ["x"],
                                  "allow": {"test_package_re": "("}})
+
+
+class OnceLockTest(unittest.TestCase):
+    """--once takes the same lock as the service: no second execution."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "logs").mkdir()
+        self.cfg_path = self.tmp / "w.json"
+        self.cfg_path.write_text(json.dumps({
+            "repo": "owner/name", "workdir": str(self.tmp), "allowed_logins": ["owner"],
+        }), encoding="utf-8")
+        self.gh = FakeGh([make_issue(body=command_body(), labels=())])
+        self.patch = mock.patch.object(aw, "GhClient", return_value=self.gh)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = aw.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_once_is_refused_while_the_lock_is_held(self):
+        with aw.SingleInstance(self.tmp / ".arena" / "watcher.lock"):
+            code, _, err = self.run_main(["--config", str(self.cfg_path), "--once"])
+        self.assertEqual(code, 1)
+        self.assertIn("another watcher holds", err)
+        self.assertEqual(self.gh.calls, [])  # nothing claimed, nothing executed
+
+    def test_once_runs_when_the_lock_is_free(self):
+        code, _, _ = self.run_main(["--config", str(self.cfg_path), "--once"])
+        self.assertEqual(code, 0)
+        self.assertIn("comment", self.gh.kinds())
+
+    def test_dry_run_does_not_need_the_lock(self):
+        with aw.SingleInstance(self.tmp / ".arena" / "watcher.lock"):
+            code, out, _ = self.run_main(["--config", str(self.cfg_path), "--once", "--dry-run"])
+        self.assertIn("dry-run: CMD-0001", out)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.gh.calls, [])
 
 
 if __name__ == "__main__":

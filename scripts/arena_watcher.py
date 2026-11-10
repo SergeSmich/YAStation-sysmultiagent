@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
@@ -67,7 +68,14 @@ LABEL_SPECS = {
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 ACTIONS = frozenset({"git_status", "git_log", "run_tests", "build", "read_log", "grep", "deploy_check"})
 COMMAND_KEYS = frozenset({"id", "action", "args", "timeout_s", "note"})
+MAX_ISSUE_PAGES = 3  # 300 open issues per round; the bus is not a work queue
 COMMAND_ID_RE = re.compile(r"^CMD-[0-9]{4,6}$")
+
+# Trigger. Arena's token cannot write labels (403 Issues: write), so a command
+# is recognised by its title. `oc:run` stays as the operator's alternative and
+# keeps the older behaviour for issues that carry it.
+TITLE_TRIGGER_RE = re.compile(r"^[ \t]*(?:\[CMD\]|oc:\s*CMD-[0-9]{4,6}\b)", re.IGNORECASE)
+TERMINAL_LABELS = frozenset({LABEL_RUNNING, LABEL_DONE, LABEL_FAILED, LABEL_PAUSED})
 
 # A fenced block: ```json ... ``` (the language tag is optional).
 FENCE_RE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.DOTALL)
@@ -204,6 +212,7 @@ class Config:
     git_log_max: int = 30
     grep_max_matches: int = 200
     grep_max_files: int = 2000
+    close_after_result: bool = True
     log_dirs: tuple[str, ...] = ("logs",)
     test_package_re: str = r"^\./(?:internal|cmd)/[A-Za-z0-9_./-]*$"
     default_test_packages: tuple[str, ...] = ("./internal/bridge", "./cmd/quasar-bridge")
@@ -243,6 +252,16 @@ class Config:
                 raise ConfigError(f"config.{name} must be an integer")
             return max(low, min(high, number))
 
+        def limit(name: str, default: int, low: int, high: int) -> int:
+            # These four live in the `allow` block; the root is still accepted
+            # because earlier configs put them there.
+            value = allow.get(name, raw.get(name, default))
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                raise ConfigError(f"config.allow.{name} must be an integer")
+            return max(low, min(high, number))
+
         def strings(source: dict[str, Any], name: str, default: Sequence[str]) -> tuple[str, ...]:
             value = source.get(name, list(default))
             if not isinstance(value, (list, tuple)):
@@ -265,6 +284,9 @@ class Config:
         except re.error as exc:
             raise ConfigError(f"config.allow.test_package_re: {exc}")
 
+        close_after = raw.get("close_after_result", True)
+        if isinstance(close_after, str):
+            close_after = close_after.strip().lower() not in {"false", "0", "no", "off"}
         state_dir = str(raw.get("state_dir") or ".arena")
         return cls(
             repo=repo,
@@ -277,10 +299,11 @@ class Config:
             max_body_bytes=ints("max_body_bytes", 16384, 512, 262144),
             max_result_bytes=ints("max_result_bytes", 8000, 512, 60000),
             max_result_lines=ints("max_result_lines", 60, 1, 2000),
-            log_max_lines=ints("log_max_lines", 200, 1, 5000),
-            git_log_max=ints("git_log_max", 30, 1, 100),
-            grep_max_matches=ints("grep_max_matches", 200, 1, 5000),
-            grep_max_files=ints("grep_max_files", 2000, 1, 50000),
+            log_max_lines=limit("log_max_lines", 200, 1, 5000),
+            git_log_max=limit("git_log_max", 30, 1, 100),
+            grep_max_matches=limit("grep_max_matches", 200, 1, 5000),
+            grep_max_files=limit("grep_max_files", 2000, 1, 50000),
+            close_after_result=bool(close_after),
             log_dirs=strings(allow, "log_dirs", cls.log_dirs),
             test_package_re=package_re,
             default_test_packages=strings(allow, "default_test_packages", cls.default_test_packages),
@@ -419,9 +442,16 @@ def validate_args(action: str, args: dict[str, Any], cfg: Config) -> str:
         if len(packages) > 8:
             return "at most 8 packages per command"
         pattern = re.compile(cfg.test_package_re)
+        root = cfg.workdir.resolve()
         for package in packages:
             if not isinstance(package, str) or not pattern.match(package):
                 return f"package {package!r} is not allowed by test_package_re"
+            # `./internal/../../cmd` matches the regex but leaves the tree.
+            if ".." in Path(package).parts:
+                return f"package {package!r} must not contain .."
+            target = (cfg.workdir / package).resolve()
+            if target != root and root not in target.parents:
+                return f"package {package!r} resolves outside the working directory"
     if action == "read_log":
         raw_path = args.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -524,6 +554,11 @@ def label_names(issue: dict[str, Any]) -> set[str]:
     return names
 
 
+def title_triggers(issue: dict[str, Any]) -> bool:
+    """`[CMD] ...` or `oc: CMD-0001 ...` in the title, nothing else."""
+    return bool(TITLE_TRIGGER_RE.match(str(issue.get("title") or "")))
+
+
 def issue_author(issue: dict[str, Any]) -> tuple[str, str]:
     user = issue.get("user") or {}
     login = str(user.get("login") or issue.get("author_login") or "")
@@ -556,17 +591,23 @@ class GhClient:
             raise RuntimeError(f"gh api {path} failed: {message[0] if message else result.returncode}")
         return json.loads(result.stdout) if result.stdout.strip() else None
 
-    def list_issues(self, labels: Iterable[str]) -> list[dict[str, Any]]:
-        """Open issues carrying any of the labels. Pull requests are dropped."""
+    def list_open_issues(self) -> list[dict[str, Any]]:
+        """Every open issue, with or without labels: the title is the trigger."""
         by_number: dict[int, dict[str, Any]] = {}
-        for label in labels:
-            query = urllib.parse.urlencode({"state": "open", "per_page": 50, "labels": label})
+        for page in range(1, MAX_ISSUE_PAGES + 1):
+            query = urllib.parse.urlencode({"state": "open", "per_page": 100, "page": page})
             data = self._api(f"repos/{self.repo}/issues?{query}") or []
             for issue in data:
                 if "pull_request" in issue:
                     continue
                 by_number[int(issue["number"])] = issue
+            if len(data) < 100:
+                break
         return list(by_number.values())
+
+    def close_issue(self, number: int) -> None:
+        self._api(f"repos/{self.repo}/issues/{number}", method="PATCH",
+                  payload={"state": "closed", "state_reason": "completed"})
 
     def get_issue(self, number: int) -> dict[str, Any]:
         return self._api(f"repos/{self.repo}/issues/{number}") or {}
@@ -620,6 +661,7 @@ class Watcher:
         self.dry_run = dry_run
         self.verbose = verbose
         self._log = logger
+        self._seen: set[int] = set()  # numbers already reported, for quiet logs
 
     # -- small helpers -----------------------------------------------------
 
@@ -656,7 +698,7 @@ class Watcher:
         if self.paused():
             self.log("paused", state=str(self.cfg.state))
             return []
-        issues = self.gh.list_issues([LABEL_RUN, LABEL_RUNNING])
+        issues = self.candidates(self.gh.list_open_issues())
         issues.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
         outcomes: list[Outcome] = []
         for issue in issues:
@@ -667,6 +709,17 @@ class Watcher:
                 self.log("issue_error", number=number, error=str(exc))
                 outcomes.append(Outcome("error", f"#{number}: {exc}"))
         return outcomes
+
+    def candidates(self, issues: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Issues worth a look: a live label, or a command title not yet finished."""
+        picked: list[dict[str, Any]] = []
+        for issue in issues:
+            labels = label_names(issue)
+            if labels & {LABEL_RUN, LABEL_RUNNING}:
+                picked.append(issue)
+            elif title_triggers(issue) and not labels & TERMINAL_LABELS:
+                picked.append(issue)
+        return picked
 
     def stale(self, issue: dict[str, Any]) -> bool:
         if LABEL_PAUSED in self.issue_labels(issue):
@@ -689,25 +742,32 @@ class Watcher:
                 return self.mark_stale(issue)
             self.log("skip_running", number=number)
             return Outcome("skipped", "already claimed")
-        if LABEL_RUN not in labels:
-            return Outcome("skipped", "no run label")
-        return self.claim_and_run(issue, number)
+        by_label = LABEL_RUN in labels
+        if not by_label:
+            if not title_triggers(issue):
+                return Outcome("skipped", "no oc:run label and no [CMD] title")
+            if labels & TERMINAL_LABELS:
+                # done/failed/paused on a title-triggered issue: already answered.
+                return Outcome("skipped", "already finished")
+        return self.claim_and_run(issue, number, by_label=by_label)
 
     # -- claim -> execute -> comment ---------------------------------------
 
-    def claim_and_run(self, issue: dict[str, Any], number: int) -> Outcome:
+    def claim_and_run(self, issue: dict[str, Any], number: int, by_label: bool = True) -> Outcome:
         ok, why = self.trusted(issue)
         if not ok:
             # A stranger can open an issue on a public repository. Do not answer
-            # them: drop the trigger label and leave a local record only.
-            self.log("untrusted", number=number, reason=why)
-            if not self.dry_run:
+            # them: drop the trigger label (if any) and leave a local record only.
+            if number not in self._seen:
+                self._seen.add(number)
+                self.log("untrusted", number=number, reason=why)
+            if not self.dry_run and by_label:
                 self.gh.remove_label(number, LABEL_RUN)
             return Outcome("untrusted", why)
 
         command, error = parse_command(issue.get("body") or "", self.cfg)
         if command is None:
-            return self.reject(issue, number, error)
+            return self.reject(issue, number, error, by_label=by_label)
 
         if self.dry_run:
             self.log("dry_run", number=number, id=command.id, action=command.action,
@@ -716,7 +776,8 @@ class Watcher:
 
         before = body_sha(issue.get("body"))
         self.gh.add_label(number, LABEL_RUNNING)
-        self.gh.remove_label(number, LABEL_RUN)
+        if by_label:  # a title-triggered issue has no label to take away
+            self.gh.remove_label(number, LABEL_RUN)
         # The body is the command: if it moved between reading and claiming, the
         # command that would run is not the command that was checked.
         fresh = self.gh.get_issue(number)
@@ -738,16 +799,19 @@ class Watcher:
         self.gh.comment(number, self.comment_result(command, code, elapsed, output))
         self.gh.remove_label(number, LABEL_RUNNING)
         self.gh.add_label(number, LABEL_FAILED if failed else LABEL_DONE)
+        self.close(number)
         self.log("executed", number=number, id=command.id, action=command.action,
                  exit=code, ms=int(elapsed * 1000))
         return Outcome("failed" if failed else "done", f"{command.id} exit {code}")
 
-    def reject(self, issue: dict[str, Any], number: int, reason: str) -> Outcome:
+    def reject(self, issue: dict[str, Any], number: int, reason: str, by_label: bool = False) -> Outcome:
         self.log("rejected", number=number, reason=reason)
         if not self.dry_run:
             self.gh.comment(number, self.comment_refused(None, reason))
-            self.gh.remove_label(number, LABEL_RUN)
+            if by_label:
+                self.gh.remove_label(number, LABEL_RUN)
             self.gh.add_label(number, LABEL_FAILED)
+            self.close(number)
         return Outcome("rejected", reason)
 
     def mark_stale(self, issue: dict[str, Any]) -> Outcome:
@@ -766,7 +830,17 @@ class Watcher:
             self.gh.comment(number, body)
             self.gh.remove_label(number, LABEL_RUNNING)
             self.gh.add_label(number, LABEL_FAILED)
+            self.close(number)
         return Outcome("stale", f"#{number}")
+
+    def close(self, number: int) -> None:
+        """Keep the queue empty: an answered issue is a closed issue."""
+        if not self.cfg.close_after_result:
+            return
+        try:
+            self.gh.close_issue(number)
+        except Exception as exc:  # a token without Issues: write must not crash us
+            self.log("close_failed", number=number, error=str(exc))
 
     # -- comments ----------------------------------------------------------
 
@@ -1038,8 +1112,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     watcher.log("start", version=VERSION, repo=cfg.repo, dry_run=args.dry_run)
 
     if args.once:
+        # The lock covers --once too: a one-shot run next to the service would
+        # otherwise take the same command a second time. A dry run changes
+        # nothing, so it does not need the lock.
+        lock_path = cfg.state / "watcher.lock"
+        guard = contextlib.nullcontext() if args.dry_run else SingleInstance(lock_path)
         try:
-            outcomes = watcher.poll_once()
+            with guard:
+                outcomes = watcher.poll_once()
+        except ConfigError as exc:
+            watcher.log("lock_busy", path=str(lock_path), error=str(exc))
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         except Exception as exc:  # gh is down, the token expired, the repo moved
             watcher.log("poll_failed", error=str(exc))
             print(f"error: {exc}", file=sys.stderr)
