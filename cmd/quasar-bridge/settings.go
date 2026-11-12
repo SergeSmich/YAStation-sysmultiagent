@@ -206,16 +206,12 @@ func applySettingsPatch(path string, deps settingsDeps, patch settingsPatch) (in
 	}
 	if patch.Agents != nil {
 		next.Agents = append([]agentConfig(nil), (*patch.Agents)...)
-		// The panel offers a fixed set of lengths (0 means «inherit the
-		// connection's own max_output_tokens»). A number outside the set would
-		// be a hand-written file or a stale card, so it is refused instead of
-		// written; the operator picks one of the listed ones deliberately.
-		for _, item := range next.Agents {
-			if item.MaxOutputTokens != 0 && item.MaxOutputTokens != 260 && item.MaxOutputTokens != 700 &&
-				item.MaxOutputTokens != 1400 && item.MaxOutputTokens != 2000 {
-				return http.StatusBadRequest, map[string]string{"error": "agents[].max_output_tokens должен быть 0 (наследовать), 260, 700, 1400 или 2000"}
-			}
-		}
+		// max_output_tokens is not held to the panel's list: older roles carry
+		// a number the list does not know (the bridge used to bake the resolved
+		// length into the role), and the panel shows such a number as its own
+		// option instead of hiding it. Refusing it here would make a role card
+		// unsavable, so the write path only relies on validateAgents (no
+		// negative lengths).
 		// local_voice.routes is derived from the role voices, so the stale entries
 		// have to go before validation: otherwise changing a role voice collides
 		// with the route an earlier write left behind. Every agent:* route is

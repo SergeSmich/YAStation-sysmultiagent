@@ -743,19 +743,24 @@ func TestSettingsAgentMaxOutputTokensRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSettingsAgentMaxOutputTokensRejectsUnknownLength: the panel offers a
-// fixed set of lengths; a number outside it is refused instead of written,
-// and the error names the choice in Russian.
-func TestSettingsAgentMaxOutputTokensRejectsUnknownLength(t *testing.T) {
+// TestSettingsAgentMaxOutputTokensKeepsUnknownLength: the panel offers a fixed
+// set of lengths and shows a stored number outside it as its own option. The
+// write path keeps that number as it is: older roles carry a length the bridge
+// baked in (4096 on the station), and refusing it would make such a card
+// unsavable.
+func TestSettingsAgentMaxOutputTokensKeepsUnknownLength(t *testing.T) {
 	path := configFile(t, `{"llm_model":"m","agents":[{"name":"briefing","max_output_tokens":512}]}`)
 	deps, _, _ := settingsTestDeps(t)
 	agents := []agentConfig{{Name: "briefing", MaxOutputTokens: 512}}
 	status, payload := applySettingsPatch(path, deps, settingsPatch{Agents: &agents})
-	if status != http.StatusBadRequest {
+	if status != http.StatusOK {
 		t.Fatalf("status=%d payload=%v", status, payload)
 	}
-	errText, _ := payload.(map[string]string)["error"]
-	if !strings.Contains(errText, "наследовать") {
-		t.Fatalf("error=%q", errText)
+	cfg, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0].MaxOutputTokens != 512 {
+		t.Fatalf("agents: %+v", cfg.Agents)
 	}
 }
