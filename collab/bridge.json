@@ -4,7 +4,7 @@
   "src_dir": "collab/opencode",
   "dst_dir": "collab/arena",
   "runs_dir": "collab/runs",
-  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
   "peer_ref": "origin/local/opencode",
   "governor": {
     "min_interval_s": 180,
