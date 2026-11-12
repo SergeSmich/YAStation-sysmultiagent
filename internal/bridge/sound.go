@@ -6,7 +6,11 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/coder/websocket"
 	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	push "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/push"
+	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/data/channel"
 	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
 	fileplayer "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
@@ -14,7 +18,32 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"quasarbridge/internal/sound"
+	"quasarbridge/internal/wire"
 )
+
+// PushSound plays a sound to the station without a speaker request. Inside a
+// conversation the directive rides the final answer (queueSound), but a
+// scheduled scenario fires on its own clock: there is no request to attach to,
+// and the protocol's own way to play something then is a push carrying the
+// same directive. The frame goes straight to the station session, so the
+// device cannot tell it from a proactive cloud message.
+func (n *Native) PushSound(ctx context.Context, request sound.Request) error {
+	directive, err := makeSoundDirective(request)
+	if err != nil {
+		return err
+	}
+	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+		Header: &header.TEventHeader{MessageId: newID()},
+		Event: &server.TServerMessage_TEvent_Push{Push: &push.TPush{
+			Directives: []*directives.TDirective{directive},
+		}},
+	}}}
+	frame, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(ctx, websocket.MessageBinary, frame)
+}
 
 type soundDirective = directives.TDirective
 

@@ -279,6 +279,15 @@ h3 { margin: 20px 0 6px; font-size: 15px; font-weight: 700; }
 .settings-row .row-actions button { padding: 5px 11px; font-size: var(--fs-m); }
 .settings-row > .field { align-self: end; }
 .settings-row > .field.narrow { max-width: 240px; }
+/* Сценарии по расписанию: день недели — семь мелких чекбоксов в одну строку,
+   действие зависит от выбранного типа. */
+.scenario-days { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.scenario-days .day-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.scenario-days .day-check input { margin: 0; }
+.settings-row .scenario-dependent { align-self: end; }
+.settings-row .volume-line { display: flex; align-items: center; gap: 8px; }
+.settings-row .volume-line input[type="range"] { flex: 1; min-width: 120px; }
+.settings-row .volume-line .volume-value { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; }
 /* One row of fields: the height of the controls is fixed, so filter boxes,
    selects and buttons line up on the same line. */
 .settings-row input:not([type="checkbox"]):not([type="range"]),

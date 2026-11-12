@@ -572,6 +572,10 @@ func main() {
 		snapshot := func() map[string]any {
 			return healthSnapshot(cfg, engine, logs, hc, mcpConfigured, musicQueue, airPlay, subscriptions, proxy, voice, wake, &clientCount, &serverCount)
 		}
+		// The schedule is one file next to the config and one goroutine: the
+		// panel edits the list, the loop plays it at the station's local time.
+		// Both share the store, so a save and a tick never race on the file.
+		scenarios := newScenarioStore(*path, cfg.DeviceContext.Timezone)
 		panel, err := newPanelServer(panelCfg, panelDeps{
 			ConfigPath: *path,
 			AuthPath:   files.Auth,
@@ -585,6 +589,7 @@ func main() {
 			Settings:   settingsDeps{Voice: voice, Live: liveVoice, Apply: applySettingsConfig, Secrets: secrets},
 			Decide:     engine.Decide,
 			SysHub:     sysHub,
+			Scenarios:  scenarios,
 		})
 		if err != nil {
 			slog.Error("panel setup failed", "error", err)
@@ -593,6 +598,15 @@ func main() {
 		if sysHub != nil && panel != nil {
 			sysHub.SetAuditor(panelAuditAuditor{a: panel.audit})
 		}
+		// The scheduler is auxiliary: a sound or a volume move must never stop
+		// the voice bridge, so a failure is a warning, not a shutdown.
+		go scenarioScheduler{
+			store:     scenarios,
+			loc:       scenarioLocation(cfg.DeviceContext.Timezone),
+			playSound: scenarioSoundPlayer(liveVoice, cfg.AssistantTools.Enabled),
+			setVolume: writeStationVolume,
+			now:       time.Now,
+		}.run(ctx)
 		panelHTTP = &http.Server{Addr: cfg.Panel.Listen, Handler: panel, ReadHeaderTimeout: 10 * time.Second}
 		// The wake-word training page is served on its own listener with the
 		// same certificate and session; the daemon itself is loopback-only.

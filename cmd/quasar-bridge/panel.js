@@ -18,6 +18,7 @@ const PASSWORD_URL = '/api/panel/password';
 const ROUTING_TEST_URL = '/api/panel/routing/test';
 const UPDATE_URL = '/api/panel/update';
 const STATION_VOLUME_URL = '/api/panel/station/volume';
+const SCENARIOS_URL = '/api/panel/scenarios';
 const METRICS_URL = '/api/panel/metrics?range=';
 const REFRESH_STATE_MS = 5000;
 const REFRESH_LOGS_MS = 15000;
@@ -588,7 +589,8 @@ function setRowStatus(row, text, kind) {
 // itemOf returns the object a card edits: the open «+» form or a list entry.
 function itemOf(kind, row) {
   if (row.dataset.index === 'new') return newItems[kind];
-  const list = kind === 'provider' ? providersState : kind === 'agent' ? agentsState : wordsState;
+  const list = kind === 'provider' ? providersState : kind === 'agent' ? agentsState
+    : kind === 'scenario' ? scenariosState : wordsState;
   return list[Number(row.dataset.index)];
 }
 
@@ -977,10 +979,24 @@ function providerButton(label, action) {
 // open it shows the form. Which cards are open survives a redraw of the list.
 const openCards = new Set();
 
+// scenarioActionLabel names one scenario's action the way the summary shows it.
+function scenarioActionLabel(action) {
+  if (!action || typeof action !== 'object') return '';
+  if (action.type === 'sound') return 'звук ' + String(action.source || '');
+  if (action.type === 'volume') return 'громкость ' + String(action.percent ?? '') + '%';
+  return String(action.type || '');
+}
+
 function cardSummaryText(kind, item, isNew) {
   const clean = (value) => String(value || '').trim();
   if (kind === 'provider') {
     return { title: clean(item.name) || (isNew ? 'Новая нейросеть' : 'без названия'), sub: clean(item.model) };
+  }
+  if (kind === 'scenario') {
+    return {
+      title: clean(item.time) || (isNew ? 'Новый сценарий' : 'без времени'),
+      sub: [scenarioDaysLabel(item.days), scenarioActionLabel(item.action)].filter(Boolean).join(' · ')
+    };
   }
   if (kind === 'agent') {
     return {
@@ -2619,6 +2635,258 @@ function initStationVolume() {
   range.addEventListener('change', () => { applyStationVolume(Number(range.value)); });
 }
 
+// --- Сценарии по расписанию -----------------------------------------------
+//
+// Один сценарий — время, дни недели (ISO, 1 = понедельник) и одно действие:
+// звук станции или общая громкость. Сервер играет список сам по локальному
+// времени, панель показывает и сохраняет его целиком: POST принимает весь
+// список, и сервер проверяет его как одну сущность. После сохранения список
+// перечитывается, как и у остальных карточек.
+
+const SCENARIO_DAYS = [[1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [7, 'Вс']];
+const SCENARIO_SOUNDS = [
+  ['notification', 'notification — уведомление'],
+  ['success', 'success — успех'],
+  ['error', 'error — ошибка'],
+  ['timer', 'timer — таймер']
+];
+
+let scenariosState = [];
+let scenarioTz = '';
+let newScenario = null;
+
+function scenarioDaysLabel(days) {
+  const names = SCENARIO_DAYS.map((day) => day[1]);
+  const picked = (Array.isArray(days) ? days : []).map(String);
+  if (!picked.length) return '—';
+  return picked.map((day) => names[Number(day) - 1] || day).join(', ');
+}
+
+function setScenarioStatus(text, kind) {
+  const note = document.getElementById('scenario-status');
+  if (!note) return;
+  note.textContent = text || '';
+  note.classList.remove('ok', 'error');
+  if (kind) note.classList.add(kind);
+}
+
+async function loadScenarios() {
+  try {
+    const payload = await getJSON(SCENARIOS_URL);
+    scenariosState = Array.isArray(payload.scenarios) ? payload.scenarios : [];
+    scenarioTz = String(payload.timezone || '');
+  } catch (error) {
+    scenariosState = [];
+    setScenarioStatus(error.message, 'error');
+  }
+  renderScenarioTimezone();
+  renderScenarios();
+}
+
+function renderScenarioTimezone() {
+  const node = document.getElementById('scenario-timezone');
+  if (node) node.textContent = scenarioTz || '—';
+}
+
+// scenarioEntries lists the cards to draw: the «+» form first, then the saved
+// ones — the same contract as the role and word lists.
+function scenarioEntries() {
+  const entries = scenariosState.map((item, index) => ({ item, index: String(index), isNew: false }));
+  if (newScenario) entries.unshift({ item: newScenario, index: 'new', isNew: true });
+  return entries;
+}
+
+// renderScenarios draws the list. It never redraws while the operator types in
+// it: the focused card keeps what was typed.
+function renderScenarios(force) {
+  const list = document.getElementById('scenarios-list');
+  if (!list) return;
+  if (!force && list.contains(document.activeElement)) return;
+  list.replaceChildren();
+  const entries = scenarioEntries();
+  if (!entries.length) {
+    list.appendChild(el('p', 'muted small', 'Пока нет сценарий. Добавьте первый кнопкой «+ сценарий».'));
+    return;
+  }
+  for (const { item, index, isNew } of entries) {
+    const row = el('div', 'settings-row form agent-grid' + (isNew ? ' is-new' : ''));
+    row.dataset.kind = 'scenario';
+    row.dataset.index = index;
+    if (isNew) row.appendChild(el('h3', 'row-title', 'Новый сценарий'));
+
+    const enabled = settingsControl('input', 'enabled', '');
+    enabled.type = 'checkbox';
+    enabled.checked = Boolean(item.enabled);
+    row.appendChild(settingsField('Включён', enabled, 'span-2'));
+
+    const time = settingsControl('input', 'time', item.time || '07:30');
+    time.type = 'time';
+    row.appendChild(settingsField('Время (ЧЧ:ММ)', time, 'span-3'));
+
+    const daysBox = el('div', 'scenario-days');
+    for (const [value, label] of SCENARIO_DAYS) {
+      const box = el('label', 'day-check');
+      const dayBox = el('input');
+      dayBox.type = 'checkbox';
+      dayBox.value = String(value);
+      dayBox.dataset.field = 'day';
+      dayBox.checked = Array.isArray(item.days) && item.days.map(String).includes(String(value));
+      box.appendChild(dayBox);
+      box.appendChild(el('span', null, label));
+      daysBox.appendChild(box);
+    }
+    row.appendChild(settingsField('Дни (1 = понедельник)', daysBox, 'span-4'));
+
+    const type = settingsControl('select', 'action_type', (item.action && item.action.type) || 'sound');
+    type.appendChild(option('sound', 'звук'));
+    type.appendChild(option('volume', 'общая громкость'));
+    row.appendChild(settingsField('Действие', type, 'span-3'));
+
+    const dependent = el('div', 'scenario-dependent span-3');
+    row.appendChild(dependent);
+
+    const actions = el('div', 'row-actions');
+    actions.appendChild(saveButton('scenario'));
+    actions.appendChild(removeOrCancel('scenario', 'Удалить', isNew));
+    actions.appendChild(el('span', 'row-status small'));
+    row.appendChild(actions);
+
+    list.appendChild(wrapCard('scenario', row, item, isNew));
+    paintScenarioDependents(row, item);
+  }
+  wireCardOrder(list, 'details.fold-card', (card) => card.dataset.cardKey);
+}
+
+// paintScenarioDependents builds the control the action type needs: the stored
+// sound or the volume level. A change of the type repaints only this card.
+function paintScenarioDependents(row, item) {
+  const type = row.querySelector('[data-field="action_type"]');
+  const dependent = row.querySelector('.scenario-dependent');
+  if (!type || !dependent) return;
+  const value = String(type.value || 'sound');
+  dependent.replaceChildren();
+  if (value === 'sound') {
+    const source = settingsControl('select', 'sound_source', (item.action && item.action.source) || 'timer');
+    for (const [optionValue, label] of SCENARIO_SOUNDS) source.appendChild(option(optionValue, label));
+    source.value = (item.action && item.action.source) || 'timer';
+    dependent.appendChild(settingsField('Звук', source));
+  } else {
+    const percent = Number.isInteger(item.action && item.action.percent) ? item.action.percent : 58;
+    const line = el('div', 'volume-line');
+    const range = el('input');
+    range.type = 'range';
+    range.min = '0';
+    range.max = '100';
+    range.step = '1';
+    range.value = String(percent);
+    range.dataset.field = 'volume_percent';
+    const shown = el('span', 'volume-value', range.value + '%');
+    line.appendChild(range);
+    line.appendChild(shown);
+    range.addEventListener('input', () => { shown.textContent = range.value + '%'; });
+    dependent.appendChild(settingsField('Громкость (0–100)', line));
+  }
+  if (!row.dataset.dependentWired) {
+    row.dataset.dependentWired = '1';
+    type.addEventListener('change', () => paintScenarioDependents(row, item));
+  }
+}
+
+// collectScenarioItem reads one row back into the shape the file holds.
+function collectScenarioItem(row) {
+  const type = row.querySelector('[data-field="action_type"]');
+  const action = { type: String((type && type.value) || 'sound') };
+  if (action.type === 'sound') {
+    const source = row.querySelector('[data-field="sound_source"]');
+    action.source = String((source && source.value) || 'timer');
+  } else {
+    const range = row.querySelector('[data-field="volume_percent"]');
+    action.percent = Number((range && range.value) || 0);
+  }
+  return {
+    enabled: Boolean(row.querySelector('[data-field="enabled"]').checked),
+    time: String(row.querySelector('[data-field="time"]').value || '').trim(),
+    days: [...row.querySelectorAll('[data-field="day"]')]
+      .filter((box) => box.checked)
+      .map((box) => Number(box.value))
+      .sort((a, b) => a - b),
+    action
+  };
+}
+
+// saveScenarioCard writes the whole list with this card replaced (or appended,
+// for the «+» form). The server validates the list as one entity, so a card
+// with a bad time or a missing day never reaches the file.
+async function saveScenarioCard(row) {
+  const isNew = row.dataset.index === 'new';
+  const index = isNew ? -1 : Number(row.dataset.index);
+  const item = collectScenarioItem(row);
+  const fail = (text) => setRowStatus(row, text, 'error');
+  setRowStatus(row, '', '');
+  if (!/^([01][0-9]|2[0-3]):([0-5][0-9])$/.test(item.time)) return fail('время в формате ЧЧ:ММ, например 07:30');
+  if (!item.days.length) return fail('выберите хотя бы один день недели');
+  if (item.action.type === 'volume' && !Number.isInteger(item.action.percent)) {
+    return fail('громкость — целое число от 0 до 100');
+  }
+  const list = scenariosState.slice();
+  if (isNew) list.push(item);
+  else list[index] = item;
+  setRowStatus(row, 'сохраняю…', '');
+  try {
+    const payload = await postJSON(SCENARIOS_URL, { scenarios: list });
+    scenariosState = Array.isArray(payload.scenarios) ? payload.scenarios : list;
+    scenarioTz = String(payload.timezone || scenarioTz);
+    if (isNew) newScenario = null;
+    renderScenarioTimezone();
+    renderScenarios();
+    const at = isNew ? scenariosState.length - 1 : index;
+    const again = document.querySelector('[data-kind="scenario"][data-index="' + at + '"]');
+    setRowStatus(again, 'сохранено', 'ok');
+    const fold = again && again.closest('details.fold-card');
+    if (fold) fold.open = true;
+  } catch (error) {
+    fail(error.message);
+  }
+}
+
+// deleteScenarioCard removes one saved card. The file is written at once, so
+// the operator is asked first.
+async function deleteScenarioCard(row) {
+  const index = Number(row.dataset.index);
+  const item = scenariosState[index] || {};
+  const label = String(item.time || '—') + ', ' + scenarioDaysLabel(item.days);
+  if (!window.confirm('Удалить сценарий «' + label + '»? Это применится сразу.')) return;
+  setRowStatus(row, 'удаляю…', '');
+  const list = scenariosState.slice();
+  list.splice(index, 1);
+  try {
+    const payload = await postJSON(SCENARIOS_URL, { scenarios: list });
+    scenariosState = Array.isArray(payload.scenarios) ? payload.scenarios : list;
+    renderScenarios();
+    setScenarioStatus('удалено: ' + label, 'ok');
+  } catch (error) {
+    setRowStatus(row, error.message, 'error');
+  }
+}
+
+function initScenarios() {
+  const list = document.getElementById('scenarios-list');
+  const add = document.getElementById('add-scenario');
+  if (!list || !add) return;
+  add.addEventListener('click', () => {
+    newScenario = { enabled: true, time: '', days: [], action: { type: 'sound', source: 'timer' } };
+    renderScenarios(true);
+  });
+  list.addEventListener('click', (event) => {
+    const save = event.target.closest('[data-save]');
+    if (save) { saveScenarioCard(save.closest('[data-kind]')); return; }
+    const remove = event.target.closest('[data-remove]');
+    if (remove) { deleteScenarioCard(remove.closest('[data-kind]')); return; }
+    const cancel = event.target.closest('[data-cancel-new]');
+    if (cancel) { newScenario = null; renderScenarios(true); }
+  });
+}
+
 // renderSettings refreshes the page from a settings snapshot. A scope limits the
 // refresh to one section: the response always carries the whole file, so a save
 // of one section must not replace the state of another one and throw away what
@@ -3311,6 +3579,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initVoiceSliders();
   initStationVolume();
+  initScenarios();
+  loadScenarios();
   document.getElementById('refresh').addEventListener('click', () => {
     refreshAll();
     refreshLogsSafe();

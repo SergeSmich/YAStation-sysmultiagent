@@ -210,3 +210,49 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 		}
 	}
 }
+
+// TestPanelA0013ScenarioCard: the scheduled-scenarios card in the Station tab
+// keeps its wiring honest: the list container, the «+» button, the CSP-clean
+// markup, and the drag-and-drop hooks of its row cards.
+func TestPanelA0013ScenarioCard(t *testing.T) {
+	page, err := panelAssets.ReadFile("panel.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`id="section-scenarios"`, `id="scenarios-list"`, `id="add-scenario"`, `id="scenario-timezone"`,
+	} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatalf("panel.html lacks %s", marker)
+		}
+	}
+	// CSP: no inline styles and no inline handlers in the new markup.
+	for _, forbidden := range []string{"<style", "onclick=", "onchange=", "oninput="} {
+		if strings.Contains(string(page), forbidden) {
+			t.Fatalf("panel.html carries %s", forbidden)
+		}
+	}
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"SCENARIOS_URL", "initScenarios", "loadScenarios", "renderScenarios",
+		"saveScenarioCard", "deleteScenarioCard", "collectScenarioItem",
+		"data-field=\"action_type\"", "data-field=\"day\"", "data-field=\"sound_source\"",
+		"data-field=\"volume_percent\"", "scenario-days", "scenario-dependent",
+	} {
+		if !strings.Contains(string(script), marker) {
+			t.Fatalf("panel.js lacks %s", marker)
+		}
+	}
+	css, err := panelAssets.ReadFile("panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{".scenario-days", ".day-check", ".scenario-dependent", ".volume-line"} {
+		if !strings.Contains(string(css), marker) {
+			t.Fatalf("panel.css lacks %s", marker)
+		}
+	}
+}

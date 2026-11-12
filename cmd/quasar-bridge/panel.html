@@ -202,6 +202,21 @@
           <span id="station-volume-status" class="muted small"></span>
         </div>
 
+        <section id="section-scenarios" class="settings-card" data-group="station">
+          <div class="list-head">
+            <h3>Сценарии по расписанию</h3>
+            <button type="button" id="add-scenario" class="ghost add-item">+ сценарий</button>
+          </div>
+          <p class="muted small">
+            Действия по локальному времени станции в зоне <strong id="scenario-timezone">—</strong>: звук
+            (notification, success, error, timer) или общая громкость по времени и дням недели (1 = понедельник).
+            Сохранение применяется сразу, а срабатывать сценарий начинает мост — ровно в заданную минуту, не
+            чаще одного раза в минуту. «Поставь будильник» голосом по-прежнему уходит в Алису.
+          </p>
+          <div id="scenarios-list" class="settings-list"></div>
+          <p id="scenario-status" class="row-status small" aria-live="polite"></p>
+        </section>
+
         <h3>Резервная копия настроек</h3>
         <p class="muted small">
           Скачивает config.json станции: роли, старт-слова, правила маршрутизации. Ключи нейросетей лежат

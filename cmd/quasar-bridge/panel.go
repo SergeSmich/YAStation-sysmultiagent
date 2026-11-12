@@ -137,6 +137,9 @@ type panelDeps struct {
 	Decide func(context.Context, string) bridge.RouteDecision
 	// SysHub is the sysadmin hub (hosts, policy, memory, approvals). May be nil.
 	SysHub *sysadminHub
+	// Scenarios is the scheduled scenarios store, shared with the scheduler
+	// goroutine: one file, one lock, no save-versus-tick race.
+	Scenarios *scenarioStore
 }
 
 // panelServer is the second listener. It reads the same live state as /healthz
@@ -161,9 +164,11 @@ type panelServer struct {
 	updates    *updateChecker
 	// stationVolume remembers the level the operator set, next to the config.
 	stationVolume stationVolumeStore
-	logPath       string
-	login         *template.Template
-	mux           *http.ServeMux
+	// scenarios is the scheduled scenarios store, shared with the scheduler.
+	scenarios *scenarioStore
+	logPath   string
+	login     *template.Template
+	mux       *http.ServeMux
 	// panelPort is the port of the main listener, used to send a session-less
 	// visitor of the training page back to the panel login.
 	panelPort string
@@ -181,6 +186,12 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	login, err := template.New("login").Parse(string(loginPage))
 	if err != nil {
 		return nil, err
+	}
+	// A panel built without a shared store (tests) gets its own on the same
+	// config directory; production passes the one the scheduler goroutine uses.
+	scenarios := deps.Scenarios
+	if scenarios == nil {
+		scenarios = newScenarioStore(deps.ConfigPath, "")
 	}
 	p := &panelServer{
 		auth:          deps.Auth,
@@ -203,6 +214,7 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 		login:         login,
 		panelPort:     portOfListen(cfg.Listen),
 		stationVolume: newStationVolumeStore(deps.ConfigPath),
+		scenarios:     scenarios,
 	}
 	// A panel built without a metrics collector still serves the endpoint: the
 	// series is simply empty, and the charts draw "нет данных" instead of the
@@ -253,6 +265,8 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("GET /api/panel/backup", p.requireSession(p.apiBackup))
 	mux.HandleFunc("GET /api/panel/station/volume", p.requireSession(p.apiStationVolume))
 	mux.HandleFunc("POST /api/panel/station/volume", p.requireMutation(p.apiStationVolumeUpdate))
+	mux.HandleFunc("GET /api/panel/scenarios", p.requireSession(p.apiScenarios))
+	mux.HandleFunc("POST /api/panel/scenarios", p.requireMutation(p.apiScenariosUpdate))
 	mux.HandleFunc("GET /api/panel/sysadmin/state", p.requireSession(p.apiSysadminState))
 	mux.HandleFunc("POST /api/panel/sysadmin/approve", p.requireMutation(p.apiSysadminApprove))
 	mux.HandleFunc("POST /api/panel/sysadmin/host", p.requireMutation(p.apiSysadminHost))
