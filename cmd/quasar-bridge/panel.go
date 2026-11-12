@@ -31,7 +31,7 @@ import (
 // panelAssets carries the single-page UI: no build step, no network fetches,
 // everything served from the bridge itself.
 //
-//go:embed panel.html panel_login.html panel.css panel.js
+//go:embed panel.html panel_login.html panel.css panel.js manifest.json icons/icon.svg
 var panelAssets embed.FS
 
 // Bounds for the two read-only views. The panel must never load a whole log or
@@ -225,6 +225,8 @@ func newPanelServer(cfg panelConfig, deps panelDeps) (*panelServer, error) {
 	mux.HandleFunc("POST /logout", p.logout)
 	mux.HandleFunc("GET /panel.css", p.asset("panel.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /panel.js", p.asset("panel.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /manifest.json", p.asset("manifest.json", "application/manifest+json"))
+	mux.HandleFunc("GET /icons/icon.svg", p.asset("icons/icon.svg", "image/svg+xml"))
 	// Deliberately outside requireSession: the operator downloads the root
 	// certificate from a page the browser still calls untrusted, before logging in.
 	mux.HandleFunc("GET /ca.crt", p.rootCertificate)

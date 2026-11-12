@@ -57,6 +57,8 @@ body.light {
   --ok: #16a34a;
   --warn: #b45309;
   --err: #dc2626;
+  --err-line: rgba(220, 38, 38, .5);
+  --warn-line: rgba(180, 83, 9, .5);
   --shadow: 0 10px 30px rgba(40, 50, 100, .12);
   --aurora-a: rgba(124, 92, 255, .14);
   --aurora-b: rgba(34, 211, 238, .12);
@@ -524,6 +526,23 @@ button.danger-solid:hover { background: #7f1d1d; border-color: #7f1d1d; }
 /* «Агенты»: a second, quieter strip of sub-tabs, and a spoiler per section so
    only its title shows until it is opened. */
 .subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 var(--gap-3); }
+/* Drag-and-drop: the card title is the handle; a click without movement
+   still opens the spoiler (mousedown vs click). */
+details.fold-card > summary, .settings-card .list-head { cursor: grab; }
+details.fold-card.dragging, .settings-card.dragging { opacity: .5; }
+body.card-dragging { user-select: none; }
+/* Rows without a .list-head (sysadmin hosts, queue items) drag from their
+   title; the routing section has no list-head at all. */
+section.settings-card, #sysadmin-hosts .settings-card, #sysadmin-queue .settings-card,
+#sysadmin-recent .settings-card { cursor: grab; }
+/* Light theme: the two hardcoded error pinks die on white, so they follow the
+   token scale instead. */
+body.light .main-agent-box .error, body.light .alias-note.error { color: #dc2626; }
+@media (max-width: 760px) {
+  /* The grid drops to 6 columns: half-width fields would leave ragged gaps,
+     so the small fields take a full row instead of half an empty one. */
+  .agent-grid .span-2, .agent-grid .span-4 { grid-column: span 6; }
+}
 .subtabs button {
   padding: 6px 16px;
   border-radius: 999px;

@@ -1,0 +1,17 @@
+{
+  "name": "Миди — настройки ассистента",
+  "short_name": "Миди",
+  "description": "Панель управления нейросетями, голосовыми командами и ролями",
+  "start_url": "/panel",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0e17",
+  "theme_color": "#7c5cff",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

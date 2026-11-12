@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -150,6 +151,49 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 	// a row must not be sent, or the strict decoder refuses the whole write.
 	if strings.Contains(string(script), "key_set:") {
 		t.Fatal("panel.js sends key_set, which the write path does not accept")
+	}
+}
+
+// TestPanelA0012ManifestAndDragOrder: the manifest link, the light-theme
+// token overrides and the drag-and-drop handle classes must survive edits.
+func TestPanelA0012ManifestAndDragOrder(t *testing.T) {
+	page, err := panelAssets.ReadFile("panel.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`<link rel="manifest" href="/manifest.json">`, `<link rel="icon" href="/icons/icon.svg"`} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatalf("panel.html lacks %s", marker)
+		}
+	}
+	css, err := panelAssets.ReadFile("panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"--err-line", "--warn-line", "cursor: grab", ".dragging", "card-dragging"} {
+		if !strings.Contains(string(css), marker) {
+			t.Fatalf("panel.css lacks %s", marker)
+		}
+	}
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"quasar.panel.cardOrder", "wireCardOrder", "applyCardOrder", "rememberCardOrder"} {
+		if !strings.Contains(string(script), marker) {
+			t.Fatalf("panel.js lacks %s", marker)
+		}
+	}
+	// panel.go itself is not embedded (it is the server, not a page asset), so
+	// the manifest routes are checked from the source tree next to the test.
+	src, err := os.ReadFile("panel.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"manifest.json", "icons/icon.svg", "application/manifest+json", "image/svg+xml"} {
+		if !strings.Contains(string(src), marker) {
+			t.Fatalf("panel.go lacks %s", marker)
+		}
 	}
 }
 
