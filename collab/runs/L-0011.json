@@ -3,10 +3,26 @@
   "kind": "task",
   "path": "collab/opencode/L-0011-oformlenie-tokennaya-shkala-i-12-kolonoc.md",
   "ping": "[L-0011] Задача: Оформление: токенная шкала и 12-колоночная сетка карточек (шаг 3 из A-0008). git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0011-*.md из origin/local/opencode @ 9c420d4; ответь коммитом A-0011 в origin/arena/cd8d27a4-yastation-sysmultiagent.",
-  "state": "pending_send",
+  "state": "done",
   "base": "9c420d4",
   "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
   "id": "L-0011",
-  "updated": "2026-11-12T10:49:02+00:00",
-  "created": "2026-11-12T10:49:02+00:00"
+  "updated": "2026-11-12T13:36:40+00:00",
+  "created": "2026-11-12T10:49:02+00:00",
+  "note": "conflict в .tabs решён: заливка var(--bg) и box-shadow сохранены, margin на --gap-2",
+  "last_send": "2026-11-12T12:26:32.518Z",
+  "a_commit": "60c403f",
+  "local_commit": "64e690c",
+  "checks": [
+    "node --check OK",
+    "go build OK",
+    "go vet OK",
+    "go test ./cmd/quasar-bridge ./internal/bridge OK"
+  ],
+  "build": {
+    "tag": "v0.9.1.19",
+    "sha256": "61e8e456ea23b06882896ff798b4cf97c58157f2f26ffd93d7650489d0be3d93",
+    "size": 24576160
+  },
+  "followup": "живая проверка v0.9.1.19 нашла дефект сетки: поля без span-класса = 72 px; правка d4724ca (span-2 «Имя роли», span-4 «Длина ответа», .field select.role-length) выкачена как v0.9.1.20, sha256 52004e3d…c2e7, PID 11246"
 }
