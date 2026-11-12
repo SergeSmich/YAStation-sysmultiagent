@@ -856,8 +856,8 @@ function modelCombo(field, value, placeholder, getIds) {
   return { wrap, input };
 }
 
-function comboField(labelText, wrap) {
-  const field = el('div', 'field');
+function comboField(labelText, wrap, extraClass) {
+  const field = el('div', 'field' + (extraClass ? ' ' + extraClass : ''));
   field.appendChild(el('span', null, labelText));
   field.appendChild(wrap);
   return field;
@@ -1473,7 +1473,7 @@ async function checkMainModel() {
 function mismatchWarning(row, agent) {
   const warning = settingsWarningsState.find((item) => item && item.agent === agent.name);
   if (!warning) return null;
-  const chip = el('div', 'muted small model-mismatch',
+  const chip = el('div', 'muted small model-mismatch span-full',
     'модель роли ' + warning.model + ' ≠ модель нейросети ' + warning.provider_model + '. ');
   const useProvider = el('button', 'ghost', 'взять модель нейросети');
   useProvider.type = 'button';
@@ -1501,7 +1501,7 @@ function renderAgents(force) {
   }
   renderRoleChips();
   entries.forEach(({ item: agent, index, isNew }) => {
-    const row = el('div', 'settings-row form' + (isNew ? ' is-new' : ''));
+    const row = el('div', 'settings-row form agent-grid' + (isNew ? ' is-new' : ''));
     row.dataset.kind = 'agent';
     row.dataset.index = index;
     row.dataset.syncedName = isNew ? '' : (agent.name || '');
@@ -1520,13 +1520,13 @@ function renderAgents(force) {
       if (item.name) provider.appendChild(option(item.name, item.name));
     }
     provider.value = agent.provider || '';
-    row.appendChild(settingsField('Нейросеть', provider));
+    row.appendChild(settingsField('Нейросеть', provider, 'span-6'));
 
     const voice = settingsControl('select', 'voice', agent.voice);
     voice.appendChild(option('', 'голос Ассистента'));
     for (const voiceName of settingsVoices) voice.appendChild(option(voiceName, voiceName));
     voice.value = agent.voice || '';
-    row.appendChild(settingsField('Голос', voice));
+    row.appendChild(settingsField('Голос', voice, 'span-4'));
 
     // The list is the one of the chosen connection; the filter box on top of it
     // finds a model by a part of the name (for example «free»).
@@ -1534,7 +1534,7 @@ function renderAgents(force) {
       const select = row.querySelector('[data-field="provider"]');
       return modelIdsFor(select ? select.value : agent.provider);
     });
-    row.appendChild(comboField('Модель', modelCombo1.wrap));
+    row.appendChild(comboField('Модель', modelCombo1.wrap, 'span-8'));
     const mismatch = mismatchWarning(row, agent);
     if (mismatch) row.appendChild(mismatch);
 
@@ -1558,23 +1558,23 @@ function renderAgents(force) {
 
     const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
     prompt.rows = 5;
-    row.appendChild(settingsField('Системный промпт', prompt, 'wide'));
+    row.appendChild(settingsField('Системный промпт', prompt, 'span-12'));
 
     const description = settingsControl('input', 'description', agent.description, 'чем занимается — это читают другие роли');
     description.type = 'text';
     description.maxLength = 300;
     description.autocomplete = 'off';
-    row.appendChild(settingsField('Описание для других ролей', description, 'wide'));
+    row.appendChild(settingsField('Описание для других ролей', description, 'span-6'));
 
     const peers = settingsControl('input', 'peers', '');
     peers.type = 'checkbox';
     peers.checked = Boolean(agent.peers);
-    row.appendChild(settingsField('Может спрашивать другие роли и передавать им разговор', peers));
+    row.appendChild(settingsField('Может спрашивать другие роли и передавать им разговор', peers, 'span-3'));
 
     const sysadmin = settingsControl('input', 'sysadmin', '');
     sysadmin.type = 'checkbox';
     sysadmin.checked = Boolean(agent.sysadmin);
-    row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin));
+    row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin, 'span-3'));
 
     row.appendChild(roleCallField(row, agent));
     row.appendChild(roleDialogField(row, agent));
@@ -1605,7 +1605,7 @@ const ALIAS_LIMIT = 4;
 // switch, the extra names and the greeting a bare call says. Everything here is
 // part of the role, so it is saved by the card's own «Сохранить».
 function roleCallField(row, agent) {
-  const box = el('details', 'role-call');
+  const box = el('details', 'role-call span-full');
   box.appendChild(el('summary', null, 'Голосовой вызов'));
 
   const callable = settingsControl('input', 'callable', '');
@@ -1701,7 +1701,7 @@ function roleCallField(row, agent) {
 // button that speaks that answer with the role's voice. The dialog keeps no
 // history: a new question replaces the previous exchange.
 function roleDialogField(row, agent) {
-  const box = el('details', 'role-dialog');
+  const box = el('details', 'role-dialog span-full');
   box.appendChild(el('summary', null, 'Диалог'));
 
   const input = settingsControl('input', 'question', '', 'спросите роль, например: который час?');

@@ -18,8 +18,25 @@
   --mint: #7c5cff;
   --on-accent: #ffffff;
   --grad: linear-gradient(135deg, var(--accent), var(--accent2));
-  --radius: 20px;
-  --radius-sm: 12px;
+  /* Size scale (MidiPult): text, spacing, control height, radii. */
+  --fs-xs: 11px;
+  --fs-s: 12px;
+  --fs-m: 13px;
+  --fs-base: 14px;
+  --fs-l: 15px;
+  --fs-xl: 19px;
+  --gap-1: 4px;
+  --gap-2: 8px;
+  --gap-3: 12px;
+  --gap-4: 16px;
+  --ctl-h: 36px;
+  --r6: 6px;
+  --r8: 8px;
+  --r12: 12px;
+  --r16: 16px;
+  --r20: 20px;
+  --radius: var(--r20);
+  --radius-sm: var(--r12);
   --shadow: 0 10px 30px rgba(0, 0, 0, .35);
   --aurora-a: rgba(124, 92, 255, .22);
   --aurora-b: rgba(34, 211, 238, .16);
@@ -59,7 +76,7 @@ body {
     var(--bg);
   background-attachment: fixed;
   color: var(--text);
-  font: 14px/1.45 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: var(--fs-base)/1.45 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
@@ -86,10 +103,10 @@ code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas,
   top: 0;
   z-index: 20;
   display: flex;
-  gap: 8px;
+  gap: var(--gap-2);
   overflow-x: auto;
   padding: 10px 2px;
-  margin: 0 0 8px;
+  margin: 0 0 var(--gap-2);
   background: linear-gradient(var(--bg) 70%, transparent);
   scrollbar-width: none;
 }
@@ -128,7 +145,7 @@ h2 { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--text); }
 section { margin-bottom: 18px; scroll-margin-top: 70px; }
 
 .muted { color: var(--muted); font-weight: 400; }
-.small { font-size: 12px; }
+.small { font-size: var(--fs-s); }
 
 /* Card surface shared by every block of the page. */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -139,10 +156,10 @@ section { margin-bottom: 18px; scroll-margin-top: 70px; }
   backdrop-filter: blur(8px);
 }
 
-.card { border-radius: var(--radius-sm); padding: 12px 14px; }
-.card .label { font-size: 12px; color: var(--muted); }
-.card .value { font-size: 19px; font-weight: 700; margin-top: 2px; word-break: break-word; }
-.card .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.card { border-radius: var(--radius-sm); padding: var(--gap-3) 14px; }
+.card .label { font-size: var(--fs-s); color: var(--muted); }
+.card .value { font-size: var(--fs-xl); font-weight: 700; margin-top: 2px; word-break: break-word; }
+.card .note { font-size: var(--fs-s); color: var(--muted); margin-top: 2px; }
 
 .value.ok { color: var(--ok); }
 .value.warn { color: var(--warn); }
@@ -158,7 +175,7 @@ section { margin-bottom: 18px; scroll-margin-top: 70px; }
 .field { display: grid; gap: 5px; min-width: 180px; }
 .field.narrow { min-width: 110px; }
 .form > .field.wide { flex: 1 1 100%; }
-.field label, .field > span { font-size: 12px; color: var(--muted); }
+.field label, .field > span { font-size: var(--fs-s); color: var(--muted); }
 .field input, .field select, .field textarea,
 .routing-classifier textarea, .login input {
   font: inherit;
@@ -245,9 +262,9 @@ h3 { margin: 20px 0 6px; font-size: 15px; font-weight: 700; }
 .settings-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
+  gap: 10px var(--gap-3);
   align-items: end;
-  padding: 12px;
+  padding: var(--gap-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--inset);
@@ -257,10 +274,31 @@ h3 { margin: 20px 0 6px; font-size: 15px; font-weight: 700; }
 .settings-row .row-actions { grid-column: 1 / -1; }
 .settings-row [hidden] { display: none; }
 .settings-row .row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.settings-row .row-actions button { padding: 5px 11px; font-size: 13px; }
+.settings-row .row-actions button { padding: 5px 11px; font-size: var(--fs-m); }
 .settings-row > .field { align-self: end; }
 .settings-row > .field.narrow { max-width: 240px; }
-.key-state { font-size: 12px; color: var(--muted); }
+/* One row of fields: the height of the controls is fixed, so filter boxes,
+   selects and buttons line up on the same line. */
+.settings-row input:not([type="checkbox"]):not([type="range"]),
+.settings-row select,
+.settings-row .row-actions button { height: var(--ctl-h); }
+/* The role card is a 12-column grid: each field spans the width it needs,
+   the layout is the contract of the span classes below. */
+.settings-row.agent-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.span-1 { grid-column: span 1; }
+.span-2 { grid-column: span 2; }
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: span 4; }
+.span-5 { grid-column: span 5; }
+.span-6 { grid-column: span 6; }
+.span-7 { grid-column: span 7; }
+.span-8 { grid-column: span 8; }
+.span-9 { grid-column: span 9; }
+.span-10 { grid-column: span 10; }
+.span-11 { grid-column: span 11; }
+.span-12 { grid-column: span 12; }
+.span-full { grid-column: 1 / -1; }
+.key-state { font-size: var(--fs-s); color: var(--muted); }
 .key-state.set { color: var(--ok); }
 
 /* A rule is read in two steps: name, route and priority on one line, the five
@@ -424,6 +462,30 @@ button.danger:hover { border-color: var(--err); }
   .tabs button { padding: 11px 16px; }
 }
 
+/* Narrow tablets: the role card keeps two fields per row. */
+@media (max-width: 760px) {
+  .settings-row.agent-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .span-7, .span-8, .span-9, .span-10, .span-11, .span-12 { grid-column: span 6; }
+  .span-full { grid-column: 1 / -1; }
+}
+
+/* Phones in portrait: every field of the role card takes the full width. */
+@media (max-width: 700px) {
+  .settings-row, .settings-row.agent-grid { grid-template-columns: 1fr; }
+  .span-1, .span-2, .span-3, .span-4, .span-5, .span-6,
+  .span-7, .span-8, .span-9, .span-10, .span-11, .span-12,
+  .span-full { grid-column: 1 / -1; }
+}
+
+/* Small phones: the tab strip wraps instead of scrolling, and the page never
+   scrolls horizontally; the sticky strip keeps its fill. */
+@media (max-width: 560px) {
+  body { overflow-x: clip; }
+  .layout { padding: 0 var(--gap-2) 32px; }
+  .tabs { flex-wrap: wrap; overflow-x: visible; }
+  .subtabs { gap: var(--gap-1); }
+}
+
 /* Smooth scrolling is a nicety, not a requirement: honour the system setting. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -461,7 +523,7 @@ button.danger-solid { background: #991b1b; border-color: #7f1d1d; color: #ffffff
 button.danger-solid:hover { background: #7f1d1d; border-color: #7f1d1d; }
 /* «Агенты»: a second, quieter strip of sub-tabs, and a spoiler per section so
    only its title shows until it is opened. */
-.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 var(--gap-3); }
 .subtabs button {
   padding: 6px 16px;
   border-radius: 999px;
@@ -509,7 +571,7 @@ details.fold-card[open] > .settings-row { border-top-left-radius: 0; border-top-
 /* One card = one form with its own «Сохранить» and its own answer line. */
 .row-title { grid-column: 1 / -1; margin: 0; font-size: 15px; color: var(--accent2); }
 .settings-row.is-new { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.row-status { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.row-status { color: var(--muted); font-size: var(--fs-m); overflow-wrap: anywhere; }
 .row-status.ok, #dry-run-status.ok { color: var(--ok); }
 .row-status.error, #dry-run-status.error { color: var(--err); }
 .service-fixed { padding: 7px 0; font-weight: 600; }
