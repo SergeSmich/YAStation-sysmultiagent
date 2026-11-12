@@ -80,7 +80,9 @@ code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas,
 .topbar-actions form { margin: 0; }
 
 /* Capsule tabs: one group of cards at a time, the strip sticks under the top
-   edge so it is always at hand on a long page. */
+   edge so it is always at hand on a long page. The fill is the page colour
+   itself, not a fading gradient: a translucent strip let the section headings
+   (Роли, Нейросети) show through it while the page scrolled underneath. */
 .tabs {
   position: sticky;
   top: 0;
@@ -90,7 +92,8 @@ code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas,
   overflow-x: auto;
   padding: 10px 2px;
   margin: 0 0 8px;
-  background: linear-gradient(var(--bg) 70%, transparent);
+  background: var(--bg);
+  box-shadow: 0 10px 18px -16px rgba(0, 0, 0, .9);
   scrollbar-width: none;
 }
 .tabs::-webkit-scrollbar { display: none; }
