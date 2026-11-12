@@ -197,6 +197,16 @@ func TestPanelA0012ManifestAndDragOrder(t *testing.T) {
 			t.Fatalf("panel.js lacks %s", marker)
 		}
 	}
+	// Restoring the saved order must permute the cards among the slots they
+	// already hold. An appendChild pulls the non-card neighbours along: the
+	// wake-training bar sits inside settings-form between «Нейросети» and
+	// «Старт-слова» and jumped to the end of the form on every load after a drag.
+	if !strings.Contains(string(script), "createComment('card-slot')") {
+		t.Fatal("panel.js: applyCardOrder no longer permutes card slots, the training bar will move")
+	}
+	if strings.Contains(string(script), "for (const card of cards) container.appendChild(card)") {
+		t.Fatal("panel.js: applyCardOrder appends cards and drags the training bar to the end of the form")
+	}
 	// panel.go itself is not embedded (it is the server, not a page asset), so
 	// the manifest routes are checked from the source tree next to the test.
 	src, err := os.ReadFile("panel.go")

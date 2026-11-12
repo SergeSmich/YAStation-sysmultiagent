@@ -1052,14 +1052,18 @@ function applyCardOrder(container, selector, keyFn) {
     .filter((card) => rank.has(keyFn(card)));
   if (cards.length < 2) return;
   const sorted = cards.slice().sort((a, b) => rank.get(keyFn(a)) - rank.get(keyFn(b)));
-  // Move the cards into one contiguous block where the first of them stood:
-  // a plain appendChild would push them past the section that is not a card
-  // (the wake-training bar in settings-form), and the page would reorder
-  // itself on every load.
-  const marker = document.createComment('card-order');
-  container.insertBefore(marker, cards[0]);
-  for (const card of sorted) container.insertBefore(card, marker);
-  marker.remove();
+  // Permute the cards among the slots they already occupy: an appendChild (or a
+  // block insert) would drag the neighbouring non-card section along — the
+  // wake-training bar sits between «Нейросети» and «Старт-слова» and jumped to
+  // the end of the form on every load after the first drag.
+  const anchors = [];
+  for (const card of cards) {
+    const anchor = document.createComment('card-slot');
+    container.replaceChild(anchor, card);
+    anchors.push(anchor);
+  }
+  sorted.forEach((card, index) => container.replaceChild(card, anchors[index]));
+  for (const anchor of anchors) anchor.remove();
 }
 
 function rememberCardOrder(container, selector, keyFn) {
