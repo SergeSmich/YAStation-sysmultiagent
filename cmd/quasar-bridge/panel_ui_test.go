@@ -207,6 +207,13 @@ func TestPanelA0012ManifestAndDragOrder(t *testing.T) {
 	if strings.Contains(string(script), "for (const card of cards) container.appendChild(card)") {
 		t.Fatal("panel.js: applyCardOrder appends cards and drags the training bar to the end of the form")
 	}
+	// Card containers nest (role cards live inside the settings form), so the
+	// events bubble to the outer container too. Only the nearest wired container
+	// may act: without the guard Alt+Arrow on a role card moved the whole
+	// section and stole the focus.
+	if !strings.Contains(string(script), "target.closest('[data-card-order-wired]') !== container") {
+		t.Fatal("panel.js: nested card containers handle each other's events")
+	}
 	// panel.go itself is not embedded (it is the server, not a page asset), so
 	// the manifest routes are checked from the source tree next to the test.
 	src, err := os.ReadFile("panel.go")

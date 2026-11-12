@@ -1093,9 +1093,17 @@ function wireCardOrder(container, selector, keyFn) {
   if (container.dataset.cardOrderWired) return;
   container.dataset.cardOrderWired = '1';
   let dragKey = '';
+  // Containers nest («Роли» inside the settings form), so an event on a role
+  // card bubbles to the form as well. Only the nearest wired container owns it:
+  // without this guard an Alt+Arrow on a role card also moved the whole section
+  // and stole the focus, and a drag wrote a form order nobody asked for.
+  const owns = (target) => {
+    if (target.closest('[data-card-order-wired]') !== container) return null;
+    return target.closest(selector);
+  };
   container.addEventListener('dragstart', (event) => {
-    const card = event.target.closest(selector);
-    if (!card || !container.contains(card)) return;
+    const card = owns(event.target);
+    if (!card) return;
     dragKey = keyFn(card);
     card.classList.add('dragging');
     document.body.classList.add('card-dragging');
@@ -1104,12 +1112,13 @@ function wireCardOrder(container, selector, keyFn) {
   });
   container.addEventListener('dragover', (event) => {
     if (!dragKey) return;
-    const card = event.target.closest(selector);
-    if (!card || card.classList.contains('dragging') || !container.contains(card)) return;
+    const card = owns(event.target);
+    if (!card || card.classList.contains('dragging')) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     const dragging = [...container.children]
       .find((child) => child.classList.contains('dragging'));
+    if (!dragging) return;
     const box = card.getBoundingClientRect();
     const after = event.clientY > box.top + box.height / 2;
     container.insertBefore(dragging, after ? card.nextSibling : card);
@@ -1119,13 +1128,14 @@ function wireCardOrder(container, selector, keyFn) {
       .find((child) => child.classList.contains('dragging'));
     if (dragging) dragging.classList.remove('dragging');
     document.body.classList.remove('card-dragging');
+    if (!dragKey) return;
     dragKey = '';
     rememberCardOrder(container, selector, keyFn);
   });
   container.addEventListener('keydown', (event) => {
     if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
-    const card = event.target.closest(selector);
-    if (!card || !container.contains(card)) return;
+    const card = owns(event.target);
+    if (!card) return;
     const other = event.key === 'ArrowUp' ? card.previousElementSibling : card.nextElementSibling;
     if (!other || !other.matches(selector)) return;
     event.preventDefault();
