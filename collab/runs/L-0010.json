@@ -1,0 +1,12 @@
+{
+  "task": "Длина ответа роли: наследование по умолчанию, 260/700/1400/2000",
+  "kind": "task",
+  "path": "collab/opencode/L-0010-dlina-otveta-roli-nasledovanie-po-umolch.md",
+  "ping": "[L-0010] Задача: Длина ответа роли: наследование по умолчанию, 260/700/1400/2000. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0010-*.md из origin/local/opencode @ e6b75d4; ответь коммитом A-0010 в origin/arena/cd8d27a4-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "e6b75d4",
+  "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
+  "id": "L-0010",
+  "updated": "2026-11-12T09:26:09+00:00",
+  "created": "2026-11-12T09:26:09+00:00"
+}
