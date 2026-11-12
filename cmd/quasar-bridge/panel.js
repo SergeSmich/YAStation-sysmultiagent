@@ -13,6 +13,7 @@ const LLM_MODELS_URL = '/api/panel/llm/models';
 const LLM_DETECT_URL = '/api/panel/llm/detect';
 const LLM_CHECK_URL = '/api/panel/llm/check';
 const LLM_ASK_URL = '/api/panel/llm/ask';
+const LLM_CHAT_URL = '/api/panel/llm/chat';
 const PASSWORD_URL = '/api/panel/password';
 const ROUTING_TEST_URL = '/api/panel/routing/test';
 const UPDATE_URL = '/api/panel/update';
@@ -1350,6 +1351,31 @@ function renderMainAgent(force) {
   }
   select.value = mainAgentState;
   paintMainTarget();
+  renderRoleChips();
+}
+
+// renderRoleChips draws the saved roles as chips above their cards: the name,
+// a readiness dot and, for the current main_agent, the active ring. The chips
+// read the saved state, so unsaved edits in the cards below never appear here.
+function renderRoleChips() {
+  const chips = document.getElementById('role-chips');
+  if (!chips) return;
+  chips.replaceChildren();
+  if (!savedAgentObjs.length) return;
+  for (const agent of savedAgentObjs) {
+    if (!agent || !agent.name) continue;
+    const readiness = roleReadinessText(agent);
+    const chip = el('button', 'role-chip' + (String(mainAgentState || '') === String(agent.name) ? ' is-main' : ''));
+    chip.type = 'button';
+    chip.title = readiness.text;
+    chip.dataset.roleChip = '1';
+    chip.dataset.roleName = String(agent.name);
+    const name = el('span', 'role-chip-name');
+    const dot = el('span', 'dot ' + (readiness.ok ? 'ok' : 'bad'));
+    chip.append(dot, name);
+    name.textContent = agent.name;
+    chips.appendChild(chip);
+  }
 }
 
 // paintMainTarget shows what the bridge resolved: the connection, the model,
@@ -1388,6 +1414,7 @@ async function saveMainAgent() {
     mainTargetState = payload && payload.main_target ? payload.main_target : null;
     settingsWarningsState = Array.isArray(payload && payload.warnings) ? payload.warnings : [];
     renderMainAgent(true);
+    renderRoleChips();
     status.textContent = 'основная модель: ' + (mainAgentState || 'llm_*');
   } catch (error) {
     status.textContent = error.message;
@@ -1468,6 +1495,7 @@ function renderAgents(force) {
     syncAgentSelects();
     return;
   }
+  renderRoleChips();
   entries.forEach(({ item: agent, index, isNew }) => {
     const row = el('div', 'settings-row form' + (isNew ? ' is-new' : ''));
     row.dataset.kind = 'agent';
@@ -1527,6 +1555,7 @@ function renderAgents(force) {
     row.appendChild(settingsField('Сисадмин (доступ к хостам, память; опасное — через подтверждение)', sysadmin));
 
     row.appendChild(roleCallField(row, agent));
+    row.appendChild(roleDialogField(row, agent));
 
     const actions = el('div', 'row-actions');
     actions.appendChild(saveButton('agent'));
@@ -1645,6 +1674,136 @@ function roleCallField(row, agent) {
   return box;
 }
 
+// roleDialogField builds the «Диалог» spoiler of one role: an input for the
+// operator's question, a transcript of the last answer and an «Озвучить»
+// button that speaks that answer with the role's voice. The dialog keeps no
+// history: a new question replaces the previous exchange.
+function roleDialogField(row, agent) {
+  const box = el('details', 'role-dialog');
+  box.appendChild(el('summary', null, 'Диалог'));
+
+  const input = settingsControl('input', 'question', '', 'спросите роль, например: который час?');
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.maxLength = 500;
+  input.dataset.roleQuestion = '1';
+  const ask = el('button', 'ghost', 'Спросить');
+  ask.type = 'button';
+  ask.dataset.roleAsk = '1';
+  const askRow = el('div', 'alias-add');
+  askRow.append(input, ask);
+  box.appendChild(settingsField('Спросить роль', askRow, 'wide'));
+
+  const transcript = el('div', 'role-dialog-transcript');
+  box.appendChild(transcript);
+
+  const say = el('button', 'ghost', 'Озвучить');
+  say.type = 'button';
+  say.dataset.roleSay = '1';
+  say.disabled = true;
+  say.title = 'Озвучить последний ответ';
+  box.appendChild(say);
+
+  const status = el('p', 'muted small role-dialog-status', '');
+  box.appendChild(status);
+
+  box.dataset.roleDialog = String(agent.name || '');
+  return box;
+}
+
+// roleChipClick turns a chip into the main agent: the click picks the role in
+// the select of the main agent and saves it through the regular save path.
+function roleChipClick(event) {
+  const chip = event.target.closest('[data-role-chip]');
+  if (!chip) return;
+  const select = document.getElementById('main-agent-select');
+  if (!select) return;
+  select.value = String(chip.dataset.roleName || '');
+  saveMainAgent();
+}
+
+// askRoleDialog sends one question to the role's model and shows the answer in
+// the spoiler. A failure explains itself: the verdict of the endpoint carries
+// the reason in plain words.
+async function askRoleDialog(event) {
+  const button = event.target.closest('[data-role-ask]');
+  if (!button) return;
+  const row = button.closest('[data-kind="agent"]');
+  if (!row) return;
+  const agent = itemOf('agent', row);
+  if (!agent) return;
+  const input = row.querySelector('[data-role-question]');
+  const transcript = row.querySelector('.role-dialog-transcript');
+  const status = row.querySelector('.role-dialog-status');
+  const say = row.querySelector('[data-role-say]');
+  if (!input || !transcript) return;
+  const question = String(input.value || '').trim();
+  if (!question) {
+    setRowStatus(row, 'введите вопрос', 'error');
+    return;
+  }
+  button.disabled = true;
+  setRowStatus(row, 'спрашиваю роль…', '');
+  try {
+    const payload = await postJSON(LLM_CHAT_URL, {
+      agent: agent.name,
+      provider: agent.provider,
+      model: agent.model,
+      question: question
+    });
+    transcript.textContent = String((payload && payload.answer) || '').trim();
+    if (say) say.disabled = !payload || payload.ok !== true;
+    const parts = [];
+    if (payload && payload.latency_ms != null) parts.push('латентность ' + payload.latency_ms + ' мс');
+    if (payload && payload.verdict) parts.push(payload.verdict);
+    setRowStatus(row, parts.join(' · ') || 'ответ получен', payload && payload.ok === true ? 'ok' : 'error');
+  } catch (error) {
+    setRowStatus(row, error.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// sayRoleDialog speaks the last answer of the role through the station voice.
+// The role's own voice is used; without one the assistant's voice plays.
+async function sayRoleDialog(event) {
+  const button = event.target.closest('[data-role-say]');
+  if (!button) return;
+  const row = button.closest('[data-kind="agent"]');
+  if (!row) return;
+  const agent = itemOf('agent', row);
+  const transcript = row.querySelector('.role-dialog-transcript');
+  if (!agent || !transcript) return;
+  const answer = String(transcript.textContent || '').trim();
+  if (!answer) {
+    setRowStatus(row, 'нет ответа: спросите роль сначала', 'error');
+    return;
+  }
+  button.disabled = true;
+  try {
+    const payload = await postJSON(VOICE_TEST_URL, {
+      voice: agent.voice || '',
+      text: Array.from(answer).slice(0, 300).join(''),
+      play: true
+    });
+    const result = payload && payload.results && payload.results[0];
+    if (result && result.ok) {
+      setRowStatus(row, 'озвучено', 'ok');
+    } else {
+      setRowStatus(row, 'озвучить не удалось: ' + ((result && result.error) || 'нет ответа'), 'error');
+    }
+  } catch (error) {
+    const message = String(error && error.message || '');
+    if (message.indexOf('no upstream session') !== -1) {
+      setRowStatus(row, 'станция не на связи — озвучить некому', 'error');
+    } else {
+      setRowStatus(row, message, 'error');
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // paintAliases redraws the chips of one role and hides the add form once the
 // limit is reached. The list is the role's own array, so saving the card saves it.
 function paintAliases(agent, chips, addRow, aliasInput, aliasAdd, repaint) {
@@ -1669,10 +1828,9 @@ function paintAliases(agent, chips, addRow, aliasInput, aliasAdd, repaint) {
   aliasAdd.disabled = full;
 }
 
-// paintRoleReadiness says in one line whether this role can answer a question:
+// roleReadinessText says in one line whether this role can answer a question:
 // a model, a saved connection and a stored key are what a turn needs.
-function paintRoleReadiness(node, agent) {
-  if (!node) return;
+function roleReadinessText(agent) {
   const provider = String(agent.provider || '');
   const saved = provider ? savedProviderObjs.find((item) => item && item.name === provider) : null;
   const model = String(agent.model || (saved ? saved.model : '') || '').trim();
@@ -1682,8 +1840,15 @@ function paintRoleReadiness(node, agent) {
   if (provider && saved && !providerKeysState[provider]) problems.push('ключ «' + provider + '» не сохранён');
   if (!provider) problems.push('наследует llm_*');
   const head = 'готов отвечать: ' + (provider || 'llm_*') + ' · ' + (model || 'модель по умолчанию');
-  node.textContent = problems.length ? 'не готов: ' + problems.join(', ') + ' · ' + head : head;
-  node.classList.toggle('error', !model || (provider && !saved));
+  return { text: problems.length ? 'не готов: ' + problems.join(', ') + ' · ' + head : head, ok: !(!model || (provider && !saved)) };
+}
+
+// paintRoleReadiness writes that line into the status node of one role card.
+function paintRoleReadiness(node, agent) {
+  if (!node) return;
+  const readiness = roleReadinessText(agent);
+  node.textContent = readiness.text;
+  node.classList.toggle('error', !readiness.ok);
 }
 
 // checkRoleModel proves the connection the role would use: the address and the
@@ -2604,6 +2769,7 @@ async function saveCard(kind, row) {
     const at = isNew ? listOf(kind).length - 1 : index;
     if (isNew) renderKind(kind);
     finishCard(kind, at, payload.unchanged ? 'без изменений' : 'сохранено');
+    renderRoleChips();
     if (kind === 'word') loadWakeDictionary();
   } catch (error) {
     fail(error.message);
@@ -3072,6 +3238,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dryRun) dryRun.disabled = !event.target.checked;
   });
   settingsForm.addEventListener('click', probeRoleCall);
+  settingsForm.addEventListener('click', roleChipClick);
+  settingsForm.addEventListener('click', askRoleDialog);
+  settingsForm.addEventListener('click', sayRoleDialog);
   settingsForm.addEventListener('click', checkRoleModel);
   document.getElementById('main-agent-save').addEventListener('click', saveMainAgent);
   document.getElementById('main-agent-check').addEventListener('click', checkMainModel);

@@ -547,6 +547,30 @@ details.fold-card[open] > .settings-row { border-top-left-radius: 0; border-top-
 .role-call summary { cursor: pointer; font-weight: 600; }
 .role-call[open] summary { margin-bottom: 8px; }
 .role-call .field { margin-bottom: 6px; }
+/* The role chips above the cards: one per saved role with its readiness dot.
+   Clicking a chip picks that role as the main model. */
+.role-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.role-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 12px 4px 10px; font-size: 13px; color: var(--text);
+  background: var(--panel); cursor: pointer;
+}
+.role-chip:hover { border-color: var(--line-strong); }
+.role-chip.is-main { border-color: var(--accent); background: var(--panel-2); }
+.role-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.role-chip .dot.ok { background: var(--ok); }
+.role-chip .dot.bad { background: var(--err); }
+/* The role mini-dialog: one question in, one answer out, no history. */
+.role-dialog { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.role-dialog summary { cursor: pointer; font-weight: 600; }
+.role-dialog[open] summary { margin-bottom: 8px; }
+.role-dialog .field { margin-bottom: 6px; }
+.role-dialog-transcript {
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--inset); padding: 8px 10px; font-size: 13px;
+  min-height: 34px; white-space: pre-wrap; word-break: break-word;
+}
 .alias-box { display: grid; gap: 6px; }
 .alias-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .alias-chip {
