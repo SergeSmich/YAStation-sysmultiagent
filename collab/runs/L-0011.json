@@ -1,0 +1,12 @@
+{
+  "task": "Оформление: токенная шкала и 12-колоночная сетка карточек (шаг 3 из A-0008)",
+  "kind": "task",
+  "path": "collab/opencode/L-0011-oformlenie-tokennaya-shkala-i-12-kolonoc.md",
+  "ping": "[L-0011] Задача: Оформление: токенная шкала и 12-колоночная сетка карточек (шаг 3 из A-0008). git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0011-*.md из origin/local/opencode @ 9c420d4; ответь коммитом A-0011 в origin/arena/cd8d27a4-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "9c420d4",
+  "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
+  "id": "L-0011",
+  "updated": "2026-11-12T10:49:02+00:00",
+  "created": "2026-11-12T10:49:02+00:00"
+}
