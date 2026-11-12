@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -163,6 +164,57 @@ func TestPanelRoleDialogKeepsItsQuestionOutOfTheCard(t *testing.T) {
 	}
 	if strings.Contains(string(script), "settingsControl('input', 'question'") {
 		t.Fatal("panel.js: the role dialog question is a card field, the write path rejects it")
+	}
+}
+
+// TestPanelA0012ManifestAndDragOrder: the manifest link, the light-theme
+// token overrides and the drag-and-drop handle classes must survive edits.
+func TestPanelA0012ManifestAndDragOrder(t *testing.T) {
+	page, err := panelAssets.ReadFile("panel.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`<link rel="manifest" href="/manifest.json">`, `<link rel="icon" href="/icons/icon.svg"`} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatalf("panel.html lacks %s", marker)
+		}
+	}
+	css, err := panelAssets.ReadFile("panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"--err-line", "--warn-line", "cursor: grab", ".dragging", "card-dragging"} {
+		if !strings.Contains(string(css), marker) {
+			t.Fatalf("panel.css lacks %s", marker)
+		}
+	}
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"quasar.panel.cardOrder", "wireCardOrder", "applyCardOrder", "rememberCardOrder"} {
+		if !strings.Contains(string(script), marker) {
+			t.Fatalf("panel.js lacks %s", marker)
+		}
+	}
+	// panel.go itself is not embedded (it is the server, not a page asset), so
+	// the manifest routes are checked from the source tree next to the test.
+	src, err := os.ReadFile("panel.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"manifest.json", "icons/icon.svg", "application/manifest+json", "image/svg+xml", "manifest-src 'self'"} {
+		if !strings.Contains(string(src), marker) {
+			t.Fatalf("panel.go lacks %s", marker)
+		}
+	}
+	// The panel is served from the root, so /panel would be a 404 start_url.
+	manifest, err := panelAssets.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"start_url": "/"`) {
+		t.Fatal(`manifest.json: start_url must point at the panel root, not /panel`)
 	}
 }
 

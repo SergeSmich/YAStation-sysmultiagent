@@ -1027,6 +1027,111 @@ function refreshCardSummary(row) {
   if (item) fillCardSummary(details, row.dataset.kind, item, row.dataset.index === 'new');
 }
 
+// Card order (drag-and-drop) is presentation-only: the saved order lives in
+// localStorage under quasar.panel.cardOrder and never reaches config.json.
+const CARD_ORDER_KEY = 'quasar.panel.cardOrder';
+
+function loadCardOrder() {
+  try {
+    const raw = localStorage.getItem(CARD_ORDER_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (error) { return {}; }
+}
+
+function saveCardOrder(map) {
+  try { localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(map)); }
+  catch (error) { /* no memory */ }
+}
+
+function applyCardOrder(container, selector, keyFn) {
+  const order = loadCardOrder()[container.id];
+  if (!Array.isArray(order) || !order.length) return;
+  const rank = new Map();
+  order.forEach((key, index) => rank.set(key, index));
+  const cards = [...container.querySelectorAll(selector)]
+    .filter((card) => rank.has(keyFn(card)));
+  if (cards.length < 2) return;
+  const sorted = cards.slice().sort((a, b) => rank.get(keyFn(a)) - rank.get(keyFn(b)));
+  // Move the cards into one contiguous block where the first of them stood:
+  // a plain appendChild would push them past the section that is not a card
+  // (the wake-training bar in settings-form), and the page would reorder
+  // itself on every load.
+  const marker = document.createComment('card-order');
+  container.insertBefore(marker, cards[0]);
+  for (const card of sorted) container.insertBefore(card, marker);
+  marker.remove();
+}
+
+function rememberCardOrder(container, selector, keyFn) {
+  const map = loadCardOrder();
+  map[container.id] = [...container.querySelectorAll(selector)].map(keyFn);
+  saveCardOrder(map);
+}
+
+function cardHandle(card) {
+  if (card.matches('details.fold-card')) return card.querySelector('summary');
+  return card.querySelector('.list-head') || card.querySelector('h2') || card;
+}
+
+// wireCardOrder restores the saved order, makes the handle draggable and
+// focusable, and adds the keyboard twin (Alt+ArrowUp/Down) plus the mouse
+// drag. A click without movement still opens the spoiler: the browser only
+// suppresses the click after a real drag, so mousedown vs click keeps working
+// and the buttons inside the card body stay untouched.
+function wireCardOrder(container, selector, keyFn) {
+  if (!container) return;
+  applyCardOrder(container, selector, keyFn);
+  for (const card of container.querySelectorAll(selector)) {
+    const handle = cardHandle(card);
+    handle.draggable = true;
+    if (handle.tabIndex < 0) handle.tabIndex = 0;
+  }
+  if (container.dataset.cardOrderWired) return;
+  container.dataset.cardOrderWired = '1';
+  let dragKey = '';
+  container.addEventListener('dragstart', (event) => {
+    const card = event.target.closest(selector);
+    if (!card || !container.contains(card)) return;
+    dragKey = keyFn(card);
+    card.classList.add('dragging');
+    document.body.classList.add('card-dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', dragKey);
+  });
+  container.addEventListener('dragover', (event) => {
+    if (!dragKey) return;
+    const card = event.target.closest(selector);
+    if (!card || card.classList.contains('dragging') || !container.contains(card)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const dragging = [...container.children]
+      .find((child) => child.classList.contains('dragging'));
+    const box = card.getBoundingClientRect();
+    const after = event.clientY > box.top + box.height / 2;
+    container.insertBefore(dragging, after ? card.nextSibling : card);
+  });
+  container.addEventListener('dragend', () => {
+    const dragging = [...container.children]
+      .find((child) => child.classList.contains('dragging'));
+    if (dragging) dragging.classList.remove('dragging');
+    document.body.classList.remove('card-dragging');
+    dragKey = '';
+    rememberCardOrder(container, selector, keyFn);
+  });
+  container.addEventListener('keydown', (event) => {
+    if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+    const card = event.target.closest(selector);
+    if (!card || !container.contains(card)) return;
+    const other = event.key === 'ArrowUp' ? card.previousElementSibling : card.nextElementSibling;
+    if (!other || !other.matches(selector)) return;
+    event.preventDefault();
+    if (event.key === 'ArrowUp') container.insertBefore(card, other);
+    else container.insertBefore(other, card);
+    rememberCardOrder(container, selector, keyFn);
+    cardHandle(card).focus();
+  });
+}
+
 function renderProviders(force) {
   const list = document.getElementById('llm-providers-list');
   if (!force && list.contains(document.activeElement)) return;
@@ -1184,6 +1289,7 @@ function renderProviders(force) {
     list.appendChild(wrapCard('provider', row, provider, isNew));
     updateKeyBadge(row, provider);
   });
+  wireCardOrder(list, 'details.fold-card', (card) => card.dataset.cardKey);
 }
 
 function renderWakeDictionary() {
@@ -1299,6 +1405,7 @@ function renderWakeWords(force) {
     list.appendChild(wrapCard('word', row, word, isNew));
     updateWordRow(row, word);
   });
+  wireCardOrder(list, 'details.fold-card', (card) => card.dataset.cardKey);
 }
 
 // renderRoleCall draws the switch of the spoken call. Both boxes live above the
@@ -1594,6 +1701,7 @@ function renderAgents(force) {
     list.appendChild(wrapCard('agent', row, agent, isNew));
     updateAgentRow(row, agent);
   });
+  wireCardOrder(list, 'details.fold-card', (card) => card.dataset.cardKey);
   syncAgentSelects();
   syncProviderSelects();
 }
@@ -3239,6 +3347,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('voice-test').addEventListener('click', testVoice);
   const settingsForm = document.getElementById('settings-form');
   settingsForm.addEventListener('submit', submitSettings);
+  // The four settings sections themselves are the draggable cards here:
+  // Нейросети, Стартер-слова, Роли и Маршрутизация keep their tabs working
+  // (drag starts on the .list-head / <h2>, clicks on the tabs are separate).
+  wireCardOrder(settingsForm, 'section.settings-card', (section) => section.id);
   // Enter in a field saves the section the caret is in. Left to the browser, an
   // implicit submission clicks the first submit button of the form — the
   // providers — so a caret in the roles would write the providers instead.
@@ -3349,6 +3461,7 @@ function sysadminLeft(expires) {
 
 function sysadminItemCard(item, pending) {
   const card = el('div', 'settings-card');
+  card.dataset.cardKey = 'sa-item:' + (item.id || item.host || 'item');
   const head = el('strong', '', (item.host || '—') + ' · ' + item.tool);
   card.appendChild(head);
   card.appendChild(el('div', '', item.summary));
@@ -3417,6 +3530,7 @@ function renderSysadminQueue(state) {
     queue.appendChild(bulk);
   }
   for (const item of pending) queue.appendChild(sysadminItemCard(item, true));
+  wireCardOrder(queue, '.settings-card', (card) => card.dataset.cardKey);
   // The fold opens by itself when a new request arrives and stays as the
   // operator left it otherwise.
   const queueBox = document.getElementById('sysadmin-queue-box');
@@ -3430,6 +3544,7 @@ function renderSysadminQueue(state) {
   if (recentTitle) recentTitle.textContent = 'Недавние' + (done.length ? ' (' + done.length + ')' : '');
   if (!done.length) recent.appendChild(el('p', 'muted small', 'Пока пусто.'));
   for (const item of done) recent.appendChild(sysadminItemCard(item, false));
+  wireCardOrder(recent, '.settings-card', (card) => card.dataset.cardKey);
   const err = document.getElementById('sysadmin-error');
   if (err) {
     err.hidden = !state.error;
@@ -3457,6 +3572,7 @@ function renderSysadminHosts(state) {
   if (!hosts.length) list.appendChild(el('p', 'muted small', 'Хостов нет.'));
   for (const host of hosts) {
     const row = el('div', 'settings-card');
+    row.dataset.cardKey = 'host:' + host.name;
     const title = host.name + ' — ' + host.user + '@' + host.addr + ':' + host.port;
     row.appendChild(el('strong', '', title));
     row.appendChild(el('div', 'muted small', (host.has_password ? 'пароль сохранён' : 'без пароля') +
@@ -3481,6 +3597,7 @@ function renderSysadminHosts(state) {
     row.appendChild(actions);
     list.appendChild(row);
   }
+  wireCardOrder(list, '.settings-card', (row) => row.dataset.cardKey);
 }
 
 function sysadminRuleRow(rule) {
