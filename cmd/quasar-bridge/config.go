@@ -627,9 +627,12 @@ func (c *config) validateAgents() error {
 		// provider's URL and model into the role would freeze them, and a later
 		// edit of the provider would no longer reach the role. A legacy role
 		// keeps its explicit values, as the panel has always written them.
+		// max_output_tokens is left alone in both cases: 0 means «inherit the
+		// connection's length», and baking the resolved number into the role
+		// would freeze it and hide the inheritance from the panel.
 		if a.Provider == "" {
 			a.API, a.BaseURL, a.Model = target.API, target.BaseURL, target.Model
-			a.ReasoningEffort, a.MaxOutputTokens = target.ReasoningEffort, target.MaxOutputTokens
+			a.ReasoningEffort = target.ReasoningEffort
 			a.HostedTools = target.HostedTools
 		} else {
 			// One spelling in the file: the role may name the provider the way

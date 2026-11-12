@@ -723,6 +723,10 @@ const PROVIDER_APIS = ['chat_completions', 'responses', 'gigachat'];
 // THINKING_LEVELS fill llm_providers[].chat_parameters.reasoning_effort.
 const THINKING_LEVELS = [['', 'по умолчанию'], ['low', 'низкое'], ['medium', 'среднее'], ['high', 'высокое']];
 
+// AGENT_LENGTHS are the answer lengths a role may pin. 0 is «наследовать»:
+// the role then takes the connection's own max_output_tokens.
+const AGENT_LENGTHS = [0, 260, 700, 1400, 2000];
+
 // providerPayload builds the object the write path expects. It is an explicit
 // whitelist for two reasons: the transient fields the page keeps on the object
 // (typed key, forget flag, fetched model list) must never reach config.json, and
@@ -1533,6 +1537,24 @@ function renderAgents(force) {
     row.appendChild(comboField('Модель', modelCombo1.wrap));
     const mismatch = mismatchWarning(row, agent);
     if (mismatch) row.appendChild(mismatch);
+
+    // How long the role may answer in one turn. 0 means «наследовать»: the
+    // role takes the connection's own max_output_tokens. A number the file
+    // carries that the list does not know is shown as its own option: the
+    // operator sees it and may pick a listed one deliberately.
+    const length = settingsControl('select', 'max_output_tokens', '0');
+    length.className = 'role-length';
+    length.appendChild(option('0', 'наследовать'));
+    for (const value of AGENT_LENGTHS) {
+      if (value !== 0) length.appendChild(option(String(value), String(value)));
+    }
+    if (agent.max_output_tokens && !AGENT_LENGTHS.includes(agent.max_output_tokens)) {
+      length.appendChild(option(String(agent.max_output_tokens), String(agent.max_output_tokens)));
+    }
+    length.value = String(agent.max_output_tokens || 0);
+    const lengthField = settingsField('Длина ответа', length);
+    lengthField.appendChild(el('span', 'muted small', 'пусто — как у нейросети'));
+    row.appendChild(lengthField);
 
     const prompt = settingsControl('textarea', 'system_prompt', agent.system_prompt);
     prompt.rows = 5;
@@ -2626,7 +2648,12 @@ function editCardField(event, control, row) {
   } else if (row.dataset.kind === 'agent') {
     const agent = itemOf('agent', row);
     if (!agent) return;
-    agent[control.dataset.field] = control.type === 'checkbox' ? control.checked : control.value;
+    if (control.dataset.field === 'max_output_tokens') {
+      // The length is a number in the state: the select hands back a string.
+      agent.max_output_tokens = Number(control.value) || 0;
+    } else {
+      agent[control.dataset.field] = control.type === 'checkbox' ? control.checked : control.value;
+    }
     if (control.dataset.field === 'provider') {
       updateAgentRow(row, agent);
       if (event.type === 'change') refreshRoleModels(row, agent);
@@ -2643,7 +2670,7 @@ function editCardField(event, control, row) {
 const NEW_ITEMS = {
   provider: () => ({ name: '', api: 'chat_completions', base_url: '', model: '' }),
   word: () => ({ word: '', action: 'listen', text: '', agent: '' }),
-  agent: () => ({ name: '', system_prompt: '', voice: '', model: '', description: '', peers: false, sysadmin: false })
+  agent: () => ({ name: '', system_prompt: '', voice: '', model: '', max_output_tokens: 0, description: '', peers: false, sysadmin: false })
 };
 
 function openNewCard(kind, button) {
