@@ -714,3 +714,48 @@ func TestSettingsAcceptsCapitalisedProviderName(t *testing.T) {
 		t.Fatalf("stored key = %q", got)
 	}
 }
+
+// TestSettingsAgentMaxOutputTokensRoundTrip: the answer length of a role is
+// part of the role, so a card save carries it and the file keeps it: 0 (the
+// «наследовать» value) stays 0, a listed length is written as it is.
+func TestSettingsAgentMaxOutputTokensRoundTrip(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m","llm_max_output_tokens":2048,"agents":[{"name":"briefing","max_output_tokens":0},{"name":"house","max_output_tokens":700}]}`)
+	deps, _, _ := settingsTestDeps(t)
+	agents := []agentConfig{{Name: "briefing", MaxOutputTokens: 0}, {Name: "house", MaxOutputTokens: 700}}
+	status, payload := applySettingsPatch(path, deps, settingsPatch{Agents: &agents})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	cfg, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Agents) != 2 || cfg.Agents[0].MaxOutputTokens != 0 || cfg.Agents[1].MaxOutputTokens != 700 {
+		t.Fatalf("agents: %+v", cfg.Agents)
+	}
+	// The role with 0 inherits the root length at resolve time; the explicit
+	// one keeps its own.
+	if target, err := cfg.resolveLLM(cfg.Agents[0]); err != nil || target.MaxOutputTokens != 2048 {
+		t.Fatalf("inherited length: %+v %v", target, err)
+	}
+	if target, err := cfg.resolveLLM(cfg.Agents[1]); err != nil || target.MaxOutputTokens != 700 {
+		t.Fatalf("explicit length: %+v %v", target, err)
+	}
+}
+
+// TestSettingsAgentMaxOutputTokensRejectsUnknownLength: the panel offers a
+// fixed set of lengths; a number outside it is refused instead of written,
+// and the error names the choice in Russian.
+func TestSettingsAgentMaxOutputTokensRejectsUnknownLength(t *testing.T) {
+	path := configFile(t, `{"llm_model":"m","agents":[{"name":"briefing","max_output_tokens":512}]}`)
+	deps, _, _ := settingsTestDeps(t)
+	agents := []agentConfig{{Name: "briefing", MaxOutputTokens: 512}}
+	status, payload := applySettingsPatch(path, deps, settingsPatch{Agents: &agents})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d payload=%v", status, payload)
+	}
+	errText, _ := payload.(map[string]string)["error"]
+	if !strings.Contains(errText, "наследовать") {
+		t.Fatalf("error=%q", errText)
+	}
+}

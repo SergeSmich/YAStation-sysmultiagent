@@ -114,6 +114,18 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		"provider_models",
 		"danger-solid",
 		"agent-provider",
+		"role-length",
+		"max_output_tokens",
+		"наследовать",
+		"role-length",
+		"max_output_tokens",
+		"наследовать",
+		"role-length",
+		"max_output_tokens",
+		"наследовать",
+		"role-length",
+		"max_output_tokens",
+		"наследовать",
 		"provider_keys",
 		"providerPayload",
 		"wake_page",
@@ -170,7 +182,7 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command", ".main-agent-box", ".model-mismatch", ".role-call-box", ".alias-chip", ".role-chips", ".role-chip", ".role-dialog"} {
+	for _, marker := range []string{".button-link", ".row-actions", ".key-state", ".key-note", ".combo-menu", ".danger-solid", ".routing-rule", ".routing-classifier", ".update-command", ".main-agent-box", ".model-mismatch", ".role-call-box", ".alias-chip", ".role-chips", ".role-chip", ".role-dialog", ".role-length"} {
 		if !strings.Contains(string(style), marker) {
 			t.Fatalf("panel.css lacks %s", marker)
 		}

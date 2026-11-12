@@ -27,8 +27,13 @@ func TestReadConfigAgentsInheritLLMSettings(t *testing.T) {
 		t.Fatalf("agents: %+v", cfg.Agents)
 	}
 	first := cfg.Agents[0]
-	if first.Model != "your-model" || first.BaseURL != "https://llm.example.invalid/v1" || first.API != "chat_completions" || first.MaxOutputTokens != 2048 || first.APIKeyEnv != "" {
+	// The role carries no own length: 0 stays 0 in the file, and the effective
+	// length is inherited at resolve time (llm_max_output_tokens).
+	if first.Model != "your-model" || first.BaseURL != "https://llm.example.invalid/v1" || first.API != "chat_completions" || first.MaxOutputTokens != 0 || first.APIKeyEnv != "" {
 		t.Fatalf("inherited fields: %+v", first)
+	}
+	if target, err := cfg.resolveLLM(cfg.Agents[0]); err != nil || target.MaxOutputTokens != 2048 {
+		t.Fatalf("inherited length: %+v %v", target, err)
 	}
 	if cfg.Agents[1].Model != "other-model" || cfg.Agents[1].MaxOutputTokens != 512 || cfg.Agents[1].BaseURL != "https://llm.example.invalid/v1" {
 		t.Fatalf("explicit fields: %+v", cfg.Agents[1])
