@@ -1,0 +1,12 @@
+{
+  "task": "Razumnoe sovmeshchenie s MidiPult: okno agentov, oformlenie, ekrany",
+  "kind": "task",
+  "path": "collab/opencode/L-0008-razumnoe-sovmeshchenie-s-midipult-okno-a.md",
+  "ping": "[L-0008] Задача: Razumnoe sovmeshchenie s MidiPult: okno agentov, oformlenie, ekrany. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0008-*.md из origin/local/opencode @ a3da69e; ответь коммитом A-0008 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "3d8367c",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0008",
+  "updated": "2026-11-12T07:09:43+00:00",
+  "created": "2026-11-12T07:09:43+00:00"
+}
