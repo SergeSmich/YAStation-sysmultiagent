@@ -1,0 +1,12 @@
+{
+  "task": "Okno Agenty: chipy roley i mini-dialog (shag 1 iz A-0008)",
+  "kind": "task",
+  "path": "collab/opencode/L-0009-okno-agenty-chipy-roley-i-mini-dialog-sh.md",
+  "ping": "[L-0009] Задача: Okno Agenty: chipy roley i mini-dialog (shag 1 iz A-0008). git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0009-*.md из origin/local/opencode @ ac328d9; ответь коммитом A-0008 в origin/arena/9fc2baa0-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "ac328d9",
+  "arena_ref": "origin/arena/9fc2baa0-yastation-sysmultiagent",
+  "id": "L-0009",
+  "updated": "2026-11-12T08:06:50+00:00",
+  "created": "2026-11-12T08:06:50+00:00"
+}
