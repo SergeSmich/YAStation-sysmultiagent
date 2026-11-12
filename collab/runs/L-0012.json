@@ -7,7 +7,7 @@
   "base": "6c124d2",
   "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
   "id": "L-0012",
-  "updated": "2026-11-12T14:55:07+00:00",
+  "updated": "2026-11-12T15:09:49+00:00",
   "created": "2026-11-12T13:36:57+00:00",
   "a_commit": "b59a5d8",
   "local_commit": "8c05d65",
@@ -15,7 +15,17 @@
     "node --check OK",
     "go build ./... OK",
     "go vet ./... OK",
-    "go test ./cmd/quasar-bridge ./internal/bridge -count=1 OK (32.841s / 5.737s)"
+    "go test ./cmd/quasar-bridge ./internal/bridge -count=1 OK (35.373s / 5.744s)"
   ],
-  "notes": "cherry-pick: конфликт только в panel_ui_test.go (Arena-версия теряла role-chips и мини-диалог, дублировала маркеры) — оставлен HEAD + добавлен TestPanelA0012ManifestAndDragOrder. Наши правки поверх A-0012: CSP manifest-src 'self' (default-src none блокировал манифест), start_url / вместо /panel (маршрута /panel нет), applyCardOrder вставляет блок карточек на место первой, а не в конец формы (иначе train-bar уезжал выше «Нейросетей»), body.card-dragging теперь ставится/снимается, убрана двойная wireCardOrder(recent)."
+  "notes": "cherry-pick: конфликт только в panel_ui_test.go — оставлен HEAD + добавлен TestPanelA0012ManifestAndDragOrder. Правки поверх A-0012: CSP manifest-src 'self', start_url '/', applyCardOrder по слотам, body.card-dragging, убрана двойная wireCardOrder. Живая проверка нашла два дефекта и они исправлены: (1) appendChild уводил section-train в конец формы — bf14691; (2) вложенные контейнеры (Роли внутри формы) обрабатывали чужие drag/keydown — Alt+Arrow двигал секцию и крал фокус, drag писал чужой порядок — ff438a3.",
+  "followups": [
+    "bf14691",
+    "ff438a3"
+  ],
+  "deployed": [
+    "v0.9.1.21 (bf07f2dd)",
+    "v0.9.1.22 (576ce186)",
+    "v0.9.1.23 (f5b125cd)"
+  ],
+  "live": "manifest/icon 200, CSP manifest-src, card order permutes slots (train bar stays 2nd), Alt+Arrow moves only its own list, drag writes only its own container, order survives reload, spoilers/buttons work, light theme clean, console empty"
 }
