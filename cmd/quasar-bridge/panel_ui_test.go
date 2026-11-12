@@ -29,6 +29,8 @@ func TestPanelUIWiresTheSettingsSections(t *testing.T) {
 		"role-call-dry-run",
 		"role-call-save",
 		"main-agent-box",
+		// The role chips above the cards: the click picks the main model.
+		"role-chips",
 		"wake-words-list",
 		"wake-dictionary-hint",
 		"wake-train",
@@ -129,6 +131,12 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 		"data-call-check",
 		"role_call",
 		"aliases",
+		// The role mini-dialog: its own endpoint and its three probe controls.
+		"'/api/panel/llm/chat'",
+		"dataset.roleAsk",
+		"dataset.roleSay",
+		"dataset.roleQuestion",
+		"dataset.roleChip",
 	} {
 		if !strings.Contains(string(script), marker) {
 			t.Fatalf("panel.js lacks %s", marker)
@@ -138,6 +146,20 @@ func TestPanelJSCallsTheNewEndpoints(t *testing.T) {
 	// a row must not be sent, or the strict decoder refuses the whole write.
 	if strings.Contains(string(script), "key_set:") {
 		t.Fatal("panel.js sends key_set, which the write path does not accept")
+	}
+}
+
+// TestPanelRoleDialogKeepsItsQuestionOutOfTheCard: the question box is a probe,
+// not a field of the role. With data-field the card would carry «question» into
+// the write path, whose decoder rejects unknown members, and saving the role
+// after a question would fail with «запрос не разобран».
+func TestPanelRoleDialogKeepsItsQuestionOutOfTheCard(t *testing.T) {
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(script), "settingsControl('input', 'question'") {
+		t.Fatal("panel.js: the role dialog question is a card field, the write path rejects it")
 	}
 }
 

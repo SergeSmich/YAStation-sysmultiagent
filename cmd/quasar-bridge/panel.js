@@ -1682,9 +1682,13 @@ function roleDialogField(row, agent) {
   const box = el('details', 'role-dialog');
   box.appendChild(el('summary', null, 'Диалог'));
 
-  const input = settingsControl('input', 'question', '', 'спросите роль, например: который час?');
+  // The question is a probe, not a field of the role: it carries no data-field,
+  // otherwise editSettingsField would put it into the unsaved agent and the card
+  // would send an unknown member the settings decoder rejects.
+  const input = el('input', 'alias-input');
   input.type = 'text';
   input.autocomplete = 'off';
+  input.placeholder = 'спросите роль, например: который час?';
   input.maxLength = 500;
   input.dataset.roleQuestion = '1';
   const ask = el('button', 'ghost', 'Спросить');
