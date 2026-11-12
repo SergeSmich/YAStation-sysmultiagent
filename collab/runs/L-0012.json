@@ -3,10 +3,19 @@
   "kind": "task",
   "path": "collab/opencode/L-0012-shag-4-iz-a-0008-svetlaya-tema-manifest.md",
   "ping": "[L-0012] Задача: Шаг 4 из A-0008: светлая тема, manifest.json, drag-and-drop карточек. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0012-*.md из origin/local/opencode @ 08cb41f; ответь коммитом A-0012 в origin/arena/cd8d27a4-yastation-sysmultiagent.",
-  "state": "pending_send",
+  "state": "done",
   "base": "6c124d2",
   "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
   "id": "L-0012",
-  "updated": "2026-11-12T13:36:57+00:00",
-  "created": "2026-11-12T13:36:57+00:00"
+  "updated": "2026-11-12T14:55:07+00:00",
+  "created": "2026-11-12T13:36:57+00:00",
+  "a_commit": "b59a5d8",
+  "local_commit": "8c05d65",
+  "checks": [
+    "node --check OK",
+    "go build ./... OK",
+    "go vet ./... OK",
+    "go test ./cmd/quasar-bridge ./internal/bridge -count=1 OK (32.841s / 5.737s)"
+  ],
+  "notes": "cherry-pick: конфликт только в panel_ui_test.go (Arena-версия теряла role-chips и мини-диалог, дублировала маркеры) — оставлен HEAD + добавлен TestPanelA0012ManifestAndDragOrder. Наши правки поверх A-0012: CSP manifest-src 'self' (default-src none блокировал манифест), start_url / вместо /panel (маршрута /panel нет), applyCardOrder вставляет блок карточек на место первой, а не в конец формы (иначе train-bar уезжал выше «Нейросетей»), body.card-dragging теперь ставится/снимается, убрана двойная wireCardOrder(recent)."
 }
