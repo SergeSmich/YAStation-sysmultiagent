@@ -1,0 +1,12 @@
+{
+  "task": "Шаг 6 из A-0008: сценарии по расписанию — планировщик и карточка в панели",
+  "kind": "task",
+  "path": "collab/opencode/L-0013-shag-6-iz-a-0008-scenarii-po-raspisaniyu.md",
+  "ping": "[L-0013] Задача: Шаг 6 из A-0008: сценарии по расписанию — планировщик и карточка в панели. git fetch origin refs/heads/local/opencode:refs/remotes/origin/local/opencode; прочитай collab/opencode/L-0013-*.md из origin/local/opencode @ 08cb41f; ответь коммитом A-0013 в origin/arena/cd8d27a4-yastation-sysmultiagent.",
+  "state": "pending_send",
+  "base": "1bf9d30",
+  "arena_ref": "origin/arena/cd8d27a4-yastation-sysmultiagent",
+  "id": "L-0013",
+  "updated": "2026-11-12T15:19:02+00:00",
+  "created": "2026-11-12T15:19:02+00:00"
+}
