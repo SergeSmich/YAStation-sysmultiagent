@@ -613,8 +613,9 @@ details.fold-card[open] > .settings-row { border-top-left-radius: 0; border-top-
 .role-call[open] summary { margin-bottom: 8px; }
 .role-call .field { margin-bottom: 6px; }
 /* The answer-length select of a role card: the list is short, so it stays
-   compact next to the model combo. */
-.role-length { min-width: 132px; }
+   compact next to the model combo. The selector names the field, otherwise
+   `.field select { min-width: 0 }` wins on specificity and the rule is dead. */
+.field select.role-length { min-width: 132px; }
 /* The role chips above the cards: one per saved role with its readiness dot.
    Clicking a chip picks that role as the main model. */
 .role-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }

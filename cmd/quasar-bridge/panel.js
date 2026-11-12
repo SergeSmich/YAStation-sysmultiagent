@@ -1510,7 +1510,9 @@ function renderAgents(force) {
     const name = settingsControl('input', 'name', agent.name, 'буквы (рус. и лат.) в нижнем регистре, цифры, - и _');
     name.type = 'text';
     name.autocomplete = 'off';
-    row.appendChild(settingsField('Имя роли', name));
+    // Two columns of the twelve: enough for «сисадмин», and the row below adds
+    // up to a whole line (2 + 6 нейросеть + 4 голос).
+    row.appendChild(settingsField('Имя роли', name, 'span-2'));
 
     const provider = settingsControl('select', 'provider', agent.provider);
     provider.className = 'agent-provider';
@@ -1552,7 +1554,7 @@ function renderAgents(force) {
       length.appendChild(option(String(agent.max_output_tokens), String(agent.max_output_tokens)));
     }
     length.value = String(agent.max_output_tokens || 0);
-    const lengthField = settingsField('Длина ответа', length);
+    const lengthField = settingsField('Длина ответа', length, 'span-4');
     lengthField.appendChild(el('span', 'muted small', 'пусто — как у нейросети'));
     row.appendChild(lengthField);
 

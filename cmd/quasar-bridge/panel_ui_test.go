@@ -179,3 +179,30 @@ func TestPanelCSSStylesTheNewControls(t *testing.T) {
 		}
 	}
 }
+
+// TestPanelRoleCardFieldsSpanTheGrid: the role card is a twelve-column grid, so
+// a field without a span class shrinks to one column (72 px) and its label
+// wraps to six lines. The live check of v0.9.1.19 found both offenders.
+func TestPanelRoleCardFieldsSpanTheGrid(t *testing.T) {
+	script, err := panelAssets.ReadFile("panel.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"settingsField('Имя роли', name, 'span-2')",
+		"settingsField('Длина ответа', length, 'span-4')",
+	} {
+		if !strings.Contains(string(script), marker) {
+			t.Fatalf("panel.js lacks %s: the field collapses to one column", marker)
+		}
+	}
+	style, err := panelAssets.ReadFile("panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `.settings-row .field select { min-width: 0 }` outranks a bare
+	// `.role-length`, so the rule has to name the field to take effect.
+	if !strings.Contains(string(style), ".field select.role-length") {
+		t.Fatal("panel.css: .role-length alone loses to the .field select min-width rule")
+	}
+}
